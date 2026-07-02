@@ -1,5 +1,6 @@
 """Configuration management."""
 
+import json
 import os
 from dataclasses import dataclass
 
@@ -28,11 +29,6 @@ class Settings:
     log_requests: bool = True
     log_dir: str = "./logs"
 
-    # Cache
-    cache_enabled: bool = True
-    cache_max_size: int = 200
-    cache_ttl: int = 300  # seconds
-
     # Model config
     model_config_path: str = "./config/models.json"
 
@@ -44,6 +40,14 @@ class Settings:
         def _parse_tokens(raw: str | None) -> list[str]:
             if not raw:
                 return []
+            # JSON array (PATCH /api/config serialization)
+            if raw.strip().startswith("["):
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, list):
+                        return [str(t).strip() for t in parsed if str(t).strip()]
+                except json.JSONDecodeError:
+                    pass
             return [t.strip() for t in raw.split(",") if t.strip()]
 
         return cls(
@@ -57,9 +61,6 @@ class Settings:
             qoder_timeout=int(os.getenv("QODER_TIMEOUT", "300")),
             log_requests=os.getenv("QB2API_LOG_REQUESTS", "true").lower() == "true",
             log_dir=os.getenv("QB2API_LOG_DIR", "./logs"),
-            cache_enabled=os.getenv("QB2API_CACHE_ENABLED", "true").lower() == "true",
-            cache_max_size=int(os.getenv("QB2API_CACHE_MAX_SIZE", "200")),
-            cache_ttl=int(os.getenv("QB2API_CACHE_TTL", "300")),
             model_config_path=os.getenv("QB2API_MODEL_CONFIG", "./config/models.json"),
         )
 

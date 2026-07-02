@@ -2,35 +2,27 @@
   <img src="https://img.shields.io/badge/Python-3.11%2B-blue?style=flat-square&logo=python" alt="Python">
   <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License">
   <img src="https://img.shields.io/badge/FastAPI-0.115%2B-009688?style=flat-square&logo=fastapi" alt="FastAPI">
-  <img src="https://img.shields.io/badge/Docker-支持-2496ED?style=flat-square&logo=docker" alt="Docker">
 </p>
 
 <h1 align="center">qoderbuddy2api</h1>
 
 <p align="center">
-  <strong>CodeBuddy & Qoder CN → OpenAI 兼容 API 代理</strong><br>
-  将企业级大模型解锁给 Claude Code、Codex 及任何 OpenAI 兼容客户端使用。
+  <strong>CodeBuddy & Qoder CN → OpenAI / Anthropic 兼容 API 代理</strong><br>
+  将企业级大模型解锁给 Claude Code、Codex 及 OpenAI 或 Anthropic 兼容客户端使用。
 </p>
 
 ---
 
 ## 为什么需要它？
 
-CodeBuddy 和 Qoder CN 提供顶尖模型（DeepSeek-V4、Qwen3.7、Kimi-K2.6、GLM-5.2、MiniMax-M2.7），但它们原生 API 不符合 OpenAI 格式。**qoderbuddy2api** 架起桥梁——一条命令，即刻代理。
+CodeBuddy 和 Qoder CN 提供顶尖模型（DeepSeek-V4、Qwen3.7、Kimi-K2.6、GLM-5.2、MiniMax-M2.7），但它们原生 API 不兼容 OpenAI 或 Anthropic SDK。**qoderbuddy2api** 通过本地轻量代理补齐这一层。
 
 - 🚀 **即插即用** — 兼容 Claude Code、Codex、Continue、Aider 及任意 OpenAI SDK
+- 🧩 **原生 Anthropic Messages** — `/v1/messages` 适配 Claude 风格客户端
 - 🔧 **工具调用** — 完整支持 Function Calling，适配 Claude Code 智能体工作流
 - ⚖️ **负载均衡** — 多 API Key 轮询 + 自动故障转移
-- 🐳 **Docker 就绪** — 30 秒部署到任何环境
-- 🔒 **零数据泄露** — 一切本地运行，无第三方云依赖
 
 ## 快速开始
-
-### Docker（推荐）
-
-```bash
-docker compose up -d
-```
 
 ### 本地部署
 
@@ -41,6 +33,17 @@ qb2api                 # 启动在 9999 端口
 ```
 
 ### 环境变量
+
+从模板创建 `.env`，填入你的 token：
+
+```bash
+cp .env.example .env
+```
+
+**获取 Token：**
+
+- **CodeBuddy** — 在 CodeBuddy 账号设置中复制 session token，格式为 `ck_xxx…`
+- **Qoder CN** — 在 [Qoder CN 集成页面](https://qoder.com.cn/account/integrations) 生成个人访问令牌（PAT），格式为 `pt_xxx…`
 
 ```ini
 # 单 Key
@@ -85,6 +88,11 @@ curl -N http://localhost:9999/v1/chat/completions \
 curl http://localhost:9999/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"qoder/auto","messages":[{"role":"user","content":"东京天气怎么样？"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}],"tool_choice":"auto"}'
+
+# Anthropic Messages API
+curl http://localhost:9999/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{"model":"codebuddy/deepseek-v4-flash","max_tokens":512,"messages":[{"role":"user","content":"你好！"}]}'
 ```
 
 ## 支持的模型
@@ -155,29 +163,6 @@ QB2API_API_KEY=your-secret
 
 配置后，除 `/health` 外的所有端点需要 `Authorization: Bearer <key>`。
 
-### 响应缓存
-
-非流式对话请求自动缓存（LRU 算法，默认 TTL 300 秒）。相同请求秒级返回：
-
-```bash
-# 首次调用走上游
-curl http://localhost:9999/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"codebuddy/deepseek-v3","messages":[{"role":"user","content":"2+2等于几？"}]}'
-# → ~1.2s
-
-# 第二次相同请求从缓存返回
-# → <0.01s（日志标记 "Cache HIT"）
-```
-
-通过环境变量配置：
-
-```ini
-QB2API_CACHE_ENABLED=true    # 默认开启
-QB2API_CACHE_MAX_SIZE=200   # 最大缓存条目数
-QB2API_CACHE_TTL=300        # 过期时间（秒）
-```
-
 ### 服务管理
 
 ```bash
@@ -185,13 +170,6 @@ QB2API_CACHE_TTL=300        # 过期时间（秒）
 ./server.sh stop      # 按端口停止
 ./server.sh status    # 查看状态
 ```
-
-## 路线图
-
-- [ ] Anthropic Messages API (`/v1/messages`) — 原生支持 Claude Code
-- [ ] 按 Key 限流
-- [ ] Prometheus 指标端点
-- [ ] 更多 Provider（欢迎 PR）
 
 ## License
 
