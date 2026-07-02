@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+*.lock
+.pytest_cache/
+.ruff_cache/
+logs/
+nohup.out
+.DS_Store
+.claude/
+*.egg-info/
+dist/
+build/

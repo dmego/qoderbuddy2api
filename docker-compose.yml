@@ -1,0 +1,17 @@
+services:
+  qoderbuddy2api:
+    build: .
+    container_name: qoderbuddy2api
+    ports:
+      - "${QB2API_PORT:-9999}:${QB2API_PORT:-9999}"
+    environment:
+      - CODEBUDDY_TOKEN=${CODEBUDDY_TOKEN:-}
+      - QODER_TOKEN=${QODER_TOKEN:-}
+      - QB2API_API_KEY=${QB2API_API_KEY:-}
+      - QODER_TIMEOUT=${QODER_TIMEOUT:-300}
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
