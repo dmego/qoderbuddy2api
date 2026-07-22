@@ -154,6 +154,55 @@ class TestStreamAggregator:
 
 
 # ---------------------------------------------------------------------------
+# CodeBuddy system scrub tests
+# ---------------------------------------------------------------------------
+class TestCodeBuddyScrub:
+    """CodeBuddy rejects Claude Code identity phrasing; scrub on outbound only."""
+
+    def test_scrub_replaces_claude_code_identity(self):
+        from qb2api.providers.codebuddy import scrub_codebuddy_text
+
+        src = "You are Claude Code, Anthropic's official CLI for Claude.\nHelp with code."
+        out = scrub_codebuddy_text(src)
+        assert "Claude Code" not in out
+        assert "Anthropic" not in out
+        assert out.startswith("You are a coding CLI assistant.")
+        assert "Help with code." in out
+
+    def test_scrub_leaves_normal_system_untouched(self):
+        from qb2api.providers.codebuddy import scrub_codebuddy_text
+
+        src = "You are a helpful coding assistant."
+        assert scrub_codebuddy_text(src) == src
+
+    def test_build_body_scrubs_system_only(self):
+        from qb2api.openai import ChatCompletionRequest
+        from qb2api.providers.codebuddy import CodeBuddyProvider
+
+        provider = CodeBuddyProvider(token="dummy")
+        request = ChatCompletionRequest(
+            model="hy3",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are Claude Code, Anthropic's official CLI for Claude.\nBe concise.",
+                },
+                {
+                    "role": "user",
+                    "content": "You are Claude Code, Anthropic's official CLI for Claude.",
+                },
+            ],
+        )
+        body = provider._build_body(request)
+        system = body["messages"][0]["content"]
+        user = body["messages"][1]["content"]
+        assert system.startswith("You are a coding CLI assistant.")
+        assert "Anthropic" not in system
+        # user content is not rewritten
+        assert "Claude Code" in user
+
+
+# ---------------------------------------------------------------------------
 # Qoder tool call parsing tests
 # ---------------------------------------------------------------------------
 class TestQoderToolCalls:
@@ -163,8 +212,9 @@ class TestQoderToolCalls:
         """Qoder CLI named models use internal model keys in COSY requests."""
         from qb2api.providers.qoder import QODER_CLI_MODEL_KEYS
 
+        assert QODER_CLI_MODEL_KEYS["Qwen3.8-Max-Preview"] == "qmodel_preview"
         assert QODER_CLI_MODEL_KEYS["Qwen3.7-Max"] == "qmodel_latest"
-        assert QODER_CLI_MODEL_KEYS["Kimi-K2.6"] == "kmodel"
+        assert QODER_CLI_MODEL_KEYS["Kimi-K2.7-Code"] == "kmodel"
         assert QODER_CLI_MODEL_KEYS["DeepSeek-V4-Pro"] == "dmodel"
 
     def test_qoder_payload_uses_internal_key_for_named_model(self):

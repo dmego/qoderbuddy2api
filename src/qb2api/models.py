@@ -55,18 +55,19 @@ DEFAULT_CODEBUDDY_MODELS = [
     ModelDefinition("minimax-m2.7", "MiniMax M2.7", "codebuddy", ModelCapabilities(reasoning=True)),
     ModelDefinition("kimi-k2.6", "Kimi K2.6", "codebuddy", ModelCapabilities()),
     ModelDefinition("kimi-k2.7", "Kimi K2.7", "codebuddy", ModelCapabilities(reasoning=True)),
-    ModelDefinition("hy3-preview", "Hy3 Preview", "codebuddy", ModelCapabilities()),
+    ModelDefinition("hy3", "Hy3", "codebuddy", ModelCapabilities()),
 ]
 
 DEFAULT_QODER_MODELS = [
     ModelDefinition("auto", "Auto", "qoder", ModelCapabilities(tool_calling=True, reasoning_effort=True, context_window=True)),
+    ModelDefinition("Qwen3.8-Max-Preview", "Qwen 3.8 Max Preview", "qoder", ModelCapabilities(tool_calling=True, reasoning_effort=True, context_window=True)),
     ModelDefinition("Qwen3.7-Max", "Qwen 3.7 Max", "qoder", ModelCapabilities(tool_calling=True, reasoning_effort=True, context_window=True)),
     ModelDefinition("Qwen3.7-Plus", "Qwen 3.7 Plus", "qoder", ModelCapabilities(context_window=True)),
     ModelDefinition("Qwen3.6-Flash", "Qwen 3.6 Flash", "qoder", ModelCapabilities(context_window=True)),
     ModelDefinition("DeepSeek-V4-Pro", "DeepSeek V4 Pro", "qoder", ModelCapabilities(tool_calling=True, context_window=True)),
     ModelDefinition("DeepSeek-V4-Flash", "DeepSeek V4 Flash", "qoder", ModelCapabilities(context_window=True)),
     ModelDefinition("GLM-5.2", "GLM-5.2", "qoder", ModelCapabilities(context_window=True)),
-    ModelDefinition("Kimi-K2.6", "Kimi K2.6", "qoder", ModelCapabilities(tool_calling=True, context_window=True)),
+    ModelDefinition("Kimi-K2.7-Code", "Kimi K2.7 Code", "qoder", ModelCapabilities(tool_calling=True, context_window=True)),
     ModelDefinition("MiniMax-M2.7", "MiniMax M2.7", "qoder", ModelCapabilities(context_window=True)),
 ]
 

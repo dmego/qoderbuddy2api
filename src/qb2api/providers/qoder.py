@@ -51,16 +51,17 @@ EFFORT_SUFFIX_RE = re.compile(r"^(.*)-effort-(low|medium|high|max)$")
 
 QODER_CLI_MODEL_KEYS = {
     # Verified with `qoderclicn --print --output-format json --model ...` and
-    # the returned `modelUsage` key from qoderclicn 1.0.33.
+    # the returned `modelUsage` key from qoderclicn 1.1.2.
     "auto": "auto",
     "Auto": "auto",
+    "Qwen3.8-Max-Preview": "qmodel_preview",
     "Qwen3.7-Max": "qmodel_latest",
     "Qwen3.7-Plus": "qmodel",
     "Qwen3.6-Flash": "q36fmodel",
     "DeepSeek-V4-Pro": "dmodel",
     "DeepSeek-V4-Flash": "dfmodel",
     "GLM-5.2": "gm51model",
-    "Kimi-K2.6": "kmodel",
+    "Kimi-K2.7-Code": "kmodel",
     "MiniMax-M2.7": "mmodel",
 }
 

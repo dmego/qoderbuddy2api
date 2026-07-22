@@ -15,7 +15,7 @@
 
 ## Why?
 
-CodeBuddy and Qoder CN provide access to top-tier models (DeepSeek-V4, Qwen3.7, Kimi-K2.6, GLM-5.2, MiniMax-M2.7), but their native APIs are not compatible with OpenAI or Anthropic SDKs. **qoderbuddy2api** bridges this gap with a local lightweight proxy.
+CodeBuddy and Qoder CN provide access to top-tier models (DeepSeek-V4, Qwen3.8, Qwen3.7, Kimi-K2.7-Code, GLM-5.2, MiniMax-M2.7), but their native APIs are not compatible with OpenAI or Anthropic SDKs. **qoderbuddy2api** bridges this gap with a local lightweight proxy.
 
 - 🚀 **Drop-in replacement** — works with Claude Code, Codex, Continue, Aider, and any OpenAI SDK
 - 🧩 **Native Anthropic Messages** — `/v1/messages` for Claude-style clients
@@ -109,17 +109,18 @@ curl http://localhost:9999/v1/messages \
 | `codebuddy/glm-5.1`, `glm-5.2`, `glm-5v-turbo` | Chat, streaming |
 | `codebuddy/kimi-k2.6`, `kimi-k2.7` | Chat (k2.7: reasoning) |
 | `codebuddy/minimax-m3`, `minimax-m2.7` | Chat (m2.7: reasoning) |
-| `codebuddy/hy3-preview` | Chat |
+| `codebuddy/hy3` | Chat |
 | `codebuddy/deepseek-v3-0324` | Chat |
 
-### Qoder CN (9 models)
+### Qoder CN (10 models)
 
 | Model | Capabilities |
 |-------|-------------|
 | `qoder/auto` | Auto-routing, **tool calling**, reasoning effort, context window |
+| `qoder/Qwen3.8-Max-Preview` | **Tool calling**, reasoning effort, context window |
 | `qoder/Qwen3.7-Max` | **Tool calling**, reasoning effort, context window |
 | `qoder/DeepSeek-V4-Pro` | **Tool calling**, context window |
-| `qoder/Kimi-K2.6` | **Tool calling**, context window |
+| `qoder/Kimi-K2.7-Code` | **Tool calling**, context window |
 | `qoder/Qwen3.7-Plus` | Chat, context window |
 | `qoder/Qwen3.6-Flash` | Chat, context window |
 | `qoder/DeepSeek-V4-Flash` | Chat, context window |

@@ -15,7 +15,7 @@
 
 ## 为什么需要它？
 
-CodeBuddy 和 Qoder CN 提供顶尖模型（DeepSeek-V4、Qwen3.7、Kimi-K2.6、GLM-5.2、MiniMax-M2.7），但它们原生 API 不兼容 OpenAI 或 Anthropic SDK。**qoderbuddy2api** 通过本地轻量代理补齐这一层。
+CodeBuddy 和 Qoder CN 提供顶尖模型（DeepSeek-V4、Qwen3.8、Qwen3.7、Kimi-K2.7-Code、GLM-5.2、MiniMax-M2.7），但它们原生 API 不兼容 OpenAI 或 Anthropic SDK。**qoderbuddy2api** 通过本地轻量代理补齐这一层。
 
 - 🚀 **即插即用** — 兼容 Claude Code、Codex、Continue、Aider 及任意 OpenAI SDK
 - 🧩 **原生 Anthropic Messages** — `/v1/messages` 适配 Claude 风格客户端
@@ -109,17 +109,18 @@ curl http://localhost:9999/v1/messages \
 | `codebuddy/glm-5.1`、`glm-5.2`、`glm-5v-turbo` | 对话、流式 |
 | `codebuddy/kimi-k2.6`、`kimi-k2.7` | 对话（k2.7：推理） |
 | `codebuddy/minimax-m3`、`minimax-m2.7` | 对话（m2.7：推理） |
-| `codebuddy/hy3-preview` | 对话 |
+| `codebuddy/hy3` | 对话 |
 | `codebuddy/deepseek-v3-0324` | 对话 |
 
-### Qoder CN（9 个模型）
+### Qoder CN（10 个模型）
 
 | 模型 | 能力 |
 |-------|------|
 | `qoder/auto` | 自动路由、**工具调用**、推理强度、上下文窗口 |
+| `qoder/Qwen3.8-Max-Preview` | **工具调用**、推理强度、上下文窗口 |
 | `qoder/Qwen3.7-Max` | **工具调用**、推理强度、上下文窗口 |
 | `qoder/DeepSeek-V4-Pro` | **工具调用**、上下文窗口 |
-| `qoder/Kimi-K2.6` | **工具调用**、上下文窗口 |
+| `qoder/Kimi-K2.7-Code` | **工具调用**、上下文窗口 |
 | `qoder/Qwen3.7-Plus` | 对话、上下文窗口 |
 | `qoder/Qwen3.6-Flash` | 对话、上下文窗口 |
 | `qoder/DeepSeek-V4-Flash` | 对话、上下文窗口 |

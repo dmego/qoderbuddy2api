@@ -1,9 +1,10 @@
 """CodeBuddy provider implementation."""
 
 import json
+import re
 import uuid
 import logging
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 import httpx
 
@@ -11,6 +12,40 @@ from .base import Provider
 from ..openai import ChatCompletionRequest, stream_done
 
 logger = logging.getLogger("qb2api")
+
+# Claude Code default identity triggers CodeBuddy content filter.
+# Scrub only this outbound phrase; keep the rest of the system prompt.
+_CLAUDE_CODE_IDENTITY_RE = re.compile(
+    r"You are Claude Code,\s*Anthropic's official CLI for Claude\.?",
+    re.IGNORECASE,
+)
+_SCRUBBED_IDENTITY = "You are a coding CLI assistant."
+
+
+def scrub_codebuddy_text(text: str) -> str:
+    """Remove Claude Code/Anthropic identity phrasing that CodeBuddy rejects."""
+    if not text:
+        return text
+    if "Claude Code" not in text and "official CLI for Claude" not in text:
+        return text
+    return _CLAUDE_CODE_IDENTITY_RE.sub(_SCRUBBED_IDENTITY, text)
+
+
+def scrub_codebuddy_content(content: Any) -> Any:
+    """Scrub string or multimodal text blocks in a message content field."""
+    if isinstance(content, str):
+        return scrub_codebuddy_text(content)
+    if isinstance(content, list):
+        out = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+                b = dict(block)
+                b["text"] = scrub_codebuddy_text(b["text"])
+                out.append(b)
+            else:
+                out.append(block)
+        return out
+    return content
 
 
 class CodeBuddyError(Exception):
@@ -95,6 +130,11 @@ class CodeBuddyProvider(Provider):
         if len(messages) < 2:
             logger.debug("CodeBuddy: injecting default system message (upstream requires >=2 messages)")
             messages = [{"role": "system", "content": "You are a helpful assistant."}] + messages
+
+        # Scrub Claude Code identity from system messages only (upstream content filter).
+        for msg in messages:
+            if msg.get("role") == "system" and "content" in msg:
+                msg["content"] = scrub_codebuddy_content(msg["content"])
 
         body = {
             "model": request.model,

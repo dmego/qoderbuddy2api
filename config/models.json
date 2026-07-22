@@ -67,8 +67,8 @@
         "capabilities": {"chat": true, "streaming": true, "reasoning": true}
       },
       {
-        "id": "hy3-preview",
-        "name": "Hy3 Preview",
+        "id": "hy3",
+        "name": "Hy3",
         "capabilities": {"chat": true, "streaming": true}
       }
     ]
@@ -78,6 +78,11 @@
       {
         "id": "auto",
         "name": "Auto",
+        "capabilities": {"chat": true, "streaming": true, "reasoning_effort": true, "context_window": true}
+      },
+      {
+        "id": "Qwen3.8-Max-Preview",
+        "name": "Qwen 3.8 Max Preview",
         "capabilities": {"chat": true, "streaming": true, "reasoning_effort": true, "context_window": true}
       },
       {
@@ -111,8 +116,8 @@
         "capabilities": {"chat": true, "streaming": true, "context_window": true}
       },
       {
-        "id": "Kimi-K2.6",
-        "name": "Kimi K2.6",
+        "id": "Kimi-K2.7-Code",
+        "name": "Kimi K2.7 Code",
         "capabilities": {"chat": true, "streaming": true, "context_window": true}
       },
       {
