@@ -10,14 +10,21 @@ from fastapi.responses import JSONResponse
 
 from qb2api.accounts.imports import (
     persist_codebuddy_account,
+    persist_codebuddy_checkin,
     persist_qoder_chat,
     persist_qoder_checkin,
 )
 from qb2api.auth.codebuddy_oauth import CodeBuddyOAuthError
 from qb2api.auth.flows import FlowBusyError
-from qb2api.checkin.models import CheckInOutcome
+from qb2api.checkin.models import SUCCESS_OUTCOMES, CheckInOutcome
 
 from .dependencies import admin_state, require_admin
+from .import_support import (
+    codebuddy_label,
+    require_codebuddy_account,
+    verify_workbuddy,
+    workbuddy_input,
+)
 from .mutation_audit import add_audit, refresh_after_mutation
 from .validation import json_object, label, optional_account_id, required_string
 from .views import account_view_dict, find_account_view
@@ -32,7 +39,8 @@ async def codebuddy_oauth_start(request: Request) -> dict[str, Any]:
     if not state.settings.codebuddy_oauth_enabled:
         raise HTTPException(status_code=400, detail="oauth_disabled")
     body = await json_object(request, allow_empty=True)
-    selected_label = label(body.get("label"), default="codebuddy")
+    account_id = optional_account_id(body.get("account_id"))
+    selected_label = await codebuddy_label(state, account_id, body.get("label"))
     try:
         started = await state.codebuddy_oauth.start()
     except CodeBuddyOAuthError as error:
@@ -41,6 +49,7 @@ async def codebuddy_oauth_start(request: Request) -> dict[str, Any]:
         label=selected_label,
         auth_state=started.auth_state,
         auth_url=started.auth_url,
+        account_id=account_id,
     )
     return {
         "flow_id": flow.flow_id,
@@ -49,6 +58,7 @@ async def codebuddy_oauth_start(request: Request) -> dict[str, Any]:
         .replace(microsecond=0)
         .isoformat(),
         "label": flow.label,
+        "account_id": flow.account_id,
     }
 
 
@@ -71,7 +81,13 @@ async def codebuddy_oauth_poll(request: Request) -> Any:
             return {"status": "pending"}
         if result.status != "success" or not result.access_token:
             return {"status": "error", "message": result.message or "auth_failed"}
-        account_id = await _persist_oauth_result(state, lease.record.label, result)
+        account_id = await _persist_oauth_result(
+            state,
+            lease.record.label,
+            result,
+            account_id=lease.record.account_id,
+        )
+        state.credential_resolver.invalidate("codebuddy", account_id, "chat")
         consume = True
         return {
             "status": "success",
@@ -91,17 +107,50 @@ async def codebuddy_manual(request: Request) -> dict[str, Any]:
     access_token = required_string(
         body, "token", "access_token", "bearer", detail="token_required"
     )
+    account_id = optional_account_id(body.get("account_id"))
+    await require_codebuddy_account(state, account_id)
     account_id = await persist_codebuddy_account(
         state.account_repo,
         state.credential_vault,
         label=label(body.get("label"), default="manual"),
         source="manual",
         access_token=access_token,
+        account_id=account_id,
     )
+    state.credential_resolver.invalidate("codebuddy", account_id, "chat")
     return {
         "status": "ok",
         "account": await _publish(
             state, "codebuddy", account_id, mutation_action="account.import"
+        ),
+    }
+
+
+@router.post("/auth/codebuddy/checkin")
+async def codebuddy_checkin_import(request: Request) -> dict[str, Any]:
+    await require_admin(request)
+    state = admin_state(request)
+    body = await json_object(request)
+    account_id = required_string(body, "account_id", detail="account_id_required")
+    await require_codebuddy_account(state, account_id, required=True)
+    mode, access_token, cookie = workbuddy_input(body)
+    result = await verify_workbuddy(state, account_id, mode, access_token, cookie)
+    if result.outcome not in SUCCESS_OUTCOMES:
+        raise HTTPException(status_code=400, detail="checkin_credential_rejected")
+    await persist_codebuddy_checkin(
+        state.account_repo,
+        state.credential_vault,
+        account_id=account_id,
+        mode=mode,
+        access_token=access_token,
+        cookie=cookie,
+        verified_at=datetime.now(UTC).replace(microsecond=0).isoformat(),
+    )
+    state.credential_resolver.invalidate("codebuddy", account_id, "checkin")
+    return {
+        "status": "ok",
+        "account": await _publish(
+            state, "codebuddy", account_id, mutation_action="credential.import"
         ),
     }
 
@@ -165,7 +214,13 @@ async def qoder_checkin_import(request: Request) -> dict[str, Any]:
     }
 
 
-async def _persist_oauth_result(state: Any, selected_label: str, result: Any) -> str:
+async def _persist_oauth_result(
+    state: Any,
+    selected_label: str,
+    result: Any,
+    *,
+    account_id: str | None,
+) -> str:
     expires_at = None
     if result.expires_in:
         expires_at = (
@@ -179,6 +234,7 @@ async def _persist_oauth_result(state: Any, selected_label: str, result: Any) ->
         access_token=result.access_token,
         refresh_token=result.refresh_token,
         expires_at=expires_at,
+        account_id=account_id,
     )
 
 
@@ -186,6 +242,8 @@ async def _require_qoder_account(state: Any, account_id: str) -> None:
     accounts = await state.account_repo.list_accounts("qoder")
     if not any(account["account_id"] == account_id for account in accounts):
         raise HTTPException(status_code=404, detail="account_not_found")
+
+
 
 
 async def _publish(

@@ -16,8 +16,12 @@ async def persist_codebuddy_account(
     access_token: str,
     refresh_token: str | None = None,
     expires_at: str | None = None,
+    account_id: str | None = None,
 ) -> str:
-    account_id = new_account_slug("codebuddy")
+    account = await _codebuddy_account(repo, account_id)
+    if account_id is not None and account is None:
+        raise LookupError(f"codebuddy account not found: {account_id}")
+    durable_id = account_id or new_account_slug("codebuddy")
     payload = {"access_token": access_token}
     if refresh_token:
         payload["refresh_token"] = refresh_token
@@ -25,25 +29,65 @@ async def persist_codebuddy_account(
     async with repo.transaction():
         await repo.upsert_account(
             provider="codebuddy",
-            account_id=account_id,
+            account_id=durable_id,
             label=label,
             source=source,
             enabled=True,
             masked_identity=_mask(access_token),
+            identity_hash=(account or {}).get("identity_hash"),
         )
-        await _write_codebuddy_purposes(repo, account_id, expires_at)
+        await _write_codebuddy_purposes(repo, durable_id, expires_at)
         await repo.upsert_credential(
             provider="codebuddy",
-            account_id=account_id,
+            account_id=durable_id,
             purpose="chat",
             mode="oauth" if refresh_token else "bearer",
             encrypted_payload=encrypted,
             has_refresh_token=bool(refresh_token),
             expires_at=expires_at,
         )
-        await _audit_account_import(repo, "codebuddy", account_id)
-        await _audit_credential_import(repo, "codebuddy", account_id, purpose="chat")
-    return account_id
+        await _audit_account_import(repo, "codebuddy", durable_id)
+        await _audit_credential_import(repo, "codebuddy", durable_id, purpose="chat")
+    return durable_id
+
+
+async def persist_codebuddy_checkin(
+    repo: AccountRepository,
+    vault: CredentialVault,
+    *,
+    account_id: str,
+    mode: str,
+    access_token: str | None = None,
+    cookie: str | None = None,
+    verified_at: str,
+) -> int:
+    if await _codebuddy_account(repo, account_id) is None:
+        raise LookupError(f"codebuddy account not found: {account_id}")
+    payload = _workbuddy_payload(mode, access_token, cookie)
+    capabilities = ["checkin.workbuddy"]
+    if cookie:
+        capabilities.append("credential.cookie")
+    async with repo.transaction():
+        await repo.upsert_purpose(
+            provider="codebuddy",
+            account_id=account_id,
+            purpose="checkin",
+            enabled=True,
+            status="active",
+            verification_status="verified",
+            capabilities=capabilities,
+            verified_at=verified_at,
+        )
+        version = await repo.upsert_credential(
+            provider="codebuddy",
+            account_id=account_id,
+            purpose="checkin",
+            mode=mode,
+            encrypted_payload=vault.encrypt(payload),
+            has_refresh_token=False,
+        )
+        await _audit_credential_import(repo, "codebuddy", account_id, purpose="checkin")
+        return version
 
 
 async def persist_qoder_chat(
@@ -131,11 +175,22 @@ async def _qoder_account(
     return next((row for row in accounts if row["account_id"] == account_id), None)
 
 
+async def _codebuddy_account(
+    repo: AccountRepository,
+    account_id: str | None,
+) -> dict | None:
+    if account_id is None:
+        return None
+    accounts = await repo.list_accounts("codebuddy")
+    return next((row for row in accounts if row["account_id"] == account_id), None)
+
+
 async def _write_codebuddy_purposes(
     repo: AccountRepository,
     account_id: str,
     expires_at: str | None,
 ) -> None:
+    current = {item["purpose"]: item for item in await repo.list_purposes("codebuddy", account_id)}
     await repo.upsert_purpose(
         provider="codebuddy",
         account_id=account_id,
@@ -146,6 +201,8 @@ async def _write_codebuddy_purposes(
         capabilities=["proxy.chat"],
         expires_at=expires_at,
     )
+    if "checkin" in current:
+        return
     await repo.upsert_purpose(
         provider="codebuddy",
         account_id=account_id,
@@ -156,6 +213,25 @@ async def _write_codebuddy_purposes(
         capabilities=["checkin.workbuddy"],
         expires_at=expires_at,
     )
+
+
+def _workbuddy_payload(
+    mode: str,
+    access_token: str | None,
+    cookie: str | None,
+) -> dict[str, str]:
+    if mode not in {"bearer", "cookie", "bearer_cookie"}:
+        raise ValueError("unsupported_workbuddy_credential_mode")
+    if mode in {"bearer", "bearer_cookie"} and not access_token:
+        raise ValueError("access_token_required")
+    if mode in {"cookie", "bearer_cookie"} and not cookie:
+        raise ValueError("cookie_required")
+    payload: dict[str, str] = {}
+    if access_token:
+        payload["access_token"] = access_token
+    if cookie:
+        payload["cookie"] = cookie
+    return payload
 
 
 async def _write_qoder_chat_purpose(

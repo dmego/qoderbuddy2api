@@ -30,6 +30,7 @@ CredentialMode = Literal[
     "bearer",
     "cookie",
     "bearer_cookie",
+    "oauth",
     "pat",
     "access_refresh",
 ]

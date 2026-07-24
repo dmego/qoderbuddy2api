@@ -27,6 +27,7 @@ class FlowRecord:
     state_hash: str
     auth_url: str
     expires_at: float
+    account_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -54,7 +55,14 @@ class FlowStore:
         self._flows: dict[str, _FlowEntry] = {}
         self._polling: set[str] = set()
 
-    def create(self, *, label: str, auth_state: str, auth_url: str) -> FlowRecord:
+    def create(
+        self,
+        *,
+        label: str,
+        auth_state: str,
+        auth_url: str,
+        account_id: str | None = None,
+    ) -> FlowRecord:
         self._purge_expired()
         flow_id = secrets.token_urlsafe(16)
         expires_at = time.time() + self._ttl
@@ -64,6 +72,7 @@ class FlowStore:
             state_hash=hash_state(auth_state),
             auth_url=auth_url,
             expires_at=expires_at,
+            account_id=account_id,
         )
         self._flows[flow_id] = _FlowEntry(record=record, auth_state=auth_state)
         return record

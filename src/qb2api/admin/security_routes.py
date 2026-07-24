@@ -14,8 +14,12 @@ from .validation import bounded_int, choice_filter, cursor_value, json_object, r
 
 router = APIRouter()
 _ROTATION_FIELDS = frozenset(
-    {"token", "access_token", "pat", "refresh_token", "expires_at", "credential_version"}
+    {
+        "token", "access_token", "pat", "cookie", "mode", "refresh_token",
+        "expires_at", "credential_version",
+    }
 )
+_CREDENTIAL_MODES = frozenset({"bearer", "cookie", "bearer_cookie", "pat", "access_refresh", "oauth"})
 
 
 @router.get("/credentials")
@@ -25,8 +29,28 @@ async def credential_metadata(request: Request, provider: str | None = None) -> 
     return {"credentials": await repository.list_credential_metadata(provider)}
 
 
+@router.post("/credentials/{provider}/{account_id}/{purpose}/rotate")
+async def rotate_credential_action(
+    provider: str,
+    account_id: str,
+    purpose: str,
+    request: Request,
+) -> dict[str, Any]:
+    return await _rotate_credential(provider, account_id, purpose, request)
+
+
 @router.patch("/credentials/{provider}/{account_id}/{purpose}")
 async def rotate_credential(
+    provider: str,
+    account_id: str,
+    purpose: str,
+    request: Request,
+) -> dict[str, Any]:
+    """Compatibility alias retained for one migration cycle."""
+    return await _rotate_credential(provider, account_id, purpose, request)
+
+
+async def _rotate_credential(
     provider: str,
     account_id: str,
     purpose: str,
@@ -39,25 +63,24 @@ async def rotate_credential(
     body = await json_object(request)
     if unknown := set(body) - _ROTATION_FIELDS:
         raise HTTPException(status_code=400, detail=f"unsupported_fields:{sorted(unknown)}")
-    secret = required_string(body, "token", "access_token", "pat", detail="token_required")
     repository = _repository(request)
     current = await repository.get_credential(provider, account_id, purpose)
     if current is None:
         raise HTTPException(status_code=404, detail="credential_not_found")
     purpose_state = await _purpose_or_404(repository, provider, account_id, purpose)
     expires_at = _expires_at(body, current.get("expires_at"))
-    payload = _payload(provider, purpose, secret, body.get("refresh_token"))
+    mode, payload, fingerprint = _rotation_payload(provider, purpose, current, body)
     try:
         async with repository.transaction():
             version = await repository.upsert_credential(
                 provider=provider,
                 account_id=account_id,
                 purpose=purpose,
-                mode=current.get("mode") or "bearer",
+                mode=mode,
                 encrypted_payload=state.credential_vault.encrypt(payload),
                 has_refresh_token=bool(payload.get("refresh_token")),
                 expires_at=expires_at,
-                fingerprint_hmac=state.credential_vault.fingerprint(secret),
+                fingerprint_hmac=state.credential_vault.fingerprint(fingerprint),
                 expected_version=_expected_version(body),
             )
             await _mark_unverified_purpose(
@@ -77,8 +100,33 @@ async def rotate_credential(
     return {"status": "succeeded", "credential_version": version, "verification_status": "unverified"}
 
 
+@router.post("/credentials/{provider}/{account_id}/{purpose}/revoke")
+async def revoke_credential_action(
+    provider: str,
+    account_id: str,
+    purpose: str,
+    request: Request,
+) -> dict[str, str]:
+    return await _revoke_credential(provider, account_id, purpose, request)
+
+
 @router.delete("/credentials/{provider}/{account_id}/{purpose}")
-async def revoke_credential(provider: str, account_id: str, purpose: str, request: Request) -> dict[str, str]:
+async def revoke_credential(
+    provider: str,
+    account_id: str,
+    purpose: str,
+    request: Request,
+) -> dict[str, str]:
+    """Compatibility alias retained for one migration cycle."""
+    return await _revoke_credential(provider, account_id, purpose, request)
+
+
+async def _revoke_credential(
+    provider: str,
+    account_id: str,
+    purpose: str,
+    request: Request,
+) -> dict[str, str]:
     await require_admin(request)
     state = admin_state(request)
     if purpose not in {"chat", "checkin"} or state.account_registry.is_env_account(provider, account_id):
@@ -186,12 +234,41 @@ def _service(request: Request):
     return service
 
 
-def _payload(provider: str, purpose: str, secret: str, refresh: Any) -> dict[str, Any]:
-    key = "pat" if provider == "qoder" and purpose == "chat" else "access_token"
-    payload: dict[str, Any] = {key: secret}
-    if isinstance(refresh, str) and refresh.strip():
-        payload["refresh_token"] = refresh.strip()
-    return payload
+def _rotation_payload(
+    provider: str,
+    purpose: str,
+    current: dict[str, Any],
+    body: dict[str, Any],
+) -> tuple[str, dict[str, str], str]:
+    mode = body.get("mode", current.get("mode") or "bearer")
+    if not isinstance(mode, str) or mode not in _CREDENTIAL_MODES:
+        raise HTTPException(status_code=400, detail="invalid_credential_mode")
+    access = _credential_value(body, "token", "access_token", "pat")
+    cookie = _credential_value(body, "cookie")
+    if mode in {"bearer", "bearer_cookie", "access_refresh", "pat", "oauth"} and not access:
+        raise HTTPException(status_code=400, detail="token_required")
+    if mode in {"cookie", "bearer_cookie"} and not cookie:
+        raise HTTPException(status_code=400, detail="cookie_required")
+    if provider == "qoder" and purpose == "chat" and mode != "pat":
+        raise HTTPException(status_code=400, detail="invalid_credential_mode")
+    payload: dict[str, str] = {"pat" if mode == "pat" else "access_token": access} if access else {}
+    if cookie:
+        payload["cookie"] = cookie
+    refresh = _credential_value(body, "refresh_token")
+    if refresh:
+        payload["refresh_token"] = refresh
+    return mode, payload, access or cookie or ""
+
+
+def _credential_value(body: dict[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        if key not in body:
+            continue
+        value = body[key]
+        if not isinstance(value, str) or not value.strip():
+            raise HTTPException(status_code=400, detail=f"invalid_{key}")
+        return value.strip()
+    return None
 
 
 def _expires_at(body: dict[str, Any], fallback: str | None) -> str | None:

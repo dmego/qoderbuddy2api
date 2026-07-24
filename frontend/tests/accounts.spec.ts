@@ -4,6 +4,7 @@ import { createPinia } from "pinia";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import AccountsPage from "@/pages/AccountsPage.vue";
+import AccountImportPanel from "@/components/AccountImportPanel.vue";
 
 const account = {
   provider: "qoder",
@@ -127,6 +128,35 @@ describe("AccountsPage", () => {
     await flushPromises();
     expect(mutations).toHaveLength(1);
     wrapper.unmount();
+  });
+});
+
+describe("AccountImportPanel", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    sessionStorage.clear();
+  });
+
+  it("sends a verified WorkBuddy cookie import without rendering the cookie", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), init });
+      return response({ status: "ok", account: { provider: "codebuddy", account_id: "cb-main", label: "主账号" } });
+    }));
+    const wrapper = mount(AccountImportPanel, { global: { plugins: [createPinia()] } });
+    const checkin = wrapper.findAll("button").find((button) => button.text() === "Check-in");
+    await checkin?.trigger("click");
+    await wrapper.get('input[aria-label="账号 ID"]').setValue("cb-main");
+    await wrapper.get('select[aria-label="Check-in 认证模式"]').setValue("cookie");
+    await wrapper.get('input[aria-label="WorkBuddy Cookie"]').setValue("session=secret");
+    const submit = wrapper.findAll("button").find((button) => button.text().includes("验证并保存"));
+    await submit?.trigger("click");
+    await flushPromises();
+
+    expect(calls[0].url).toBe("/api/admin/auth/codebuddy/checkin");
+    expect(JSON.parse(String(calls[0].init?.body))).toMatchObject({ account_id: "cb-main", mode: "cookie", cookie: "session=secret" });
+    expect(wrapper.text()).not.toContain("session=secret");
+    expect(wrapper.text()).toContain("凭据已验证并保存");
   });
 });
 
