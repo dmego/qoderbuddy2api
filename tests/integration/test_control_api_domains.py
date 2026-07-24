@@ -41,11 +41,24 @@ def test_settings_models_usage_metrics_and_audit_are_secret_safe(tmp_path) -> No
         assert client.get("/api/admin/usage/summary", headers=headers).json()["summary"]["request_count"] == 0
         assert client.get("/api/admin/metrics/accounts", headers=headers).json()["snapshots"] == []
         refreshed = client.post("/api/admin/metrics/refresh", headers=headers)
-        assert refreshed.status_code == 200
-        assert refreshed.json()["status"]["fresh"] == 0
+        assert refreshed.status_code == 202
+        operation_id = refreshed.json()["operation_id"]
+        operation = None
+        for _ in range(20):
+            operation = client.get(
+                f"/api/admin/metrics/refresh/{operation_id}", headers=headers
+            )
+            if operation.json()["status"] != "running":
+                break
+        assert operation is not None
+        assert operation.json()["status"] == "succeeded"
+        assert operation.json()["result"]["fresh"] == 0
         audit = client.get("/api/admin/audit", headers=headers)
         assert audit.status_code == 200
-        assert audit.json()["events"][0]["action"] == "settings.update"
+        assert {event["action"] for event in audit.json()["events"]} >= {
+            "settings.update",
+            "metrics.refresh",
+        }
 
         credentials = client.get("/api/admin/credentials", headers=headers)
         assert credentials.status_code == 200

@@ -49,20 +49,23 @@ class TelemetryRepositoryMixin:
         self,
         *,
         limit: int = 100,
+        offset: int = 0,
         provider: str | None = None,
         account_id: str | None = None,
         model_id: str | None = None,
         started_after: str | None = None,
         started_before: str | None = None,
     ) -> list[dict[str, Any]]:
-        limit = max(1, min(limit, 500))
+        limit = max(1, min(limit, 501))
+        offset = max(0, offset)
         where, params = _telemetry_filters(
             "started_at", provider, account_id, model_id, started_after, started_before
         )
         async with self._operation() as db:
             cursor = await db.execute(
-                f"SELECT * FROM request_events WHERE {where} ORDER BY started_at DESC LIMIT ?",
-                (*params, limit),
+                f"SELECT * FROM request_events WHERE {where} "
+                "ORDER BY started_at DESC, event_id DESC LIMIT ? OFFSET ?",
+                (*params, limit, offset),
             )
             rows = await cursor.fetchall()
         return [self._event_row(row) for row in rows]
@@ -79,6 +82,7 @@ class TelemetryRepositoryMixin:
         self,
         *,
         limit: int = 100,
+        offset: int = 0,
         bucket_kind: str | None = None,
         provider: str | None = None,
         account_id: str | None = None,
@@ -86,7 +90,8 @@ class TelemetryRepositoryMixin:
         started_after: str | None = None,
         started_before: str | None = None,
     ) -> list[dict[str, Any]]:
-        limit = max(1, min(limit, 500))
+        limit = max(1, min(limit, 501))
+        offset = max(0, offset)
         where, params = _telemetry_filters(
             "bucket_start", provider, account_id, model_id, started_after, started_before
         )
@@ -95,8 +100,9 @@ class TelemetryRepositoryMixin:
             params.append(bucket_kind)
         async with self._operation() as db:
             cursor = await db.execute(
-                f"SELECT * FROM usage_rollups WHERE {where} ORDER BY bucket_start DESC LIMIT ?",
-                (*params, limit),
+                f"SELECT * FROM usage_rollups WHERE {where} "
+                "ORDER BY bucket_start DESC, provider, account_id, model_id LIMIT ? OFFSET ?",
+                (*params, limit, offset),
             )
             rows = await cursor.fetchall()
         return [dict(row) for row in rows]
@@ -207,9 +213,21 @@ class TelemetryRepositoryMixin:
                  expires_at, status, last_error),
             )
 
-    async def list_metric_snapshots(self, provider: str | None = None) -> list[dict[str, Any]]:
+    async def list_metric_snapshots(
+        self,
+        provider: str | None = None,
+        account_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         async with self._operation() as db:
-            if provider:
+            if provider and account_id:
+                cursor = await db.execute(
+                    """
+                    SELECT * FROM account_metric_snapshots
+                    WHERE provider=? AND account_id=? ORDER BY metric_kind
+                    """,
+                    (provider, account_id),
+                )
+            elif provider:
                 cursor = await db.execute(
                     "SELECT * FROM account_metric_snapshots WHERE provider=? ORDER BY account_id, metric_kind",
                     (provider,),

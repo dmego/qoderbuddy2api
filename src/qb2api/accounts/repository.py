@@ -16,6 +16,7 @@ from .repo_catalog import CatalogRepositoryMixin
 from .repo_checkin import CheckinRepositoryMixin
 from .repo_control import ControlRepositoryMixin
 from .repo_proxy_keys import ProxyKeyRepositoryMixin
+from .repo_service_events import ServiceEventRepositoryMixin
 from .repo_sessions import SessionRepositoryMixin
 from .repo_telemetry import TelemetryRepositoryMixin
 from .schema import SCHEMA
@@ -26,6 +27,7 @@ __all__ = ["AccountRepository", "CredentialVersionConflict"]
 class AccountRepository(
     AccountRepositoryMixin,
     CatalogRepositoryMixin,
+    ServiceEventRepositoryMixin,
     ControlRepositoryMixin,
     ProxyKeyRepositoryMixin,
     CheckinRepositoryMixin,
@@ -71,7 +73,7 @@ class AccountRepository(
                 "INTEGER NOT NULL DEFAULT 0",
             )
             await self.db.execute(
-                "INSERT INTO schema_meta(key, value) VALUES('schema_version', '3') "
+                "INSERT INTO schema_meta(key, value) VALUES('schema_version', '4') "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
             )
             await self.db.commit()

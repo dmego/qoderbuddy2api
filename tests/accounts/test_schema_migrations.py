@@ -40,5 +40,5 @@ async def test_v2_usage_rollup_table_gets_token_count_columns(tmp_path):
     cursor = await repository.db.execute("PRAGMA table_info(usage_rollups)")
     columns = {row[1] for row in await cursor.fetchall()}
     assert {"token_event_count", "missing_token_count"} <= columns
-    assert await repository.schema_version() == "3"
+    assert await repository.schema_version() == "4"
     await repository.close()
