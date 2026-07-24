@@ -12,6 +12,7 @@ from qb2api.accounts.resolver import CredentialResolver
 from qb2api.accounts.vault import CredentialVault
 from qb2api.config import Settings
 
+from . import executor_helpers
 from .codebuddy import WorkBuddyClient
 from .models import SUCCESS_OUTCOMES, CheckInOutcome, CheckInResult, RefreshResult
 from .qoder import QoderCheckinClient
@@ -35,8 +36,8 @@ class CheckinExecutor:
         self._registry = registry
         self._resolver = resolver
         self._vault = vault
-        self._workbuddy = workbuddy or _workbuddy_client(settings)
-        self._qoder = qoder or _qoder_client(settings)
+        self._workbuddy = workbuddy or executor_helpers.workbuddy_client(settings)
+        self._qoder = qoder or executor_helpers.qoder_client(settings)
 
     @property
     def qoder_client(self) -> QoderCheckinClient:
@@ -64,7 +65,7 @@ class CheckinExecutor:
                 "codebuddy", account_id, "checkin"
             )
         except LookupError:
-            return _missing_credential("codebuddy", account_id)
+            return executor_helpers.missing_credential("codebuddy", account_id)
         mode = credential.mode
         result = await self._workbuddy.checkin(
             account_id=account_id,
@@ -97,22 +98,32 @@ class CheckinExecutor:
         try:
             credential = await self._resolver.credential("qoder", account_id, "checkin")
         except LookupError:
-            return _missing_credential("qoder", account_id)
+            return executor_helpers.missing_credential("qoder", account_id)
         access_token = credential.payload.get("access_token") or credential.payload.get("token")
         if not access_token:
-            return _needs_reauth("qoder", account_id, "missing access_token")
+            return executor_helpers.needs_reauth(
+                "qoder", account_id, "missing access_token"
+            )
         result = await self._qoder.checkin(
             access_token=access_token,
             account_id=account_id,
         )
+        record_reauth = True
+        state_error = "auth_failed"
         refresh_token = credential.payload.get("refresh_token")
         if result.outcome == CheckInOutcome.NEEDS_REAUTH and refresh_token:
-            result = await self._refresh_qoder(
+            result, record_reauth = await self._refresh_qoder(
                 account_id,
                 credential=credential,
                 refresh_token=refresh_token,
             )
-        await self._record_qoder_state(account_id, result)
+            state_error = "refresh_failed"
+        await self._record_qoder_state(
+            account_id,
+            result,
+            record_reauth=record_reauth,
+            state_error=state_error,
+        )
         return result
 
     async def _refresh_qoder(
@@ -121,13 +132,17 @@ class CheckinExecutor:
         *,
         credential: Any,
         refresh_token: str,
-    ) -> CheckInResult:
+    ) -> tuple[CheckInResult, bool]:
         refreshed = await self._qoder.refresh(
             refresh_token=refresh_token,
             account_id=account_id,
         )
         if not refreshed.ok or not refreshed.access_token:
-            return await self._qoder_refresh_failure(account_id, refreshed)
+            return await self._qoder_refresh_failure(
+                account_id,
+                credential=credential,
+                refreshed=refreshed,
+            )
         payload = {**credential.payload, "access_token": refreshed.access_token}
         if refreshed.refresh_token:
             payload["refresh_token"] = refreshed.refresh_token
@@ -139,10 +154,18 @@ class CheckinExecutor:
         latest = await self._resolver.credential("qoder", account_id, "checkin")
         access_token = latest.payload.get("access_token") or latest.payload.get("token")
         if not access_token:
-            return _needs_reauth("qoder", account_id, "missing refreshed access_token")
-        return await self._qoder.checkin(
-            access_token=access_token,
-            account_id=account_id,
+            return (
+                executor_helpers.needs_reauth(
+                    "qoder", account_id, "missing refreshed access_token"
+                ),
+                True,
+            )
+        return (
+            await self._qoder.checkin(
+                access_token=access_token,
+                account_id=account_id,
+            ),
+            True,
         )
 
     async def _commit_qoder_refresh(
@@ -174,28 +197,51 @@ class CheckinExecutor:
     async def _qoder_refresh_failure(
         self,
         account_id: str,
+        *,
+        credential: Any,
         refreshed: RefreshResult,
-    ) -> CheckInResult:
+    ) -> tuple[CheckInResult, bool]:
         outcome = refreshed.outcome or CheckInOutcome.FAILED
-        if outcome in {CheckInOutcome.AUTH_FAILED, CheckInOutcome.NEEDS_REAUTH}:
-            await self._set_purpose(
-                provider="qoder",
-                account_id=account_id,
-                status="needs_reauth",
-                last_error="refresh_failed",
-            )
-        return CheckInResult(
+        result = CheckInResult(
             outcome=outcome,
             provider="qoder",
             account_id=account_id,
             http_status=refreshed.http_status,
             message=refreshed.message or "refresh failed",
         )
+        if outcome not in {CheckInOutcome.AUTH_FAILED, CheckInOutcome.NEEDS_REAUTH}:
+            return result, True
+        self._resolver.invalidate("qoder", account_id, "checkin")
+        try:
+            latest = await self._resolver.credential("qoder", account_id, "checkin")
+        except LookupError:
+            return result, False
+        if latest.credential_version == credential.credential_version:
+            return result, True
+        if latest.credential_version < credential.credential_version:
+            return result, False
+        access_token = latest.payload.get("access_token") or latest.payload.get("token")
+        if not access_token:
+            return result, False
+        logger.info(
+            "qoder stale refresh failed for account %s; retrying winning credential",
+            account_id,
+        )
+        return (
+            await self._qoder.checkin(
+                access_token=access_token,
+                account_id=account_id,
+            ),
+            False,
+        )
 
     async def _record_qoder_state(
         self,
         account_id: str,
         result: CheckInResult,
+        *,
+        record_reauth: bool,
+        state_error: str,
     ) -> None:
         if result.outcome in SUCCESS_OUTCOMES:
             await self._set_purpose(
@@ -205,12 +251,15 @@ class CheckinExecutor:
                 verification_status="verified",
                 success=True,
             )
-        elif result.outcome == CheckInOutcome.NEEDS_REAUTH:
+        elif record_reauth and result.outcome in {
+            CheckInOutcome.AUTH_FAILED,
+            CheckInOutcome.NEEDS_REAUTH,
+        }:
             await self._set_purpose(
                 provider="qoder",
                 account_id=account_id,
                 status="needs_reauth",
-                last_error="auth_failed",
+                last_error=state_error,
             )
 
     async def _set_purpose(
@@ -246,42 +295,3 @@ class CheckinExecutor:
             last_error=last_error,
         )
         await self._registry.rebuild()
-
-
-def _workbuddy_client(settings: Settings) -> WorkBuddyClient:
-    return WorkBuddyClient(
-        base_url=settings.codebuddy_checkin_base,
-        status_path=settings.codebuddy_checkin_status_path,
-        status_method=settings.codebuddy_checkin_status_method,
-        claim_path=settings.codebuddy_checkin_claim_path,
-        claim_method=settings.codebuddy_checkin_claim_method,
-        timeout=float(settings.checkin_request_timeout_seconds),
-    )
-
-
-def _qoder_client(settings: Settings) -> QoderCheckinClient:
-    return QoderCheckinClient(
-        base_url=settings.qoder_checkin_base,
-        status_path=settings.qoder_checkin_status_path,
-        claim_path=settings.qoder_checkin_claim_path,
-        refresh_path=settings.qoder_checkin_refresh_path,
-        timeout=float(settings.checkin_request_timeout_seconds),
-    )
-
-
-def _missing_credential(provider: str, account_id: str) -> CheckInResult:
-    return CheckInResult(
-        outcome=CheckInOutcome.SKIPPED,
-        provider=provider,
-        account_id=account_id,
-        message="no checkin credential",
-    )
-
-
-def _needs_reauth(provider: str, account_id: str, message: str) -> CheckInResult:
-    return CheckInResult(
-        outcome=CheckInOutcome.NEEDS_REAUTH,
-        provider=provider,
-        account_id=account_id,
-        message=message,
-    )

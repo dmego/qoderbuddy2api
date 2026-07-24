@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from cryptography.fernet import Fernet
 
@@ -51,6 +53,32 @@ class _RefreshingQoderClient:
 
     async def close(self) -> None:
         return None
+
+
+class _RacingRefreshQoderClient(_RefreshingQoderClient):
+    def __init__(self, winner_committed: asyncio.Event) -> None:
+        super().__init__(refresh=RefreshResult(), success_token="winner-access")
+        self._winner_committed = winner_committed
+        self._both_refreshing = asyncio.Event()
+        self._refresh_calls = 0
+
+    async def refresh(self, **_values) -> RefreshResult:
+        self._refresh_calls += 1
+        call_number = self._refresh_calls
+        if call_number == 2:
+            self._both_refreshing.set()
+        await self._both_refreshing.wait()
+        if call_number == 1:
+            return RefreshResult(
+                access_token="winner-access",
+                refresh_token="winner-refresh",
+            )
+        await self._winner_committed.wait()
+        return RefreshResult(
+            http_status=401,
+            outcome=CheckInOutcome.NEEDS_REAUTH,
+            message="stale refresh token rejected",
+        )
 
 
 @pytest.fixture
@@ -132,6 +160,69 @@ async def test_cas_conflict_uses_winning_credential(qoder_context) -> None:
         "access_token": "winner-access",
         "refresh_token": "winner-refresh",
     }
+    await executor.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_refresh_failure_retries_committed_winner(qoder_context) -> None:
+    repository, vault, registry = qoder_context
+    winner_committed = asyncio.Event()
+    qoder = _RacingRefreshQoderClient(winner_committed)
+    original_upsert = repository.upsert_credential
+
+    async def tracking_upsert(**values):
+        version = await original_upsert(**values)
+        if values.get("expected_version") is not None:
+            winner_committed.set()
+        return version
+
+    repository.upsert_credential = tracking_upsert  # type: ignore[method-assign]
+    executor = _executor(repository, vault, registry, qoder=qoder)
+
+    results = await asyncio.gather(
+        executor.run("qoder", "qd-main"),
+        executor.run("qoder", "qd-main"),
+    )
+    purposes = await repository.list_purposes("qoder", "qd-main")
+    checkin = next(item for item in purposes if item["purpose"] == "checkin")
+
+    assert [result.outcome for result in results] == [
+        CheckInOutcome.CLAIMED,
+        CheckInOutcome.CLAIMED,
+    ]
+    assert qoder.access_tokens.count("winner-access") == 2
+    assert checkin["status"] == "active"
+    await executor.close()
+
+
+@pytest.mark.asyncio
+async def test_terminal_refresh_auth_failure_records_once(qoder_context) -> None:
+    repository, vault, registry = qoder_context
+    qoder = _RefreshingQoderClient(
+        refresh=RefreshResult(
+            http_status=401,
+            outcome=CheckInOutcome.NEEDS_REAUTH,
+            message="refresh rejected",
+        )
+    )
+    updates: list[dict] = []
+    original_upsert = repository.upsert_purpose
+
+    async def tracking_upsert(**values):
+        updates.append(values.copy())
+        return await original_upsert(**values)
+
+    repository.upsert_purpose = tracking_upsert  # type: ignore[method-assign]
+    executor = _executor(repository, vault, registry, qoder=qoder)
+
+    result = await executor.run("qoder", "qd-main")
+    purposes = await repository.list_purposes("qoder", "qd-main")
+    checkin = next(item for item in purposes if item["purpose"] == "checkin")
+
+    assert result.outcome == CheckInOutcome.NEEDS_REAUTH
+    assert len(updates) == 1
+    assert updates[0]["last_error"] == "refresh_failed"
+    assert checkin["last_error"] == "refresh_failed"
     await executor.close()
 
 

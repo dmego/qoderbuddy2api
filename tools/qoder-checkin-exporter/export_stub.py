@@ -212,11 +212,17 @@ def _write_secure(path: Path, payload: dict[str, Any]) -> None:
     data = (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode()
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        with os.fdopen(descriptor, "wb") as output:
-            output.write(data)
         if sys.platform == "win32":
             _restrict_windows_acl(path)
+        stream = os.fdopen(descriptor, "wb")
+        descriptor = -1
+        with stream as output:
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
     except BaseException:
+        if descriptor >= 0:
+            os.close(descriptor)
         path.unlink(missing_ok=True)
         raise
 

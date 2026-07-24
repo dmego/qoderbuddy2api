@@ -88,3 +88,7 @@ The current profile path, DPAPI/AES format, endpoint behavior, and token fields
 come from local reference source inspection. No real upstream credential was
 used by automated tests, so runtime QD-CHECKIN-01 remains unverified until an
 authorized redacted probe records HTTP status and outcome.
+
+This Task 3 verification ran on macOS. The Windows DPAPI and `icacls` paths are
+covered by platform simulation tests but were not exercised on a real Windows
+host in this round.

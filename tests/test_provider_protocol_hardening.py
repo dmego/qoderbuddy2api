@@ -7,6 +7,7 @@ import json
 from collections.abc import AsyncIterator
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -228,3 +229,62 @@ def test_qoder_exporter_rejects_unsafe_or_incomplete_credentials(
             access_token=access_token,
             refresh_token=refresh_token,
         )
+
+
+def test_qoder_exporter_restricts_windows_acl_before_writing(
+    monkeypatch,
+    tmp_path,
+):
+    module = _exporter_module()
+    output = tmp_path / "qoder-checkin-export.json"
+    payload = module.build_payload(
+        access_token="device-access",
+        refresh_token="device-refresh",
+    )
+    acl_contents: list[bytes] = []
+    fsync_calls: list[int] = []
+    real_fsync = module.os.fsync
+
+    def run_icacls(command, **_kwargs):
+        assert command[0] == "icacls"
+        acl_contents.append(Path(command[1]).read_bytes())
+        return SimpleNamespace(returncode=0)
+
+    def track_fsync(descriptor):
+        fsync_calls.append(descriptor)
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(module, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(module.subprocess, "run", run_icacls)
+    monkeypatch.setattr(module.os, "fsync", track_fsync)
+
+    module._write_secure(output, payload)
+
+    assert acl_contents == [b""]
+    assert json.loads(output.read_text()) == payload
+    assert len(fsync_calls) == 1
+
+
+def test_qoder_exporter_acl_failure_removes_empty_file(monkeypatch, tmp_path):
+    module = _exporter_module()
+    output = tmp_path / "qoder-checkin-export.json"
+    acl_contents: list[bytes] = []
+
+    def reject_icacls(command, **_kwargs):
+        acl_contents.append(Path(command[1]).read_bytes())
+        return SimpleNamespace(returncode=1)
+
+    monkeypatch.setattr(module, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(module.subprocess, "run", reject_icacls)
+
+    with pytest.raises(ValueError, match="failed to restrict output ACL"):
+        module._write_secure(
+            output,
+            module.build_payload(
+                access_token="device-access",
+                refresh_token="device-refresh",
+            ),
+        )
+
+    assert acl_contents == [b""]
+    assert not output.exists()
