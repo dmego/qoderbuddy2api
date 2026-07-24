@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -25,6 +24,9 @@ class _MetricsScheduler:
         await asyncio.sleep(0)
         return {"fresh": 2, "stale": 0, "unknown": 1, "unavailable": 0, "skipped": 0}
 
+    def status_snapshot(self) -> dict[str, object]:
+        return {"enabled": True, "running": False, "backoff_until": None}
+
 
 class _FailingMetricsScheduler:
     async def refresh_once(self) -> dict[str, int]:
@@ -44,18 +46,11 @@ class _BlockingMetricsScheduler:
 class _ManualCheckinService:
     def __init__(self, mode: str) -> None:
         self.mode = mode
-        self.started = asyncio.Event()
 
-    async def run_batch(self, **_kwargs):
+    async def start_batch(self, **_kwargs) -> str:
         if self.mode == "busy":
             raise CheckinInProgressError("busy")
-        if self.mode == "blocking":
-            self.started.set()
-            await asyncio.Event().wait()
-        return SimpleNamespace(
-            run_id="manual-run", status="finished", local_date="2026-07-24",
-            timezone="Asia/Shanghai", results=[],
-        )
+        return "manual-run"
 
 
 class _StatusCheckinService:
@@ -164,33 +159,31 @@ async def test_committed_mutation_audit_survives_derived_refresh_failure(
 
 
 @pytest.mark.asyncio
-async def test_manual_checkin_audits_success_failure_and_cancellation(
+async def test_manual_checkin_start_is_trackable_and_audits_busy_failure(
     management_context,
 ) -> None:
-    app, repository, _refreshes = management_context
+    app, _repository, _refreshes = management_context
     async with _client(app) as client:
         app.state.checkin_service = _ManualCheckinService("success")
         succeeded = await client.post("/api/admin/checkin/run", headers=_headers())
         app.state.checkin_service = _ManualCheckinService("busy")
         failed = await client.post("/api/admin/checkin/run", headers=_headers())
-        blocker = _ManualCheckinService("blocking")
-        app.state.checkin_service = blocker
-        task = asyncio.create_task(
-            client.post("/api/admin/checkin/run", headers=_headers())
+        audit = await client.get(
+            "/api/admin/audit?action=checkin.run",
+            headers=_headers(),
         )
-        await blocker.started.wait()
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
 
-    assert succeeded.status_code == 200
+    assert succeeded.status_code == 202
+    assert succeeded.json() == {
+        "operation_id": "manual-run",
+        "run_id": "manual-run",
+        "status": "running",
+    }
     assert failed.status_code == 409
-    results = [
-        item["result"]
-        for item in await repository.list_audit_events()
-        if item["action"] == "checkin.run"
-    ]
-    assert sorted(results) == ["cancelled", "failed", "succeeded"]
+    events = audit.json()["events"]
+    assert sorted(item["result"] for item in events) == ["failed", "running"]
+    failed_event = next(item for item in events if item["result"] == "failed")
+    assert failed_event["error_code"] == "checkin_run_in_progress"
 
 
 @pytest.mark.asyncio

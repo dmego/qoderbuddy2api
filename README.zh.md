@@ -125,9 +125,10 @@ smoke 使用临时数据目录，验证 Control/Worker 启动、Worker 异常后
 - [Qoder Windows 签到导出器](tools/qoder-checkin-exporter/README.md)
 
 环境变量 token 只是 transient chat slot。需要长期身份、签到或凭据轮换时，通过管理台
-promote/import。Qoder chat PAT 和 Qoder 签到 access/refresh 是不同值。没有可用的
-WorkBuddy 专用导入器时，不要把 Cookie/Bearer 放进 `.env`、URL、浏览器存储或不支持的
-通用接口来绕过。
+promote/import。Qoder chat PAT 和 Qoder 签到 access/refresh 是不同值。WorkBuddy 签到
+凭据从 `/admin/accounts/add` 的 CodeBuddy / WorkBuddy Check-in 流程导入，支持 Bearer、
+Cookie 或 Bearer + Cookie；服务端验证成功或确认当日已签到后才持久化。不要把这些凭据
+放进 `.env`、URL、浏览器存储或不支持的通用接口。
 
 ## 开发验证
 

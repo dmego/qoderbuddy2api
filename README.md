@@ -139,9 +139,11 @@ They delete their artifacts unless `QB2API_SMOKE_KEEP=1` is set.
 Static environment tokens are transient chat slots. Use the Admin UI to
 promote/import an account that needs durable identity, check-in, or credential
 rotation. Qoder chat PATs and Qoder check-in access/refresh credentials are
-different values. Never work around an unavailable WorkBuddy check-in importer
-by storing its cookie/bearer token in `.env`, a URL, browser storage, or a
-generic unsupported endpoint.
+different values. Import WorkBuddy check-in credentials from
+`/admin/accounts/add` with the CodeBuddy / WorkBuddy Check-in workflow. It
+accepts bearer, cookie, or bearer + cookie mode and persists only after the
+server validates success or an already-checked-in result. Never store those
+credentials in `.env`, a URL, browser storage, or a generic endpoint.
 
 ## Development verification
 

@@ -50,6 +50,17 @@ async def checkin_run(request: Request) -> Any:
             skip_already_done=False,
         )
     except CheckinInProgressError:
+        await add_audit(
+            state.account_repo,
+            action="checkin.run",
+            resource_type="checkin",
+            resource_id=None,
+            result="failed",
+            metadata={
+                "error_code": "checkin_run_in_progress",
+                "trigger": "manual",
+            },
+        )
         return JSONResponse(status_code=409, content={"error": "checkin_run_in_progress"})
     await add_audit(
         state.account_repo,

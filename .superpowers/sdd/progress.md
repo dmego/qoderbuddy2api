@@ -27,8 +27,11 @@
   operation feedback.
 - Wave 1 full gate passed: 266 Python tests, 30 frontend tests, Ruff,
   compileall, typecheck, ESLint, production build and `git diff --check`.
-- Wave 2 Tasks 5, 6 and 7 are active in isolated worktrees. Root will merge the
-  three large task commits, rebuild `dist` once and run one Wave 2 gate.
+- Wave 2 Tasks 5, 6 and 7 are integrated. Progress: **7/9 delivery tasks
+  integrated**. Root rebuilt `dist` once and completed the Wave 2 gate.
+- Wave 2 full gate passed: 278 Python tests, 32 frontend tests, Ruff,
+  compileall, typecheck, ESLint, production build, fresh/migrated real process
+  smoke, launchd plist validation and `git diff --check`.
 
 - Expanded unique design baseline: complete and self-reviewed
 - Full implementation plan: complete and self-reviewed
@@ -94,12 +97,8 @@
 
 1. Tasks 1 through 4 are integrated on `codex/multi-account-proxy-checkin`.
 2. Wave 1 full Python/frontend/static/build gate passed on commit `c701bd1`.
-3. Task 5 runs in `.worktrees/task-5-accounts`.
-4. Task 6 runs in `.worktrees/task-6-ops`.
-5. Task 7 runs in `.worktrees/task-7-deployment`.
-6. Merge Tasks 5 through 7, resolve shared contracts centrally, rebuild `dist`
-   once and run the Wave 2 gate.
-7. Execute Task 8 as one behavior-preserving cleanup batch, then Task 9 browser
+3. Tasks 5 through 7 are integrated and the Wave 2 gate passed.
+4. Execute Task 8 as one behavior-preserving cleanup batch, then Task 9 browser
    acceptance and final completion audit.
 
 ## Deliberately deferred at this checkpoint
@@ -128,3 +127,11 @@
 - `c701bd1 fix(console): harden operations feedback`
 - Wave 1 gate at `c701bd1`: 266 Python tests and 30 frontend tests passed;
   Ruff, compileall, typecheck, ESLint, production build and diff check passed.
+- `3887fd3 feat(accounts): close onboarding workflows`
+- `cd79b52 feat(ops): close schedulers and recovery`
+- `3b92098 docs(deploy): add migration and runbooks`
+- Wave 2 integration fix: async check-in contract test alignment and busy-run
+  failure audit with stable `checkin_run_in_progress` error code.
+- Wave 2 gate: 278 Python tests and 32 frontend tests passed; Ruff, compileall,
+  typecheck, ESLint, production build, fresh/migrated smoke, launchd plist and
+  diff checks passed.

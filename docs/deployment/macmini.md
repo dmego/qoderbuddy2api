@@ -159,12 +159,12 @@ Qoder chat PAT 与签到 access/refresh 是不同凭据。Windows 侧使用
 durable Qoder chat account，再通过受支持的专用 Qoder check-in import 提交，服务端 probe
 失败时不能覆盖原凭据。导出文件完成后安全删除。
 
-WorkBuddy 专用 credential import 尚未集成或未通过实际协议验证时，保持该 purpose 未配置
-并记录阻塞；不要把 Cookie/Bearer 塞入 `.env`、URL、浏览器存储或通用 credential API。
-专用导入器可用后，运行顺序应是：先通过授权的脱敏 probe 确认 bearer/cookie 模式和每日
-签到分类；只在 HTTPS 或显式可信 HTTP 的 Admin session 中提交最小字段；由服务端验证
-成功后才启用 check-in；立即删除传输副本。不要从浏览器开发者工具、桌面 profile 或历史
-请求中批量复制无关 Cookie。
+WorkBuddy 凭据通过 `/admin/accounts/add` 的 CodeBuddy / WorkBuddy Check-in 专用流程导入，
+支持 Bearer、Cookie 和 Bearer + Cookie。只在 HTTPS 或显式可信 HTTP 的 Admin session 中
+提交最小字段；服务端会调用受控验证，只有成功或确认当日已签到时才提交加密凭据。该验证
+可能完成当天签到，应使用已授权账号。失败不得覆盖旧凭据。不要把 Cookie/Bearer 塞入
+`.env`、URL、浏览器存储或通用 credential API，也不要从浏览器 profile 或历史请求中批量
+复制无关 Cookie。
 
 验收前完成：
 

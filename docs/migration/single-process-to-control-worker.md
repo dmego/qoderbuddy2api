@@ -68,9 +68,9 @@ PYTHON_BIN=.venv/bin/python bash scripts/smoke_migrated_install.sh
 restart，不接触生产数据。
 
 Qoder chat PAT 与 Qoder check-in access/refresh 必须分开导入；Windows 的最小导出流程见
-[exporter](../../tools/qoder-checkin-exporter/README.md)。没有经过验证的 WorkBuddy 专用
-import workflow 时，不要把 Cookie/Bearer 保存进 `.env`、URL、浏览器存储或不支持的通用
-凭据接口。
+[exporter](../../tools/qoder-checkin-exporter/README.md)。WorkBuddy Bearer/Cookie 从
+`/admin/accounts/add` 的专用 Check-in 流程导入，并在服务端验证成功或确认已签到后提交；
+不要保存到 `.env`、URL、浏览器存储或不支持的通用凭据接口。
 
 迁移完成检查：
 

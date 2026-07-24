@@ -10,7 +10,7 @@ from qb2api.accounts.repository import CredentialVersionConflict
 
 from .dependencies import admin_state, require_admin
 from .mutation_audit import add_audit, audit_operation, refresh_after_mutation
-from .validation import bounded_int, choice_filter, cursor_value, json_object, required_string
+from .validation import bounded_int, choice_filter, cursor_value, json_object
 
 router = APIRouter()
 _ROTATION_FIELDS = frozenset(
