@@ -25,6 +25,7 @@
 .confirm-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; margin-top: 7px; }
 .confirm-actions button { min-height: 38px; padding: 0 14px; }
 .mono { display: block; max-width: 175px; overflow: hidden; text-overflow: ellipsis; }
+.runtime-pending { display: block; margin-top: 6px; color: var(--red); font-size: 10px; }
 
 @media (max-width: 900px) {
   .proxy-key-layout { grid-template-columns: 1fr; }

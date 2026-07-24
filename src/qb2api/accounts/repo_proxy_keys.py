@@ -14,7 +14,13 @@ class ProxyKeyRepositoryMixin:
             cursor = await db.execute(
                 """
                 SELECT key_id, name, scopes_json, enabled, created_at,
-                       last_used_at, expires_at, revoked_at
+                       last_used_at, expires_at, revoked_at,
+                       (
+                           SELECT result FROM audit_events
+                           WHERE resource_type='proxy_key'
+                             AND resource_id=proxy_api_keys.key_id
+                           ORDER BY created_at DESC LIMIT 1
+                       ) AS runtime_apply_status
                 FROM proxy_api_keys ORDER BY created_at DESC
                 """
             )

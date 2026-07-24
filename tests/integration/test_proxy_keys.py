@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from datetime import UTC, datetime, timedelta
 
 from cryptography.fernet import Fernet
@@ -64,9 +63,10 @@ def test_worker_accepts_only_hashes_from_runtime_snapshot(tmp_path) -> None:
     assert admin_rejected.status_code == 401
 
 
-def test_loaded_proxy_key_expires_without_runtime_reload(tmp_path) -> None:
+def test_loaded_proxy_key_expires_without_runtime_reload(tmp_path, monkeypatch) -> None:
     settings = Settings(data_dir=str(tmp_path))
-    expires_at = (datetime.now(UTC) + timedelta(milliseconds=150)).isoformat()
+    expiry = datetime.now(UTC) + timedelta(hours=1)
+    expires_at = expiry.isoformat()
     snapshot = RuntimeSnapshot(
         snapshot_version=1,
         codebuddy_endpoint=settings.codebuddy_endpoint,
@@ -93,7 +93,13 @@ def test_loaded_proxy_key_expires_without_runtime_reload(tmp_path) -> None:
             "/v1/models",
             headers={"Authorization": "Bearer short-lived"},
         )
-        time.sleep(0.2)
+
+        class ExpiredClock:
+            @classmethod
+            def now(cls, tz):
+                return expiry + timedelta(seconds=1)
+
+        monkeypatch.setattr("qb2api.worker.runtime.datetime", ExpiredClock)
         expired = client.get(
             "/v1/models",
             headers={"Authorization": "Bearer short-lived"},
@@ -131,6 +137,10 @@ def test_key_mutations_return_secret_when_runtime_reload_fails(tmp_path) -> None
             f"/api/admin/proxy-keys/{seed.json()['key_id']}/rotate",
             headers=headers,
         )
+        revoked = client.post(
+            f"/api/admin/proxy-keys/{created.json()['key_id']}/revoke",
+            headers=headers,
+        )
         listed = client.get("/api/admin/proxy-keys", headers=headers)
 
     assert created.status_code == 201
@@ -142,9 +152,18 @@ def test_key_mutations_return_secret_when_runtime_reload_fails(tmp_path) -> None
     assert rotated.status_code == 201
     assert rotated.json()["key"].startswith("qb2api_")
     assert rotated.json()["runtime_apply"]["status"] == "failed"
+    assert revoked.status_code == 200
+    assert revoked.json()["status"] == "runtime_pending"
+    assert revoked.json()["runtime_apply"]["status"] == "failed"
     states = {item["key_id"]: item["enabled"] for item in listed.json()["keys"]}
     assert states[seed.json()["key_id"]] is False
     assert states[rotated.json()["key_id"]] is True
+    assert states[created.json()["key_id"]] is False
+    runtime_states = {
+        item["key_id"]: item["runtime_apply_status"]
+        for item in listed.json()["keys"]
+    }
+    assert runtime_states[created.json()["key_id"]] == "failed"
 
 
 def test_proxy_key_rotation_atomically_replaces_active_key(tmp_path) -> None:

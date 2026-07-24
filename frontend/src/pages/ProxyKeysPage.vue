@@ -26,6 +26,7 @@ type ProxyKey = {
   last_used_at: string | null;
   expires_at: string | null;
   revoked_at: string | null;
+  runtime_apply_status?: "succeeded" | "failed" | null;
 };
 
 type RevealedKey = {
@@ -38,6 +39,10 @@ type RevealedKey = {
 };
 
 type PendingAction = { kind: "rotate" | "revoke"; key: ProxyKey };
+type MutationResult = RevealedKey | {
+  status: "succeeded" | "runtime_pending";
+  runtime_apply?: { status: "succeeded" | "failed"; error_code?: string };
+};
 
 const form = reactive({ name: "", expiresAt: "" });
 const revealed = ref<RevealedKey | null>(null);
@@ -86,11 +91,14 @@ async function confirmAction(): Promise<void> {
   busy.value = `${action.kind}:${action.key.key_id}`;
   error.value = "";
   try {
-    const result = await apiRequest<RevealedKey | { status: string }>(
+    const result = await apiRequest<MutationResult>(
       `/proxy-keys/${action.key.key_id}/${action.kind}`,
       { method: "POST" },
     );
     if (action.kind === "rotate") revealKey(result as RevealedKey);
+    if (action.kind === "revoke" && result.runtime_apply?.status === "failed") {
+      error.value = "数据库已撤销该 Key，但 Worker 尚未应用。旧 Key 可能仍有效，请立即在服务页重试 reload。";
+    }
     confirmation.value = null;
     await keyQuery.refetch();
   } catch (cause) {
@@ -231,7 +239,10 @@ function errorMessage(cause: unknown): string {
           <tbody>
             <tr v-for="item in rows" :key="item.key_id">
               <td><strong>{{ item.name }}</strong><small class="mono" :title="item.key_id">{{ item.key_id }}</small></td>
-              <td><StatePill :value="keyStatus(item)" /></td>
+              <td>
+                <StatePill :value="keyStatus(item)" />
+                <small v-if="item.runtime_apply_status === 'failed'" class="runtime-pending">Worker 未同步</small>
+              </td>
               <td><span class="provider-mark">{{ item.scopes.join(", ") }}</span></td>
               <td>{{ formatDate(item.created_at) }}</td>
               <td :class="{ 'text-warning': isExpiringSoon(item) }">{{ formatDate(item.expires_at) }}</td>

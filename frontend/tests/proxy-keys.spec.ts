@@ -61,9 +61,18 @@ describe("ProxyKeysPage", () => {
   });
 
   it("requires confirmation before revoking a live key", async () => {
+    let revoked = false;
     const fetchMock = vi.fn(async (_input: string, init?: RequestInit) => {
       if (init?.method === "POST") {
-        return { ok: true, json: async () => ({ status: "succeeded", key_id: "pk-live" }) };
+        revoked = true;
+        return {
+          ok: true,
+          json: async () => ({
+            status: "runtime_pending",
+            key_id: "pk-live",
+            runtime_apply: { status: "failed", error_code: "runtime_reload_failed" },
+          }),
+        };
       }
       return {
         ok: true,
@@ -72,11 +81,12 @@ describe("ProxyKeysPage", () => {
             key_id: "pk-live",
             name: "Claude Code",
             scopes: ["proxy"],
-            enabled: true,
+            enabled: !revoked,
             created_at: "2026-07-24T00:00:00+00:00",
             last_used_at: null,
             expires_at: null,
-            revoked_at: null,
+            revoked_at: revoked ? "2026-07-24T01:00:00+00:00" : null,
+            runtime_apply_status: revoked ? "failed" : "succeeded",
           }],
         }),
       };
@@ -94,5 +104,7 @@ describe("ProxyKeysPage", () => {
     await wrapper.get("[data-test='confirm-destructive']").trigger("click");
     await flushPromises();
     expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(wrapper.text()).toContain("旧 Key 可能仍有效");
+    expect(wrapper.text()).toContain("Worker 未同步");
   });
 });
