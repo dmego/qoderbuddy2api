@@ -1,9 +1,9 @@
 """SSE parsing and stream aggregation."""
 
 import json
-import time
 import logging
-from typing import AsyncIterator
+import time
+from collections.abc import AsyncIterator
 
 logger = logging.getLogger("qb2api")
 

@@ -1,52 +1,53 @@
 # 2api 统一账号池、多账号代理与双端自动签到重构设计
 
-> 状态：设计基线，未进入代码实现
+> 状态：2026-07-23 扩展版设计基线，已获确认，进入分阶段实现
 >
-> 审查状态：已于 2026-07-22 完成两轮外部设计审查吸收；实现前架构契约已闭合，仍须先完成 Phase 0 回归基线与真实账号 Spike
+> 审查状态：吸收 2026-07-22 的架构审查，并加入完整本地控制台、Supervisor、Token/用量/积分监控设计；实现仍须保留真实协议 Spike 门禁
 >
-> 适用部署：远程 Mac Mini 单实例常驻服务，客户端通过 OpenAI / Anthropic 兼容接口访问
+> 适用部署：Mac Mini 本地或 Tailscale 远程访问；常驻 Control Plane 管理独立 Proxy Worker
 >
-> 本文是 `docs/design` 的唯一设计方案。它合并了 CodeBuddy OAuth 池、WorkBuddy 签到和 Mac Mini 双端代理/签到三份设计，并以当前 `2api` 与本地参考工程源码为事实依据。
+> 本文是 `docs/design` 的唯一设计方案。它合并了 CodeBuddy OAuth 池、WorkBuddy 签到、Qoder 双凭证、完整管理台和服务生命周期设计，并以当前 `2api`、本地参考工程和 2026-07-23 的 CLIProxyAPI/NewAPI/Sub2API/CPA-Dashboard 调研为事实依据。
 
 ## 1. 执行摘要
 
 ### 1.1 目标
 
-把当前只支持环境变量静态 Token 的 `2api`，重构为一个运行在 Mac Mini 上的统一服务：
+把当前只支持环境变量静态 Token 的 `2api`，重构为一个运行在 Mac Mini 上的统一控制台和代理系统：
 
 ```text
-2api = OpenAI/Anthropic Proxy
-     + CodeBuddy 多账号代理池
-     + Qoder 多账号代理池
-     + CodeBuddy/WorkBuddy 自动签到
-     + Qoder 自动签到
-     + 本地管理 UI
-     + 统一账号、凭据、状态和运维 API
+2api Control Plane = 管理 UI + 管理 API + SQLite + Supervisor
+2api Proxy Worker  = OpenAI/Anthropic Proxy + Provider Pools
+Shared domain      = accounts + credentials + models + usage + quotas + check-in
 ```
 
-客户端只需要访问 Mac Mini 的 `/v1` 或 Anthropic 兼容端点，日常不再打开 CodeBuddy、WorkBuddy 或 QoderWork。账号登录、凭据刷新、代理轮询和每日签到都由同一个 FastAPI 进程编排。
+客户端只需要访问 Worker 的 `/v1` 或 Anthropic 兼容端点，日常不再打开 CodeBuddy、WorkBuddy 或 QoderWork。浏览器访问 Control Plane 管理账号登录、凭据、模型、服务生命周期、Token 用量、积分快照和每日签到。停止 Worker 不会停止管理台。
 
 ### 1.2 核心决策
 
 | 决策 | 结论 |
 | --- | --- |
-| 服务形态 | 保留 Python/FastAPI `2api` 为唯一常驻服务，不重写 Rust 客户端，不依赖第二个常驻进程 |
-| 管理入口 | FastAPI 同源静态 Web UI + `/api/admin/*` 管理 API |
+| 服务形态 | Python/FastAPI Control Plane 常驻；Proxy Worker 为独立受控进程，不重写 Rust 客户端 |
+| 管理入口 | Control Plane 同源静态 Vue SPA + `/api/admin/*` 和 `/api/control/*` |
+| 生命周期 | `ServiceSupervisor` 以 PID、启动时间、owner、内部 token 和进程组安全控制 Worker；禁止按端口盲杀 |
+| Worker 边界 | Worker 只监听 loopback/internal port，Control Plane 通过内部健康/RPC 契约读取状态和下发 reload |
+| 前端技术 | Vue 3 + TypeScript + Vite + Pinia + Vue Router + TanStack Vue Query + ECharts + Lucide |
 | 凭据边界 | 前端发起登录或提交导入，原始 Bearer、Refresh Token、Cookie 只在后端和加密存储中出现 |
 | CodeBuddy chat | `ck_`、OAuth Bearer、手动 Bearer 进入同一个 CodeBuddy 代理账号池 |
 | WorkBuddy/CodeBuddy 签到 | 复用统一账号 ID，但签到凭据、状态、失败域独立于 chat |
 | Qoder chat | 继续使用现有 `pt_` PAT + COSY session 代理链 |
 | Qoder check-in | 默认使用桌面会话 access/refresh 双凭证；不假设 `pt_` 可以直接签到 |
-| 调度器 | 一个进程内 `asyncio` 调度器；按账号串行执行，单号失败不阻断其他账号 |
-| 持久化 | SQLite 保存账号元数据、purpose 级状态和签到结果；凭据字段使用 `cryptography` 加密 |
+| 调度器 | Control Plane 内独立 Check-inScheduler、MetricsScheduler 和 UsageRollupScheduler；按账号串行执行，单号失败不阻断其他账号 |
+| 持久化 | SQLite 保存账号、purpose、配置、模型目录、Proxy Key、服务状态、审计、请求事件、用量汇总和积分快照；凭据字段使用 `cryptography` 加密 |
 | 远程安全 | Proxy 与 Admin 使用不同 Key；非 loopback 管理面必须配置 Admin Key、凭据加密主密钥和 HTTPS，优先通过 Tailscale Serve/反向代理或 SSH loopback 访问 |
-| 外部契约 | WorkBuddy 路径/鉴权、Qoder `pt_` 是否可签到、refresh 轮换规则必须通过真实账号 Spike 后才可标记为已验证 |
+| 外部契约 | WorkBuddy 路径/鉴权、Qoder `pt_` 是否可签到、refresh 轮换和积分查询必须通过真实账号 Spike 后才可标记为已验证 |
 
 ### 1.3 非目标
 
 - 不把浏览器 Cookie 自动抓取误包装成普通网页能力。跨域 `HttpOnly Cookie` 不能由前端 JavaScript 读取。
 - 不把 Cookie、Bearer 或 Refresh Token 返回给浏览器、写入 URL、LocalStorage、普通日志或 `/api/config`。
 - 不做验证码、CAPTCHA、扫码风控绕过、设备伪造、账号限制规避或多实例分布式控制平面。
+- 不做普通用户注册、订阅套餐、充值、支付、余额计费、兑换码和商业化分发；本阶段是单管理员本地控制台。
+- 不把 Control Plane 自己的进程停止按钮伪装成可恢复的“服务停止”；控制面生命周期由 launchd/systemd/人工维护，页面只控制 Proxy Worker。
 - 不把 QoderWork 桌面 profile 替换、窗口切换、Tauri UI 或坐标点击带进 `2api` 常驻服务。
 - 不把签到请求放进模型 `DynamicProviderPool`，也不因为签到失败盲目冷却聊天 slot。
 - 不在没有实测证据时宣称 OAuth refresh、Qoder PAT 签到或 WorkBuddy Cookie 自动续期一定可用。
@@ -74,6 +75,17 @@
 | [`workbuddy_api`](https://github.com/akise07/workbuddy_api) | 本地 `/Users/dmego/vibeCoding/workbuddy_api`，clean，`d5de25a` | 单账号 CodeBuddy OAuth device/plugin flow；没有多账号池、签到客户端和 refresh 实现 | auth state/token URL、请求头、pending `11217`、Token 字段解析、JWT user/exp 提取思路 |
 | [`qoderwork-account-switcher`](https://github.com/963072676/qoderwork-account-switcher) | 本地 `/Users/dmego/vibeCoding/qoderwork-account-switcher`，clean，`v1.1.0`，`022c1d4` | Tauri 桌面账号切换器；`quota.rs` 已实现 Qoder OpenAPI status/claim/refresh 和 COSY 额度调用 | Qoder HTTP 路径、Bearer 头、refresh 响应容错、`auth-v2.dat` 数据形状、账号摘要字段 |
 | [`qoderwork_checkin`](https://github.com/GitOfUser/qoderwork_checkin) | public Python，Windows 专用 | `pyautogui` 按 2560x1440 坐标点击，要求 QoderWork 已启动；不能作为 Mac Mini 无头主路径 | 只作为“没有 HTTP 契约时的退化证据”，不移植实现 |
+
+2026-07-23 新增管理台参考：
+
+| 工程 | 观察到的结构 | 允许吸收的内容 | 明确不复制 |
+| --- | --- | --- | --- |
+| [`CLIProxyAPI`](https://github.com/router-for-me/CLIProxyAPI) | Management API、远程管理开关、API key、auth manager、配置/auth watcher、provider model registry、request-log/debug 开关 | 管理 API 与代理执行解耦、热加载、模型注册、认证来源审计 | 不把 Go 管理中心源码或外部统计服务嵌入 Python；不把远程管理默认打开 |
+| [`CPA-Dashboard`](https://github.com/dongshuyan/CPA-Dashboard) | 服务控制/账号管理分栏，Provider 筛选，配额刷新，失效账号高亮，批量删除和卡片化账号详情 | 账号健康矩阵、配额刷新、批量动作、服务控制入口 | 不复制 emoji 图标、不可访问的深色对比和超长账号卡片布局 |
+| [`NewAPI`](https://github.com/QuantumNous/new-api) | Dashboard、Channels、Models、Keys、Usage Logs、System Info；设置按 auth/billing/content/models/operations/security/site 分组 | 域分组、可筛选表格、用量日志、系统信息、配置来源和权限路由 | 不引入用户计费、支付、套餐、兑换码和普通用户门户 |
+| [`Sub2API`](https://github.com/Wei-Shaw/sub2api) | Vue + Vite；admin accounts/channels/usage/ops/settings/audit/backup；DataTable、懒加载、自动刷新、错误详情、运行时设置 | Vue 管理台信息架构、DataTable/筛选/抽屉/确认框、Ops 图表和备份工作流 | 不引入 PostgreSQL/Redis/支付系统；本地单管理员仍使用 SQLite |
+
+调研日期为 2026-07-23；源码采用 shallow clone 读取，管理台最终实现必须以 2api 自身权限、数据和安全边界为准。
 
 参考工程只提供行为和协议线索，不把第三方代码整文件复制到 `2api`。实现须保留本地路径、参考 commit 和实测日期，方便协议变化时追溯。
 
@@ -238,46 +250,85 @@ QD-CHECKIN-01 完成前，Qoder 模型同时允许 `chat.pat` 和 `checkin.acces
 ### 4.1 逻辑视图
 
 ```text
-Cursor / Claude Code / Codex
-              |
-     OpenAI / Anthropic API
-              v
-2api @ Mac Mini
-  |-- Admin UI + Admin API + Admin Session
-  |-- AccountRegistry
-  |     |-- CredentialVault
-  |     |-- AccountRepository
-  |     `-- Capability Matrix
-  |-- CredentialResolver
-  |-- Proxy Pools
-  |     |-- CodeBuddy chat
-  |     `-- Qoder chat/COSY
-  `-- CheckinService + CheckinScheduler
-        |-- WorkBuddy/CodeBuddy
-        `-- Qoder status/claim/refresh
+                         Cursor / Claude Code / Codex
+                                      |
+                           OpenAI / Anthropic API
+                                      v
+  +-------------------------------------------------------------------+
+  | Control Plane (persistent, admin-only)                            |
+  |                                                                   |
+  |  Vue SPA + FastAPI Admin API + SQLite + Credential Vault          |
+  |  Account/Model/Usage/Check-in repositories                        |
+  |  MetricsScheduler + UsageRollupScheduler + CheckinScheduler       |
+  |  ServiceSupervisor  <---- loopback control RPC ----> Worker       |
+  +-------------------------------------------------------------------+
+                                      |
+                            launch / stop / reload
+                                      v
+  +-------------------------------------------------------------------+
+  | Proxy Worker (independent, loopback bind only)                    |
+  |                                                                   |
+  |  OpenAI / Anthropic compatibility API                             |
+  |  DynamicProviderPool(codebuddy, 0..N)                             |
+  |  DynamicProviderPool(qoder, 0..N)                                 |
+  |  request telemetry + model catalog snapshot                       |
+  +-------------------------------------------------------------------+
+                                      |
+                  CodeBuddy / WorkBuddy / Qoder upstreams
 ```
 
 ### 4.2 责任边界
 
 | 组件 | 负责 | 不负责 |
 | --- | --- | --- |
-| `AccountRegistry` | 账号元数据、启停、能力、稳定 ID、状态汇总 | 直接发上游 HTTP |
-| `CredentialVault` | 加密保存/读取 Secret、原子更新、权限检查 | 决定业务能力 |
-| `CredentialResolver` | 按 provider/account/purpose 返回临时凭据，单飞 refresh | 返回凭据给 UI |
-| `ProxyPool` | chat 账号选择、冷却、401 重试和动态重建 | 签到顺序或幂等 |
-| `CheckinService` | 单账号/批次签到、分类、落库、隔离 | 计算下一次时间 |
+| `ControlPlaneApp` | 管理 API、SPA、SQLite、凭据、审计、调度、Supervisor；即使 Worker 停止也可访问 | 处理模型请求、直接代理上游 chat |
+| `ProxyWorkerApp` | 兼容 OpenAI/Anthropic API、Provider Pool、请求级 telemetry、模型快照 | 修改账号/凭据、签到、启动其他进程 |
+| `ServiceSupervisor` | 校验 Worker 命令、启动/停止/重启/健康检查、PID 与进程组保护、内部 token 轮换 | 持有上游凭据或代理请求 |
+| `AccountRegistry` | 账号元数据、purpose 状态、稳定 ID、能力摘要、动态快照 | 直接发上游 HTTP |
+| `CredentialVault` | 加密保存/读取 Secret、版本化、原子更新、权限检查 | 决定业务能力、向 UI 返回 Secret |
+| `CredentialResolver` | 按 provider/account/purpose 返回临时凭据，单飞 refresh、缓存失效 | 返回凭据给浏览器 |
+| `DynamicProviderPool` | chat 账号选择、冷却、0..N slot 热替换、未输出首 chunk 前 failover | 签到顺序、管理 API、流式开始后的重放 |
+| `CheckinService` | 单账号/批次签到、分类、落库、账号隔离 | 计算下一次调度时间 |
 | `CheckinScheduler` | 时区、每日窗口、补偿、批次锁、生命周期 | 构造 HTTP 请求 |
-| `OAuthBroker` | CodeBuddy auth HTTP 和 flow 状态 | 多账号轮询或 UI 渲染 |
-| `Admin UI` | 展示脱敏状态、触发动作、收集输入 | 读取跨域 Cookie 或保存 Secret |
+| `MetricsScheduler` | 周期性 token/积分/配额刷新、限频、错误退避 | 修改凭据或触发代理请求 |
+| `UsageRollupScheduler` | 请求事件聚合、日/月统计、保留策略 | 生成账单、扣费、外部计费 |
+| `OAuthBroker` | CodeBuddy OAuth HTTP 和 flow 状态 | 多账号轮询或 UI 渲染 |
+| `Admin UI` | 展示脱敏状态、触发动作、收集输入、服务控制 | 读取跨域 Cookie、保存明文 Secret、执行 shell |
 
-### 4.3 单进程与并发边界
+### 4.3 Supervisor 生命周期与 Worker 状态机
 
-- 一个 FastAPI 进程只启动一个 Registry、一个 Scheduler 和一组 Provider pool。
-- Proxy 可并发；单账号 Token refresh 由 purpose 级 `asyncio.Lock` 单飞。
-- 签到批次全局互斥；账号默认串行并带 jitter。
-- 每个 provider 家族始终注册一个支持 0..N slot 的 `DynamicProviderPool`；热更新只替换不可变 active snapshot。
-- slot 以 `(provider, account_id)` 为稳定键；退役 slot 停止接受新请求，保留到 in-flight lease 归零后再关闭。
-- 本版不做跨进程锁、leader election、租约或分布式状态。
+Control Plane 是唯一常驻服务；Worker 是受其管理的短生命周期子进程。Supervisor 不根据端口盲杀进程，而是维护并校验以下运行记录：`worker_pid`、`process_start_time`、`process_group_id`、`owner_instance_id`、`internal_auth_version`、`desired_state`、`observed_state`、`last_exit_code`、`last_error`。
+
+```text
+STOPPED -> STARTING -> HEALTHY -> STOPPING -> STOPPED
+              |           |
+              v           v
+            FAILED <--- DEGRADED
+```
+
+- `STARTING` 必须先完成内部 token 握手、版本兼容检查、模型快照加载和 `/internal/health/ready`，否则进入 `FAILED` 并保留诊断信息。
+- `HEALTHY` 只表示 Worker 可接受请求；上游账号全部不可用时为 `DEGRADED`，仍允许健康检查和管理 API 读取状态。
+- `STOPPING` 先将 Worker 标记为 draining，拒绝新请求，等待 in-flight 请求和流式响应归零；达到可配置 grace period 后发送 SIGTERM，超时才向已验证的同一进程组发送 SIGKILL。
+- 判断目标进程必须同时匹配 PID、启动时间、owner instance id 和内部握手 token。任何字段不匹配都不得发送终止信号。
+- `start` 在已有同一 owner 的健康 Worker 时幂等返回；`restart` 采用 drain -> stop -> start；`reload` 只替换凭据/模型快照，不改变进程 PID，失败时保留旧快照。
+- UI 只能控制 Worker；Control Plane 自身由 launchd/systemd 或人工运维管理，不能提供“停止管理台”按钮。
+
+### 4.4 Control Plane 与 Worker 边界
+
+- Worker 只绑定 `127.0.0.1:<worker_port>`，生产环境不直接暴露到 LAN/Tailscale；远程访问统一进入 Control Plane 的管理会话。
+- Control Plane 启动 Worker 时通过一次性内部 token 和受限环境变量传递只读配置位置。Worker 通过内部 RPC 请求经版本化的 `runtime_snapshot`，不直接打开管理 API 的 session cookie。
+- Worker 的 `/internal/*` 路由只接受 loopback 请求和内部 token；不得复用 `QB2API_ADMIN_KEY` 或 `QB2API_PROXY_API_KEY`。
+- Proxy API Key 只进入 Worker 的 OpenAI/Anthropic 路由；Admin Key 只进入 Control Plane 的管理会话。旧 `QB2API_API_KEY` 兼容期只能映射为 Proxy 权限。
+- Worker 将 request event、模型发现结果、账号健康结果发送给 Control Plane；发送失败不能阻塞模型响应，内存队列满时按保留策略丢弃低优先级 telemetry 并计数。
+
+### 4.5 并发、缓存与安全边界
+
+- SQLite 访问统一通过异步 Repository；实现可选 `aiosqlite` 或 `asyncio.to_thread`，不得在请求协程直接执行同步连接和解密。
+- SQLite 开启 `WAL`、`busy_timeout`、`foreign_keys=ON`；写事务只包含单个领域操作，跨表更新使用显式事务。
+- 凭据缓存键为 `(provider, account_id, purpose, credential_version)`，轮换或禁用后按版本失效；SSE 请求不得为每个 chunk 查询 SQLite。
+- Proxy 并发；同一账号同一 purpose 的 refresh 由单飞锁保护。签到批次全局互斥，账号默认串行并带 jitter。
+- 每个 provider 始终注册一个支持 0..N slot 的 `DynamicProviderPool`；slot 以 `(provider, account_id)` 为稳定键。退役 slot 停止接收新请求，在 in-flight 归零后关闭；无法可靠跟踪时至少保留至 Worker 退出。
+- 只有向下游输出第一个 chunk 之前允许 refresh/failover；已输出任意 chunk 后发生异常，只记录失败并终止当前流，禁止切换账号重放。
 
 ## 5. 统一账号模型
 
@@ -426,9 +477,69 @@ oauth_flows
 admin_sessions
   session_hash, csrf_hash, created_at, last_seen_at, expires_at, revoked_at
   PK(session_hash)
+
+runtime_settings
+  key, value_json, value_version, source, updated_at, updated_by
+  PK(key)
+
+service_runtime
+  service_name, desired_state, observed_state, worker_pid,
+  process_start_time, process_group_id, owner_instance_id,
+  internal_auth_version, started_at, stopped_at, last_health_at,
+  last_exit_code, last_error, updated_at
+  PK(service_name)
+
+proxy_api_keys
+  key_id, name, key_hash, scopes_json, enabled, created_at,
+  last_used_at, expires_at, revoked_at
+  PK(key_id)
+
+model_catalog
+  provider, model_id, display_name, capabilities_json, source,
+  enabled, last_seen_at, metadata_json
+  PK(provider, model_id)
+
+request_events
+  event_id, request_id, provider, account_id, model_id, protocol,
+  status, http_status, input_tokens, output_tokens, latency_ms,
+  started_at, finished_at, error_code, redacted_error
+  PK(event_id)
+
+usage_rollups
+  bucket_start, bucket_kind, provider, account_id, model_id,
+  request_count, success_count, error_count, input_tokens,
+  output_tokens, latency_p50_ms, latency_p95_ms, updated_at
+  PK(bucket_start, bucket_kind, provider, account_id, model_id)
+
+account_metric_snapshots
+  provider, account_id, metric_kind, metric_value_json,
+  observed_at, expires_at, status, last_error
+  PK(provider, account_id, metric_kind)
+
+audit_events
+  event_id, actor_type, actor_id, action, resource_type,
+  resource_id, result, metadata_json, created_at
+  PK(event_id)
+
+backup_runs
+  backup_id, path, schema_version, started_at, finished_at,
+  status, size_bytes, sha256, error_message
+  PK(backup_id)
 ```
 
 OAuth 原始 state 只在进程内或加密保存，数据库最多保存 hash，防止重放。管理 session 和 CSRF 原值只存在于 cookie/响应及进程内，数据库只保存 hash；Admin Key 轮换时撤销全部 session。
+
+表约束和保留策略：
+
+- `runtime_settings` 只保存经过 schema 校验的非 Secret 运行参数。Admin UI 修改设置时以 `value_version` 做乐观并发控制，提交后由 Supervisor 原子触发 scheduler reschedule 或 Worker reload；环境变量仍可作为只读 fallback，不能形成双写。
+- `service_runtime` 是 Supervisor 的事实记录，不用端口扫描结果替代。启动、停止、重启和异常退出都写审计事件；Worker 健康探测只更新 `last_health_at` 和 observed state。
+- `proxy_api_keys` 保存独立于 Admin Key 的 hash/scopes。MVP 默认只创建一个 Proxy Key，但 schema 从第一天支持轮换、撤销和过期；数据库不保存可逆 Key。
+- `model_catalog` 是 Worker 发现结果和管理员覆盖的合并视图。`source=provider|manual|definition`，模型禁用只影响路由，不删除历史 usage。
+- `request_events` 只保存脱敏 request id、模型、状态、耗时和 token 数。请求正文、Authorization、Cookie、Prompt、响应内容和上游原始错误禁止落库。事件写入失败不能让模型请求失败。
+- `usage_rollups` 从 request events 批量聚合；默认保留 90 天明细、24 个月日汇总，超期由后台清理任务分批删除并记录审计。
+- `account_metric_snapshots.metric_kind` 至少包含 `token_status`、`points`、`quota`、`checkin_summary`。积分/配额未知或过期时保留 `status=stale|unavailable`，不能伪造 0。
+- `audit_events` 只记录 actor、动作、资源复合 ID、结果和脱敏元数据。任何 Secret、请求头、完整 URL query 和上游响应原文都属于禁止字段。
+- 备份是显式管理动作，数据库和凭据主密钥必须分开备份；`backup_runs` 只记录路径、哈希和状态，不把密钥打包进 HTTP 下载响应。
 
 ### 6.2 SQLite 异步边界、事务与缓存
 
@@ -547,32 +658,86 @@ Admin Key 只从部署 Secret/环境读取，不保存进数据库。服务每�
 
 ### 7.3 UI 页面
 
-MVP 使用 FastAPI 同源静态资源，避免第二个 Node 常驻服务。第一阶段采用原生 HTML/CSS/ES modules；只有交互复杂度真实超过静态页面时才引入 Vite/React。匿名打开只显示登录页；登录后才调用管理 API 加载账号数据。
+管理台采用 `Vue 3 + TypeScript + Vite + Pinia + Vue Router + TanStack Vue Query + ECharts + Lucide`。Vite 仅用于构建，生产部署仍由 Control Plane 同源提供静态产物，不增加 Node 常驻进程。匿名访问只加载登录 shell；登录后才请求管理数据。
+
+视觉定位是桌面优先的深色运维工作台，不是极简营销页。左侧固定主导航，中间为高密度工作区，右侧可展开全局运行状态 rail；数据表、趋势图、健康矩阵和详情抽屉是主要信息形态。避免装饰性大卡片、渐变背景、夸张标题、嵌套卡片和纯色单一配色。状态颜色必须同时配合文字/图标，不能只靠颜色传达。
 
 ```text
-/admin
-  Proxy 可用账号、今日签到、下次调度、needs_reauth
+/admin/login
+  Admin Key 登录、会话状态、HTTPS/loopback 安全提示
+
+/admin/overview
+  Worker 状态、可用账号、模型数、今日请求/token、错误率、积分摘要
+  24h 请求/token 趋势、Provider 健康矩阵、近期签到和异常事件
+
+/admin/service
+  Worker start/stop/restart/reload、desired/observed state、PID/uptime/version
+  健康检查、启动日志尾部、draining/in-flight、最近退出原因
 
 /admin/accounts
-  provider、来源、能力、Proxy/签到状态、过期时间
-  启停、删除、重新登录、刷新、探测能力
+  provider/source/status/purpose/标签筛选、批量启停/探测/签到
+  账号表格、token 状态、积分/配额、最近请求/签到、错误摘要
+
+/admin/accounts/:provider/:accountId
+  Overview、Credentials、Proxy health、Quota/points、Check-in、Events
+  label/目的启停、重新登录、刷新、promotion、删除、历史趋势
 
 /admin/accounts/add
-  CodeBuddy OAuth / 手动 Bearer
-  Qoder PAT / check-in access+refresh
-  WorkBuddy Cookie/身份头（仅实测需要时显示）
+  CodeBuddy OAuth/manual Bearer、Qoder PAT、Qoder check-in access+refresh
+  WorkBuddy Cookie/身份头（仅实测需要时显示）；分步验证后才提交
+
+/admin/credentials
+  凭据类型、版本、过期时间、refresh 能力、验证状态、最后轮换
+  只允许轮换/撤销/重新授权，永不展示原文或 fingerprint
+
+/admin/models
+  Provider/模型/能力/来源/可用账号/状态；启停、探测、刷新目录
+  模型详情含 usage、延迟、错误率和路由账号，不编辑任意上游 URL
+
+/admin/usage
+  request/token/success/error/latency 趋势，按时间、Provider、模型、账号筛选
+  事件表和 request detail 只显示脱敏元数据，可导出 CSV 汇总
 
 /admin/checkin
-  今日批次、每账号结果、手动全量/指定执行
+  scheduler 状态、下次执行、今日批次、账号结果、积分变化
+  手动全量/指定执行、失败重试、历史 runs/attempts、needs_reauth
 
 /admin/settings
-  只读显示有效调度时间、时区、重试和功能开关
-  标记 source=env/default，并提示修改环境变量后重启
+  General、Proxy、Scheduler、Monitoring、Retention、Security、Backup
+  显示 value/source/apply-mode/version；支持验证后保存与原子应用
+
+/admin/audit
+  管理登录、账号/凭据、服务控制、设置、备份操作的脱敏审计记录
 ```
 
-MVP 不提供 runtime settings 写入：没有 settings 表、没有 `PATCH /api/admin/settings`，Scheduler 只在 lifespan 启动时读取经过校验的环境配置。这样避免出现“UI 已保存但 Scheduler 仍按旧时间运行”的双配置源。未来若确需热更新，必须另行设计 `runtime_settings`、版本化校验和原子 reschedule，不在本重构中暗含实现。
+全局交互规则：
 
-### 7.4 CodeBuddy OAuth UI 流程
+- Header 固定显示 Worker 状态、活动请求、下一次签到和会话剩余时间；状态变化通过 5 秒轮询或 SSE 更新，不要求手动刷新整页。
+- start/stop/restart、删除账号、撤销凭据、恢复备份属于危险动作，必须有目标、影响和不可逆性确认；按钮在请求期间锁定并显示真实进度。
+- 列表页提供搜索、Provider/status/purpose 筛选、列显示、分页、空状态、错误状态、骨架屏、批量选择和详情抽屉。表格在窄屏切为重点字段列表，移动端只保留查看、签到、重新授权等必要动作。
+- 任何 mutation 都显示明确的成功/失败反馈并使相关 Query 精确失效；不能乐观伪造 Worker 已启动、设置已生效或凭据已验证。
+- 表单错误与字段关联，异步流程可恢复；OAuth poll、Worker starting/draining、签到批次和备份过程离开页面后仍可从服务端状态恢复。
+- 图表必须有文字摘要、可访问 legend 和无数据状态。数值统一显示采样时间；积分/配额过期标记为 stale，不显示为 0。
+- 使用 Lucide 图标和 tooltip；图标按钮有 `aria-label`。键盘可完成导航、筛选、对话框和抽屉操作，焦点可见，正文/控件达到 WCAG AA 对比度。
+
+### 7.4 运行设置编辑与应用
+
+`GET /api/admin/settings` 返回 schema 化设置组，`PATCH /api/admin/settings` 只接受白名单 key、期望 `value_version` 和经过类型/范围校验的值。每项标明：
+
+```json
+{
+  "key": "checkin.schedule.at",
+  "value": "00:10",
+  "source": "runtime",
+  "value_version": 4,
+  "apply_mode": "scheduler_reschedule",
+  "restart_required": false
+}
+```
+
+应用模式固定为 `immediate`、`scheduler_reschedule`、`worker_reload`、`worker_restart`、`control_restart_required`。Control Plane 先提交新版本，再执行应用动作；应用失败时保留新值但标记 `pending_apply/error`，不得向 UI 报告已生效。对于 scheduler reschedule，先构建并校验新 scheduler，再原子替换旧实例；对于 Worker reload/restart，由 Supervisor 返回 operation id，UI 跟踪到 terminal state。
+
+### 7.5 CodeBuddy OAuth UI 流程
 
 ```text
 UI -> POST /api/admin/auth/codebuddy/start {label}
@@ -588,7 +753,7 @@ UI <- AccountView，不含 token
 
 flow 有 15 分钟 TTL、一次性消费、state hash 和并发 poll 限制。后台不读取腾讯页面 Cookie。
 
-### 7.5 上游凭据 Cookie 边界
+### 7.6 上游凭据 Cookie 边界
 
 普通 Web UI 无法跨域读取 `workbuddy.cn` 的 `HttpOnly Cookie`，因此：
 
@@ -874,6 +1039,13 @@ CHECKIN_JITTER_MIN_SECONDS=3
 CHECKIN_JITTER_MAX_SECONDS=10
 CHECKIN_REQUEST_TIMEOUT_SECONDS=15
 CHECKIN_RETRY_LIMIT=2
+METRICS_ENABLED=true
+METRICS_REFRESH_INTERVAL_SECONDS=900
+USAGE_ROLLUP_INTERVAL_SECONDS=60
+USAGE_DETAIL_RETENTION_DAYS=90
+USAGE_ROLLUP_RETENTION_MONTHS=24
+SERVICE_WORKER_PORT=10001
+SERVICE_WORKER_DRAIN_TIMEOUT_SECONDS=330
 ```
 
 使用 `zoneinfo.ZoneInfo`，不增加 cron 解析依赖。
@@ -881,19 +1053,28 @@ CHECKIN_RETRY_LIMIT=2
 ### 11.2 生命周期
 
 ```text
-lifespan enter
-  load settings
-  open SQLite and CredentialVault
-  load AccountRegistry
-  create chat pools
-  create one CheckinScheduler task when enabled
-  build model index
+Control Plane lifespan enter
+  validate config and run SQLite migrations
+  open async Repository and CredentialVault
+  load runtime settings and AccountRegistry
+  create CheckinScheduler, MetricsScheduler, UsageRollupScheduler
+  restore ServiceSupervisor state and reconcile orphan Worker safely
   yield
-lifespan exit
-  cancel and await scheduler
-  close checkin clients
-  close retired/current providers
-  close SQLite
+Control Plane lifespan exit
+  stop schedulers and await active operations
+  drain/stop Worker through Supervisor
+  close upstream check-in clients and Repository
+
+Worker lifespan enter
+  validate internal token and protocol version
+  load read-only runtime snapshot and model catalog
+  create stable DynamicProviderPool(0..N)
+  expose /health/live, /internal/health/ready and proxy routes
+  yield
+Worker lifespan exit
+  reject new requests and drain active streams
+  flush bounded telemetry queue
+  close Provider sessions and exit
 ```
 
 重启时，scheduler 查询 `checkin_daily_state`，当天已达到 `CLAIMED` 或 `ALREADY_CHECKED_IN` 的账号不重复执行；错过计划但仍在 catch-up window 内，则小 jitter 后补跑未完成账号。超过窗口不自动补跑，可从 UI 手动执行。
@@ -910,6 +1091,22 @@ lifespan exit
 只重试网络错误、超时、429、502/503/504。使用指数 backoff + jitter，并限制 `Retry-After`。
 
 不重试：WorkBuddy `400/code=10001`、除一次 refresh retry 外的 401/403、其他业务 4xx、4xx 无法解析 JSON。
+
+### 11.5 MetricsScheduler 与积分/Token 监控
+
+`MetricsScheduler` 只读取已验证且 purpose 启用的凭据，按 provider 能力矩阵调用 token status、积分、quota 和签到摘要接口。每个账号每个 metric kind 单飞，默认 15 分钟刷新，失败按指数退避并保留上一次快照；凭据过期或返回 401 时只更新对应 purpose 的 `needs_reauth`/metric `unavailable`，不能禁用 chat。
+
+监控结果写入 `account_metric_snapshots`，由 `/api/admin/accounts`、账号详情和 Overview 聚合。快照带 `observed_at/expires_at/status`，UI 超时显示 stale；接口没有可验证积分时返回 `status=unknown`，禁止将缺失值显示为 0。刷新动作返回 operation id，不能同步阻塞管理请求。
+
+### 11.6 UsageRollupScheduler 与 Worker telemetry
+
+Worker 为每个请求生成最小 `request_event`：在请求开始时分配 request id，结束/取消/异常时写状态、账号、模型、协议、HTTP 状态、耗时和 token usage。首个 chunk 前的 failover 只保留最终成功账号；已提交流的终止事件仍保留原账号和 `stream_committed=true`。
+
+Control Plane 通过 loopback internal RPC 或有界异步队列接收事件。`UsageRollupScheduler` 每分钟按 provider/account/model 聚合到分钟桶，随后生成日/月 rollup；事件写入和聚合均采用短事务。队列、数据库或 Worker 暂时不可用时，Proxy 继续服务并在 health/metrics 中报告丢弃数量。
+
+### 11.7 runtime settings 应用
+
+设置更新先写 `runtime_settings`，再由 `SettingsApplier` 按 apply mode 执行：scheduler 设置采用构建新实例后原子替换；Worker 配置采用 snapshot reload，协议不兼容或 reload 失败才由 Supervisor restart；Control Plane 级设置返回 `restart_required=true`。应用结果写 `audit_events` 和 `service_runtime`，UI 使用 operation id 查询最终状态。
 
 ## 12. 管理 API 契约
 
@@ -984,23 +1181,81 @@ GET  /api/admin/checkin/runs/{run_id}
 
 省略 `targets` 表示所有启用账号；显式目标使用完整复合主键，避免不同 provider 的同名账号产生歧义。请求不接受 Token、Cookie、URL 或任意上游请求头。
 
-### 12.5 只读设置
+### 12.5 服务生命周期
 
 ```text
-GET /api/admin/settings
-  -> effective check-in/scheduler/provider settings
-  -> 每项包含 value、source=env|default、restart_required_to_change=true
+GET  /api/admin/service
+POST /api/admin/service/start
+POST /api/admin/service/stop
+POST /api/admin/service/restart
+POST /api/admin/service/reload
+GET  /api/admin/service/operations/{operation_id}
+GET  /api/admin/service/events
 ```
 
-响应不含任何 Key、Token、Cookie、主密钥或完整上游身份。MVP 没有 PATCH；UI 不得伪造保存按钮。环境变量修改后通过受控服务重启原子创建新的 Scheduler，不实现运行时 cancel/reschedule。
+生命周期接口只控制 Proxy Worker。请求由 Supervisor 校验当前 owner、desired state 和幂等 operation key；响应先返回 operation id，UI 轮询到 `succeeded|failed|cancelled`。`stop` 返回 draining/in-flight/grace deadline；控制面自身没有停止 API。未经验证的 PID、启动时间、owner 或内部 token 不得触发 signal。
+
+`/api/control/*` 保留给 Control Plane 与 Worker 的 loopback 内部契约：
+
+```text
+POST /api/control/worker/handshake
+GET  /api/control/worker/runtime-snapshot
+POST /api/control/worker/telemetry
+GET  /api/control/worker/health
+```
+
+这些路由只接受 loopback、内部 token 和 protocol version，不能由浏览器 session 或 Proxy Key 调用。
+
+### 12.6 设置、模型、用量和监控
+
+```text
+GET   /api/admin/settings
+PATCH /api/admin/settings
+GET   /api/admin/settings/schema
+
+GET   /api/admin/models
+PATCH /api/admin/models/{provider}/{model_id}
+POST  /api/admin/models/refresh
+POST  /api/admin/models/{provider}/{model_id}/probe
+
+GET   /api/admin/usage/summary
+GET   /api/admin/usage/timeseries
+GET   /api/admin/usage/events
+GET   /api/admin/usage/events/{event_id}
+GET   /api/admin/usage/export
+
+GET   /api/admin/metrics/accounts
+GET   /api/admin/metrics/accounts/{provider}/{account_id}
+POST  /api/admin/metrics/refresh
+```
+
+所有查询都支持明确的时间范围、provider/account/model 过滤和分页上限。Usage event detail 仅返回 request id、模型、账号、状态、耗时、token、错误码和 `stream_committed`，不返回 prompt、completion、Authorization、Cookie 或上游完整响应。导出只允许脱敏 rollup/event 字段，并记录审计。
+
+### 12.7 凭据、备份和审计
+
+```text
+GET   /api/admin/credentials
+POST  /api/admin/credentials/{provider}/{account_id}/{purpose}/rotate
+POST  /api/admin/credentials/{provider}/{account_id}/{purpose}/revoke
+
+GET   /api/admin/audit
+GET   /api/admin/backup
+POST  /api/admin/backup
+GET   /api/admin/backup/{backup_id}
+POST  /api/admin/backup/{backup_id}/restore
+```
+
+凭据接口只返回 mode、version、过期、refresh 能力和验证状态；rotate/revoke 需要 CSRF、二次确认和审计。恢复备份默认先做 schema/key/完整性校验和 dry-run，生成 operation id，不能直接覆盖当前数据库。
 
 ## 13. 配置
 
 ### 13.1 服务和存储
 
 ```ini
-QB2API_HOST=0.0.0.0
-QB2API_PORT=9999
+QB2API_CONTROL_HOST=127.0.0.1
+QB2API_CONTROL_PORT=9999
+QB2API_WORKER_HOST=127.0.0.1
+QB2API_WORKER_PORT=10001
 QB2API_PROXY_API_KEY=<optional-for-legacy-open-proxy>
 QB2API_ADMIN_KEY=<required-for-admin-ui-dynamic-checkin>
 # QB2API_API_KEY=<deprecated-proxy-alias>
@@ -1013,9 +1268,19 @@ QB2API_ADMIN_SESSION_TTL_HOURS=12
 QB2API_ADMIN_SESSION_IDLE_MINUTES=60
 QB2API_TRUSTED_PROXY_HEADERS=false
 QB2API_TRUSTED_PROXY_NETWORKS=<optional-CIDR-list>
+QB2API_WORKER_AUTOSTART=true
+QB2API_WORKER_START_TIMEOUT_SECONDS=30
+QB2API_WORKER_HEALTH_INTERVAL_SECONDS=5
+QB2API_WORKER_DRAIN_TIMEOUT_SECONDS=330
+QB2API_WORKER_INTERNAL_TOKEN=<generated-or-secret-file>
+QB2API_RUNTIME_SETTINGS_ENABLED=true
 ```
 
-保留 `0.0.0.0` 兼容 Mac Mini proxy。启用管理 UI、动态凭据或签到时无 `QB2API_ADMIN_KEY`/主密钥拒绝启动；非 loopback 管理还必须满足 7.2 的 HTTPS/cookie 契约。Proxy Key 可以为空以兼容旧的开放 proxy，但远程部署应显式配置 `QB2API_PROXY_API_KEY`。旧 `QB2API_API_KEY` 只映射 Proxy 权限；配置了两个新 Key 且值相同必须拒绝启动。
+Control Plane 默认只绑定 loopback；Tailscale Serve/Caddy 负责远程 HTTPS ingress。为兼容旧 proxy，可将 Worker 通过显式反向代理暴露到原入口，但不允许 Control Plane 管理端口直接与 Worker 共享监听地址。启用管理 UI、动态凭据或签到时无 `QB2API_ADMIN_KEY`/主密钥拒绝启动；非 loopback 管理还必须满足 7.2 的 HTTPS/cookie 契约。Proxy Key 可以为空以兼容旧的开放 proxy，但远程 proxy 应显式配置 `QB2API_PROXY_API_KEY`。旧 `QB2API_API_KEY` 只映射 Proxy 权限；配置了两个新 Key 且值相同必须拒绝启动。
+
+`QB2API_WORKER_INTERNAL_TOKEN` 只给 Supervisor/Worker 的内部握手使用，不能作为客户端 API key 或 Admin Key。若未显式配置，首次启动生成 256-bit 随机 token 写入 `QB2API_DATA_DIR/worker.internal`（0600），并在 Worker restart 时递增 auth version；Control Plane 不把它返回 UI。
+
+可写运行设置存储在 `runtime_settings`，环境变量只在没有 runtime override 时作为 source=env。设置修改必须通过 12.6 的版本化 PATCH 和 7.4 的 apply mode；禁止 UI 直接改 `.env`。
 
 ### 13.2 Provider
 
@@ -1054,15 +1319,25 @@ QODER_CHECKIN_REFRESH_PATH=/api/v1/deviceToken/refresh
 
 ```text
 src/qb2api/
+  control/
+    app.py                # persistent Control Plane factory/lifespan
+    supervisor.py         # Worker process state machine, PID/owner/token checks
+    operations.py         # async operation records and polling
+    settings.py           # runtime settings schema, version and apply modes
+    telemetry.py          # bounded Worker event intake and backpressure
   accounts/
     models.py             # AccountRecord, AccountView, Capability, Status, VerificationStatus
-    repository.py         # aiosqlite single connection, WAL, transaction/version API
+    repository.py         # async DB boundary, WAL, transaction/version API
+    schema.py             # migration/version registry and table definitions
     vault.py              # Fernet encrypt/decrypt and key validation
     registry.py           # merge env + DB, enable/disable, snapshots
     resolver.py           # purpose credential, skew refresh, single-flight
   admin/
     auth.py               # Proxy/Admin key policy and HttpOnly session/CSRF
-    router.py             # /api/admin/* routes
+    router.py             # accounts/auth/checkin/settings/models/usage routes
+    service_router.py      # worker lifecycle routes and operation polling
+    audit.py               # redacted audit writer/query
+    backup.py              # dry-run backup/restore workflow
   auth/
     codebuddy_oauth.py    # state/token/poll/refresh upstream client
     flows.py              # TTL, one-time state, redacted result
@@ -1073,24 +1348,47 @@ src/qb2api/
     qoder.py              # Qoder status, claim and refresh
     service.py            # account and batch orchestration
     scheduler.py          # zoneinfo, catch-up, lifecycle
+    metrics.py             # token/points/quota snapshot refresh
+    usage.py               # request event rollup and retention
   providers/
     codebuddy.py          # account-backed chat provider
     qoder.py              # account-backed PAT/COSY provider
     lb.py                 # DynamicProviderPool(0..N), SlotHandle lease, stream commit, drain
+  worker/
+    app.py                # independent Proxy Worker factory/lifespan
+    runtime.py            # read-only snapshot, provider/model assembly
+    internal_router.py    # handshake/health/telemetry, loopback only
+    proxy_router.py       # OpenAI/Anthropic compatibility endpoints
+    model_catalog.py      # model discovery and capability snapshot
+    request_events.py     # non-blocking request telemetry
   web/
-    admin.html
-    admin.js
-    admin.css
-  app.py                  # lifecycle and router assembly
-  config.py               # environment binding and validation
+    dist/                 # Vite production output, served by Control Plane
+  config.py               # shared environment binding and validation
+  app.py                  # compatibility entrypoint selecting control/worker mode
 
-pyproject.toml            # add aiosqlite runtime dependency
+frontend/
+  package.json            # Vue/Vite/Pinia/Query/ECharts/Lucide toolchain
+  src/
+    app/                   # router, query client, global error/loading state
+    layouts/               # AdminShell, Sidebar, Header, ServiceRail
+    pages/                 # Overview, Service, Accounts, Models, Usage, Checkin, Settings, Audit
+    components/            # DataTable, Charts, Drawers, ConfirmDialog, StatusBadge, EmptyState
+    stores/                # auth, service, settings, ui preferences
+    api/                   # typed admin/control clients and mutation invalidation
+    styles/                # design tokens, responsive layout, accessibility
+  tests/                   # component and route contract tests
+
+pyproject.toml            # async SQLite/runtime dependencies and scripts
+package-lock.json         # committed frontend lockfile
 
 tools/
   qoder-checkin-exporter/ # Windows one-shot exporter; 不随服务常驻
+deploy/
+  launchd/                 # Control Plane plist; Worker is child-owned by Supervisor
+  systemd/                 # optional Linux development service
 ```
 
-保持现有 `Provider` 抽象和 OpenAI/Anthropic 转换层不变。先分离账号、凭据、管理和签到，再接入 Provider；`app.py` 只装配，不增加具体协议细节。
+保持现有 `Provider` 抽象和 OpenAI/Anthropic 转换层的协议行为不变，但将执行入口迁移到 `worker/proxy_router.py`；Control Plane 的 `app.py` 只装配管理域和 Supervisor。共享 DTO 放在小型 `contracts.py`，禁止 Control Plane 直接 import Worker 的可变 Provider 状态。前端构建产物必须通过脚本复制到 `src/qb2api/web/dist`，源码不内嵌 Secret，也不使用 `innerHTML` 渲染不可信内容。
 
 ## 15. 迁移策略
 
@@ -1135,6 +1433,29 @@ qoder/<model>
 
 模型定义文件仍是模型能力来源。账号变化只改变 provider 是否可用，不改变模型 ID。
 
+### 15.5 单进程到 Supervisor/Worker 迁移
+
+迁移必须先备份 `.env`、SQLite 和凭据主密钥，再执行一次 dry-run。Control Plane 先启动并完成 schema migration，导入 env static slots 和动态账号；只有 registry/model snapshot 校验成功后才启动 Worker。
+
+```text
+旧单进程
+  ├─ 读取 env
+  ├─ 创建 Provider/LB
+  └─ 暴露 proxy + admin
+
+迁移启动
+  ├─ Control Plane 绑定新管理端口
+  ├─ Supervisor 检查旧端口/owner，不盲杀
+  ├─ Worker 在 loopback 新端口健康握手
+  └─ 反向代理切换到 Worker
+```
+
+- 旧 `QB2API_HOST/QB2API_PORT` 在一个兼容周期内映射为 Worker ingress 配置；Control Plane 使用独立端口，避免客户端与管理台共享生命周期。
+- 若发现旧实例仍占用目标 Worker 端口，迁移命令只报告冲突并要求人工停止，不能按端口 kill。
+- Supervisor 启动后写入 owner instance id 和 process start time；重启只操作匹配同一 owner 的 Worker。
+- 迁移失败时保留旧 `.env` 和数据库，不覆盖凭据；可以停止新 Worker 并回到旧单进程入口。回滚不删除新表，下一次启动继续从 migration checkpoint 运行。
+- 迁移完成后旧 proxy/admin 入口只保留 410/redirect 兼容响应，具体时间和客户端切换公告作为单独运维变更，不在代码中静默移除。
+
 ## 16. 验证与测试策略
 
 ### 16.1 测试分层
@@ -1150,7 +1471,7 @@ qoder/<model>
 7. **WorkBuddy client**：status method 为空时不发 preflight、Bearer/Cookie 账号隔离，`400/code=10001` 无重试。
 8. **Qoder check-in**：promotion 门禁、最小导入校验、身份不匹配不覆盖、status/claim/refresh 分类、refresh token 轮换写回。
 9. **Scheduler**：时区、跨日、catch-up、批次锁、失败继续、取消和关闭。
-10. **API/UI**：Proxy/Admin Key 权限矩阵、bootstrap、登录限流、session/CSRF、Secure cookie、promotion、settings 只读、无 Secret 响应、409。
+10. **API/UI**：Proxy/Admin Key 权限矩阵、bootstrap、登录限流、session/CSRF、Secure cookie、promotion、runtime settings version/apply、无 Secret 响应、409。
 11. **配置兼容**：旧 Key 只映射 Proxy；`/api/config` 只认 Admin Key；旧 token PATCH 仍写 env 且报告 deprecated/restart；动态账号不写 env；重复 Secret 不产生双实例。
 12. **回归**：原有 OpenAI、Anthropic、工具调用、模型路由全部通过。
 
@@ -1184,80 +1505,85 @@ AUTH-01: CodeBuddy expiresIn、refreshToken、refresh endpoint
 
 ## 17. 分阶段实施顺序
 
-### Phase 0：基线和外部契约 Spike
+### Phase 0：基线、Spike 和工具链
 
-- 固化当前 `2api` 测试基线和配置兼容行为。
-- 完成 CB-CHECKIN-01、QD-CHECKIN-01、AUTH-01。
-- 固化 Proxy/Admin Key 权限矩阵、15.2 `/api/config` 兼容响应和现有 private route 回归测试。
-- 为当前已确认的 pool 缺陷先增加回归用例：0 slot、删除最后 slot、按稳定 key 冷却、首 chunk 后禁止 failover。
-- 记录两个本地参考工程 commit。
-- 输出脱敏“已验证/未验证”矩阵。
+- 固化现有 `pytest`、配置兼容和 OpenAI/Anthropic proxy 行为。
+- 完成 CB-CHECKIN-01、QD-CHECKIN-01、AUTH-01；未确认协议只保留 feature flag，不猜测 method/凭据。
+- 固化 Proxy/Admin Key 权限矩阵、Worker 内部 token、0/1/N pool、partial stream 回归用例。
+- 建立 Vue/Vite/TypeScript 构建和 Playwright smoke 基线，确定静态产物复制到 `src/qb2api/web/dist` 的脚本。
 
-未通过时，不实现依赖未知契约的自动 refresh 或 Cookie 自动化。
+验收：原有测试保持通过；新前端可以构建、匿名 shell 不泄漏管理数据；Spike 结果可追溯。
 
-### Phase 1：首个可用纵向闭环（CodeBuddy + WorkBuddy）
+### Phase 1：Control Plane + Worker + Supervisor 最小闭环
 
-只实现交付首个自动签到和多账号代理所需的最小底座：
+- 拆出 `control/app.py`、`worker/app.py` 和兼容入口；Worker 只 loopback 监听并实现 handshake/health/telemetry。
+- 实现 `ServiceSupervisor` 状态机、operation id、PID/start-time/owner/token 校验、drain/kill 超时和 orphan reconcile。
+- 将现有 OpenAI/Anthropic 路由迁移到 Worker，旧模型协议和 Proxy Key 行为保持不变；Control Plane 可在 Worker 停止时继续返回管理 shell/health。
+- 建立 `aiosqlite` Repository/Vault/migration、runtime settings、service_runtime、proxy_api_keys 和 admin session 基础表。
 
-- 加入 `aiosqlite`，建立 `accounts/account_purposes/credentials/checkin_daily_state/admin_sessions` 最小 schema、WAL Repository、Vault、Registry 和带 version cache 的 CredentialResolver。
-- 兼容 env static slot 和旧 `/api/config`；实现动态优先去重，但不做完整迁移后台。
-- 实现 Proxy/Admin Key 分离、7.1/7.2 的 bootstrap、session、CSRF、限流和最小 UI，仅含登录、账号列表、CodeBuddy 添加和今日签到。
-- 接入 CodeBuddy OAuth/manual 账号、逐请求 resolver 和稳定 `DynamicProviderPool(0..N)`；实现首 chunk 提交边界和 slot lease drain。
-- 按 CB-CHECKIN-01 实现 WorkBuddy client、`10001 -> ALREADY_CHECKED_IN`、最小 scheduler、手动运行和 daily state。
-- 完成 Secret 不泄漏、purpose 故障隔离和旧 OpenAI/Anthropic proxy 回归测试。
+验收：可从管理 API start/stop/restart Worker；错误 PID 不会被终止；Worker 停止不影响 Control Plane；旧 proxy 回归通过。
 
-明确后置：完整筛选、历史浏览、设置页、备份 UI、通用 capability 编辑器和高级审计。它们不能挡住第一条自动签到。
+### Phase 2：账号、凭据和完整管理台骨架
 
-验收：旧 env-only proxy 行为不变且旧 Key 只有 Proxy 权限；0/1/N 动态池切换无需替换 Registry；partial stream 不跨账号；至少两个 CodeBuddy 账号可轮询；至少一个授权账号在 Mac Mini 完成定时或 catch-up 签到；已签到不重试；签到错误不冷却 chat；远程 UI 只能由 Admin Key 经 HTTPS 登录。
+- 完成稳定 account_id、purpose 状态、credential version cache、动态 0..N pool、env shadow/promotion 和无 Secret API。
+- 实现 Admin Key/session/CSRF/限流与 `/admin` Vue shell；交付 Overview、Service、Accounts、Credentials、Settings 基础页面、路由守卫、DataTable、抽屉和错误/空/加载状态。
+- 账号增删/启停/探测/刷新通过 API 更新 registry snapshot，再触发 Worker reload；退役 slot 做 lease drain。
 
-### Phase 2：账号平台和 CodeBuddy 池硬化
+验收：CodeBuddy/Qoder 静态和动态账号都能在 UI 管理；Proxy/Admin 权限严格隔离；账号 purpose 状态可独立显示；Playwright 完成登录、服务控制和账号详情 smoke。
 
-- 补齐 schema migration、Repository 并发/版本冲突测试、OAuth flow 恢复/过期清理和凭据轮换。
-- 完成 CodeBuddy 401 refresh/re-auth、账号动态启停/删除、promotion、retirement 压力测试和流式取消验证。
-- 补齐账号详情、purpose 状态、探测/刷新和基础签到历史，不引入第二个前端服务。
-- 验证 `/api/config` deprecated 响应、env/DB shadow 行为和迁移说明。
+### Phase 3：模型目录、用量与 Token/积分监控
 
-验收：Token refresh 不需重建 pool；单号失效不影响其他账号；UI、API、日志和数据库元数据无 Secret 原文。
+- Worker 生成 model catalog 和 request events；Control Plane 实现 bounded telemetry intake、UsageRollupScheduler、保留策略和脱敏导出。
+- 实现 MetricsScheduler、token status/points/quota/checkin snapshots、stale/unavailable 状态和按账号/provider 聚合。
+- 交付 Models、Usage、Overview 图表和账号指标详情，加入分页、筛选、时间范围、刷新 operation 和审计。
 
-### Phase 3：Qoder 多 PAT Proxy 强化
+验收：请求不会因 telemetry/rollup 暂时失败而失败；用量和 token 数与脱敏事件一致；积分未知不伪造为 0；前端图表和表格可在桌面/窄屏查看。
 
-- 将现有 QoderProvider 纳入 AccountRegistry，保留 COSY 协议行为。
-- 每 PAT 独立 session、失效重建、失败隔离、动态启停。
-- 保证 chat、工具调用和 CodeBuddy/WorkBuddy 已交付能力回归。
+### Phase 4：CodeBuddy OAuth/WorkBuddy 签到纵向闭环
 
-验收：多个 PAT 轮询；一个 PAT/COSY 失败不影响其他 PAT、CodeBuddy 或签到调度器。
+- 接入 OAuth/manual Bearer、CodeBuddy refresh/re-auth、WorkBuddy status/claim；`400/code=10001` 分类为 `ALREADY_CHECKED_IN` 且不重试。
+- 完成 CheckinScheduler 的时区、catch-up、批次锁、jitter、手动指定账号和历史结果；签到失败不影响 chat。
+- 交付 Check-in 页面、批次详情、失败重试和积分变化视图。
 
-### Phase 4：Qoder 首次导入与自动签到闭环
+验收：至少两个 CodeBuddy 账号轮询；同一账号 `chat=active/checkin=needs_reauth` 可共存；至少一个真实授权账号完成定时或 catch-up 签到；partial stream 永不跨账号重放。
 
-- 交付并审计 10.3 的 Windows one-shot exporter、最小 JSON schema 和导入 runbook；exporter 不进入 Mac Mini 常驻进程。
-- 实现受保护的 access/refresh import、服务端 status 验证、加密保存和身份匹配。
-- 实现 purpose refresh、status/claim、refresh rotation 持久化和 `needs_reauth` UI。
-- 只有 QD-CHECKIN-01 证明后才允许 PAT 合并；默认继续双凭证。
+### Phase 5：Qoder 双凭证、模型和账号高级操作
 
-验收：完成 promotion + 标准导入后，Mac Mini 无 QoderWork GUI 也能跨 access 过期连续运行；refresh 失败清晰可见且不影响 chat；env-only 账号保持 `needs_promotion`，已 promotion 但缺少 access/refresh 的账号保持 `needs_import`。
+- 将 Qoder PAT/COSY 纳入动态池，保证每 PAT session 独立、失效隔离和工具调用回归。
+- 交付 Windows one-shot exporter、最小 JSON schema、HTTPS import、服务端 status/identity 验证、access/refresh 轮换和 `needs_import/needs_reauth` UI。
+- 完成账号详情的凭据版本、Quota/points、Events、Check-in tabs，补齐批量操作和审计。
 
-### Phase 5：运维和体验硬化
+验收：Mac Mini 无 QoderWork GUI 可跨 access 过期连续签到；refresh 失败不影响 chat；PAT 不能未经 Spike 直接作为签到凭据。
 
-- 完成账号筛选、完整签到历史、限流可观测性、备份/恢复和 Key 轮换说明。
-- 管理操作审计只记账号 ID、purpose 和动作，不记 Secret。
-- 验证 Tailscale Serve/受信代理、SSH loopback、升级回滚、数据库迁移和 session 撤销。
-- 删除已结束的兼容行为必须单独评审；不能在本阶段顺手移除旧 `/api/config` token 字段。
+### Phase 6：设置、备份、审计和部署硬化
 
-以上阶段是依赖顺序，不要求把“平台模块”整批做完才验收业务。每个 Phase 必须有可运行纵向结果；Phase 1 的首个自动签到是全项目最早业务门禁。
+- 完成 runtime settings schema、乐观版本、scheduler reschedule、Worker reload/restart 和 apply operation；UI 显示 source/apply mode/生效状态。
+- 完成 backup/restore dry-run、Key 轮换、审计查询、Tailscale Serve/SSH loopback、launchd/systemd 模板和升级回滚文档。
+- 做全量 pytest、ruff、frontend build/unit、Playwright desktop/mobile、fresh data smoke 和迁移回滚演练。
+
+验收：所有用户要求可从前端完成；设置不出现“已保存但未生效”；服务控制、模型管理、token/积分监控、账号登录/管理、签到、审计和备份均有可追溯结果。
+
+每个阶段都必须保留可运行纵向结果；阶段完成不等于可跳过下一阶段的安全/协议门禁。外部协议仍未验证时，UI 明确显示 unavailable/verification required，而不是渲染成功假象。
 
 ## 18. 部署拓扑与运行手册
 
 ```text
 [Mac Mini]
-  2api: 127.0.0.1:9999
+  Control Plane: 127.0.0.1:9999 (persistent)
+  Proxy Worker:  127.0.0.1:10001 (Supervisor-owned)
   SQLite + encrypted credentials: ./data/
-  one FastAPI process
-  one in-process CheckinScheduler
+  launchd/systemd starts Control Plane only
+  Supervisor starts/stops Worker on demand
 
 [HTTPS ingress]
   Tailscale Serve 或受信 Caddy/nginx
   https://<tailscale-host> -> http://127.0.0.1:9999
   只从受信 ingress 接受 forwarded scheme
+
+[Proxy ingress, optional]
+  local reverse proxy -> http://127.0.0.1:10001
+  only when remote clients need direct proxy access
+  upstream path must preserve Proxy API Key and never Admin cookie
 
 [开发/维护电脑]
   浏览器访问 https://<tailscale-host>/admin
@@ -1266,8 +1592,8 @@ AUTH-01: CodeBuddy expiresIn、refreshToken、refresh endpoint
   必要时手动导入 WorkBuddy Cookie
 
 [本地开发工具]
-  OPENAI_BASE_URL=https://<tailscale-host>/v1
-  ANTHROPIC_BASE_URL=https://<tailscale-host>
+  OPENAI_BASE_URL=https://<proxy-host>/v1
+  ANTHROPIC_BASE_URL=https://<proxy-host>
   API key = QB2API_PROXY_API_KEY
 ```
 
@@ -1277,9 +1603,11 @@ AUTH-01: CodeBuddy expiresIn、refreshToken、refresh endpoint
 2. data 目录权限正确。
 3. SQLite schema 迁移成功。
 4. static/dynamic 账号数量和 capability 符合预期。
-5. scheduler 只有一个 task，下一次本地时间正确。
-6. 远程入口为 HTTPS，`QB2API_ADMIN_COOKIE_SECURE` 结果与代理 scheme 一致。
-7. 匿名只能取得 UI shell，所有账号数据 API 均返回未认证；admin session 不能调用 proxy API。
+5. Control Plane 只有一个 Checkin/Metrics/Usage scheduler 实例；下一次时间正确。
+6. Worker owner/PID/start-time/internal token 与 `service_runtime` 一致，健康握手成功。
+7. 远程入口为 HTTPS，`QB2API_ADMIN_COOKIE_SECURE` 结果与代理 scheme 一致。
+8. 匿名只能取得 UI shell，所有账号数据 API 均返回未认证；admin session 不能调用 proxy API。
+9. 停止 Worker 后管理台仍可登录、查看历史和修改设置；start/restart 后健康状态可恢复。
 
 Qoder 首次开通：
 
@@ -1292,10 +1620,12 @@ Qoder 首次开通：
 日常维护：
 
 - 只通过 `/admin` 查看状态和重新授权，不手工编辑数据库。
+- Worker 只能通过 `/admin/service` 控制；不要按端口使用 kill，异常进程先核对 owner/start-time/process-group。
 - `needs_reauth` 先重新登录/导入，再恢复对应 purpose。
 - 修改 endpoint/path 必须重做对应 Spike。
 - 备份数据库时同时备份主密钥；缺少主密钥的备份不可恢复。
 - env Token 列表只用于 transient chat；需要长期身份、签到或审计时先 promotion，不依赖 `cb-env-N/qd-env-N` 顺序。
+- Worker telemetry 或 usage rollup 短暂不可用时先检查队列丢弃计数，不要重启 Control Plane；只有 Supervisor 状态机判定失败才执行 restart。
 
 ## 19. 风险与应对
 
@@ -1320,12 +1650,28 @@ Qoder 首次开通：
 | Secure cookie 与 HTTP 不匹配 | 登录循环或降级为不安全 cookie | 远程 HTTPS 强制；`auto` 只对 loopback HTTP 降级；受信 scheme 校验 |
 | 远程管理暴露 | 凭据被控制 | Proxy/Admin Key + session + CSRF + HTTPS/Tailscale/SSH + 登录限流 |
 | SQLite 阻塞事件循环/锁冲突 | Proxy、签到或 Admin 请求抖动/失败 | aiosqlite 单连接 worker、WAL、busy_timeout、短事务、version cache |
-| Settings 双来源 | UI 显示已保存但 Scheduler 未变更 | MVP settings 只读，环境变量修改后重启；不伪造 runtime PATCH |
+| Settings 双来源 | UI 显示已保存但 Scheduler 未变更 | runtime settings version + apply mode + operation id；环境变量只作为 fallback，禁止双写 |
 | WorkBuddy status method 未确认 | 误发错误请求或误判签到 | status method 为空即跳过 preflight，CB-CHECKIN-01 后才启用 |
 | 多账号触发风控 | 账号受限 | 串行 jitter，遵守服务条款，不做设备伪造 |
 | SQLite 与主密钥不同步 | 数据不可恢复 | 绑定备份，校验 key，显式迁移 |
+| Supervisor 按旧 PID/端口误杀进程 | 破坏其他服务或正在进行的请求 | 同时校验 PID、启动时间、owner、进程组和内部 token；不做端口盲杀 |
+| Control Plane/Worker 版本漂移 | 握手失败或路由行为不一致 | protocol version、runtime snapshot schema 和启动前 ready gate；失败保持旧 Worker |
+| Worker 停止导致管理台不可用 | 无法恢复服务或查看错误 | Control Plane 独立常驻，Worker 只作为受控子进程；service 页面显示真实 terminal state |
+| Worker telemetry 阻塞模型请求 | 延迟上升或代理雪崩 | 有界异步队列、非阻塞写入、丢弃计数和健康告警 |
+| 请求事件包含 Prompt/凭据 | 隐私泄漏 | event schema 白名单；只保留脱敏 metadata 和 token/latency |
+| runtime settings 写入未生效 | UI 与实际调度/代理不一致 | value_version + apply_mode + operation id；新实例验证成功后才报告 applied |
+| 前端只显示静态成功状态 | 运维误判服务、签到或积分 | Query 精确失效、轮询 operation、stale/unavailable 文案和失败详情 |
+| 管理台复杂度造成不可用 | 高密度数据难以操作 | 桌面优先分域导航、表格筛选/抽屉、键盘可达、响应式窄屏降级和 Playwright 截图验收 |
 
 ## 20. 最终验收清单
+
+### Control Plane 与服务生命周期
+
+- [ ] Control Plane 可独立启动并持续提供 `/admin`、管理 API、历史和设置；Worker 停止/崩溃不会带走管理台。
+- [ ] UI 可启动、停止、重启和 reload Proxy Worker，并显示 operation、desired/observed state、PID、uptime、in-flight、最近退出原因和健康状态。
+- [ ] Supervisor 只操作 PID、启动时间、owner、进程组和内部 token 全部匹配的 Worker；端口冲突和 orphan 不会触发盲杀。
+- [ ] Worker 只绑定 loopback，内部 API 只接受 loopback + internal token + protocol version；浏览器 session/Proxy Key 均不能调用。
+- [ ] stop 先 drain，长流在 grace period 内可完成；超时终止只作用于已验证的同一进程组。
 
 ### 代理
 
@@ -1342,6 +1688,15 @@ Qoder 首次开通：
 - [ ] promotion 生成随机持久账号 ID；Token/PAT 轮换只更新 credential version，不改变账号 ID。
 - [ ] 首 chunk 前可 failover，首 chunk 后绝不换账号重放；cancel/retire 都释放 lease。
 
+### 模型、用量与账号指标
+
+- [ ] 前端可查看、筛选、启停、刷新和探测模型；模型变更通过 Worker reload 生效，历史 usage 不丢失。
+- [ ] Overview/Usage 可按时间、Provider、模型和账号查看请求量、成功率、input/output tokens、p50/p95 latency 和错误趋势。
+- [ ] request events 不含 prompt、completion、Authorization、Cookie 和上游原始响应；CSV 导出同样脱敏并写审计。
+- [ ] Worker telemetry/rollup 故障不会让模型请求失败；丢弃事件数量在 service health 中可见。
+- [ ] 账号页可查看 token 状态、过期、积分、quota、签到摘要和采样时间；stale/unknown/unavailable 不显示为 0。
+- [ ] Metrics refresh 限频、单飞、失败退避；一个账号指标失败不影响其他账号和 Proxy。
+
 ### 登录和安全
 
 - [ ] UI 可发起 OAuth，但浏览器看不到原始 Token。
@@ -1352,7 +1707,8 @@ Qoder 首次开通：
 - [ ] Qoder chat/check-in 导入只在受保护管理面接受，status/身份验证成功后 Secret 才加密落库。
 - [ ] Cookie 只有真实契约需要时启用，普通前端不自动读取。
 - [ ] API、UI、日志和错误响应无 Authorization、Cookie、Refresh Token 原文。
-- [ ] `/admin/settings` 只读显示 env/default 来源，没有未实现的保存按钮；修改配置需重启。
+- [ ] `/admin/settings` 显示 schema、source、value version、apply mode 和生效状态；可写项经校验保存，应用失败不会显示成功。
+- [ ] Proxy/Admin/internal token 权限分离；Proxy Key 可从 UI 创建、轮换、撤销和过期，但只展示一次明文且数据库只保存 hash。
 
 ### 签到
 
@@ -1372,25 +1728,31 @@ Qoder 首次开通：
 ### 工程质量
 
 - [ ] Repository、Vault、OAuth、Proxy pool、两个 check-in client、scheduler、UI/API 有定向测试。
+- [ ] Control/Worker factory、Supervisor 状态机、内部握手、drain、orphan reconcile 和 process identity 防护有定向测试。
 - [ ] SQLite 并发读写、WAL、busy_timeout、migration 和 credential version 冲突有定向测试，事件循环没有同步 DB 调用。
 - [ ] 旧 `/api/config` Token PATCH 兼容、deprecated 提示、restart_required 和不回显 Secret 均有测试。
-- [ ] `pytest`、`ruff check`、`git diff --check` 有真实执行记录。
-- [ ] Mac Mini 重启、服务关闭、备份恢复流程已验证。
+- [ ] Vue 页面覆盖 Overview、Service、Accounts、Credentials、Models、Usage、Check-in、Settings、Audit；没有只有静态卡片或假按钮的空壳页面。
+- [ ] 前端 unit/build、Playwright 登录/服务控制/账号/模型/设置流程、桌面与移动截图、无重叠和无控制台错误均有真实记录。
+- [ ] `pytest`、`ruff check`、frontend lint/typecheck/test/build、Playwright、`git diff --check` 有真实执行记录。
+- [ ] Mac Mini 重启、Worker 停止/异常退出、Control Plane 恢复、备份/restore dry-run 和数据库迁移回滚已验证。
 - [ ] 实现中的“已确认/待验证”与本设计一致。
 
 ## 21. 决策摘要
 
-1. `2api` 是 Mac Mini 上的单服务中枢，UI、代理和签到共享账号底座。
-2. 前端 shell 可公开加载，但所有数据 API 受保护；敏感凭据由后端获取、验证、加密保存和按 purpose 使用。
-3. CodeBuddy 采用 OAuth/static/manual 统一 chat 池；WorkBuddy 签到复用账号 ID，但独立认证和错误域。
-4. Qoder chat 继续 PAT/COSY；Qoder check-in 默认 access/refresh 双凭证，直到 Spike 证明 PAT 可签到。
-5. Proxy/Admin 使用独立 Key；旧 `QB2API_API_KEY` 只映射 Proxy，Admin session 只能由 Admin Key 建立。
-6. 每个 provider 始终注册支持 0..N 的 `DynamicProviderPool`，slot 以稳定复合键管理，并以 lease drain 安全退役。
-7. 流式响应首个下游 bytes 后禁止跨账号重试；签到使用独立 `CheckinService + CheckinScheduler`，不复用 Proxy pool 语义。
-8. SQLite 使用 aiosqlite 单连接、WAL、短事务和 credential version cache；`account_purposes` 独立记录运行 status 与 verification_status。
-9. 管理面采用精确 bootstrap 白名单、限流 session、CSRF 和远程 HTTPS；session cookie 永不认证 proxy 或 `/api/config`。
-10. env static slot 只是兼容来源；promotion 生成随机持久账号 ID，Token/PAT 轮换不改 ID，旧 `/api/config` Token PATCH 经过明确弃用周期。
-11. Qoder 首次签到凭据通过 promotion 后的随机账号绑定 Windows exporter 或手动最小 payload 导入；导入后 Mac Mini 独立 refresh/claim。
-12. MVP settings 只读，环境配置通过受控重启生效；未确认的 WorkBuddy status method 不发请求。
-13. Phase 1 优先交付 CodeBuddy 多账号 + WorkBuddy 自动签到纵向闭环，完整平台体验后置但安全底线不后置。
-14. 未验证的 WorkBuddy URL/auth、CodeBuddy refresh、Qoder PAT claim 和 refresh rotation 先做 Spike，再开启自动化。
+1. `2api` 是 Mac Mini 上的常驻 Control Plane，独立管理受控 Proxy Worker；Worker 停止不会让管理台消失。
+2. Vue 管理台覆盖服务生命周期、账号/凭据、模型、用量、Token/积分、签到、设置、审计和备份，不做普通用户/计费系统。
+3. Control Plane、Worker、管理 API、Proxy API 和内部 RPC 使用不同边界与凭据；Proxy Key 泄露不能升级为 Admin 权限。
+4. 前端 shell 可公开加载，但所有数据 API 受保护；敏感凭据由后端获取、验证、加密保存和按 purpose 使用。
+5. CodeBuddy 采用 OAuth/static/manual 统一 chat 池；WorkBuddy 签到复用账号 ID，但独立认证和错误域。
+6. Qoder chat 继续 PAT/COSY；Qoder check-in 默认 access/refresh 双凭证，直到 Spike 证明 PAT 可签到。
+7. 每个 provider 始终注册支持 0..N 的 `DynamicProviderPool`，slot 以稳定复合键管理，并以 lease drain 安全退役。
+8. 流式响应首个下游 bytes 后禁止跨账号重试；签到使用独立 `CheckinService + CheckinScheduler`，不复用 Proxy pool 语义。
+9. SQLite 使用异步 Repository、WAL、短事务、runtime settings 版本和 credential version cache；purpose 状态独立保存。
+10. Supervisor 使用 PID、启动时间、owner、进程组和内部 token 做生命周期防护，所有操作返回 operation id 并可审计。
+11. Worker 请求事件、用量汇总和账号指标快照用于 Token/积分/配额监控；telemetry 故障不能阻塞模型响应，未知数据不伪造为 0。
+12. 管理面采用精确 bootstrap 白名单、限流 session、CSRF 和远程 HTTPS；session cookie 永不认证 proxy 或 `/api/config`。
+13. env static slot 只是兼容来源；promotion 生成随机持久账号 ID，Token/PAT 轮换不改 ID，旧 `/api/config` Token PATCH 经过明确弃用周期。
+14. Qoder 首次签到凭据通过 promotion 后的随机账号绑定 Windows exporter 或手动最小 payload 导入；导入后 Mac Mini 独立 refresh/claim。
+15. runtime settings 采用 schema、value_version 和 apply mode，UI 只有在实际应用成功后才显示生效；未确认的 WorkBuddy status method 不发请求。
+16. 实施按 Control/Worker -> 账号/管理台 -> 模型/用量 -> 签到 -> Qoder -> 运维硬化推进，每阶段都必须有可回归的纵向结果。
+17. 未验证的 WorkBuddy URL/auth、CodeBuddy refresh、Qoder PAT claim 和 refresh rotation 先做 Spike，再开启自动化。

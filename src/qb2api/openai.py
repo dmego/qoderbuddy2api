@@ -1,9 +1,11 @@
 """OpenAI-compatible data models."""
 
+import json
 import time as _time
 import uuid as _uuid
 from typing import Any, Literal
-from pydantic import BaseModel, ConfigDict
+
+from pydantic import BaseModel, ConfigDict, PrivateAttr
 
 
 class ModelInfo(BaseModel):
@@ -50,6 +52,49 @@ class ChatCompletionRequest(BaseModel):
     response_format: dict | None = None
     seed: int | None = None
     user: str | None = None
+
+    _selected_account_id: str | None = PrivateAttr(default=None)
+    _stream_committed: bool = PrivateAttr(default=False)
+    _input_tokens: int | None = PrivateAttr(default=None)
+    _output_tokens: int | None = PrivateAttr(default=None)
+
+    def record_slot(self, slot_key: str, *, committed: bool = False) -> None:
+        self._selected_account_id = slot_key.split(":", 1)[-1]
+        self._stream_committed = self._stream_committed or committed
+
+    def observe_usage(self, usage: dict[str, Any] | None) -> None:
+        if not isinstance(usage, dict):
+            return
+        self._input_tokens = _token_value(usage, "prompt_tokens", "input_tokens")
+        self._output_tokens = _token_value(usage, "completion_tokens", "output_tokens")
+
+    def observe_stream_chunk(self, chunk: bytes) -> None:
+        text = chunk.decode("utf-8", errors="ignore")
+        for line in text.splitlines():
+            if not line.startswith("data: ") or line[6:].strip() == "[DONE]":
+                continue
+            try:
+                body = json.loads(line[6:])
+            except json.JSONDecodeError:
+                continue
+            self.observe_usage(body.get("usage") if isinstance(body, dict) else None)
+
+    @property
+    def telemetry(self) -> dict[str, Any]:
+        return {
+            "account_id": self._selected_account_id,
+            "stream_committed": self._stream_committed,
+            "input_tokens": self._input_tokens,
+            "output_tokens": self._output_tokens,
+        }
+
+
+def _token_value(usage: dict[str, Any], *names: str) -> int | None:
+    for name in names:
+        value = usage.get(name)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+    return None
 
 
 class Usage(BaseModel):

@@ -1,15 +1,18 @@
 """CodeBuddy provider implementation."""
 
+from __future__ import annotations
+
 import json
+import logging
 import re
 import uuid
-import logging
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any
 
 import httpx
 
-from .base import Provider
 from ..openai import ChatCompletionRequest, stream_done
+from .base import Provider
 
 logger = logging.getLogger("qb2api")
 
@@ -20,6 +23,8 @@ _CLAUDE_CODE_IDENTITY_RE = re.compile(
     re.IGNORECASE,
 )
 _SCRUBBED_IDENTITY = "You are a coding CLI assistant."
+
+CredentialGetter = Callable[[], Awaitable[str]]
 
 
 def scrub_codebuddy_text(text: str) -> str:
@@ -50,6 +55,7 @@ def scrub_codebuddy_content(content: Any) -> Any:
 
 class CodeBuddyError(Exception):
     """CodeBuddy upstream error."""
+
     def __init__(self, status_code: int, message: str):
         self.status_code = status_code
         self.message = message
@@ -57,7 +63,11 @@ class CodeBuddyError(Exception):
 
 
 class CodeBuddyProvider(Provider):
-    """CodeBuddy API provider."""
+    """CodeBuddy API provider.
+
+    Supports static ``token`` (env/manual) and optional async ``credential_getter``
+    for dynamic account-backed Bearer resolution per request.
+    """
 
     name = "codebuddy"
 
@@ -66,10 +76,27 @@ class CodeBuddyProvider(Provider):
         "thinking", "max_context_tokens", "context_window",
     }
 
-    def __init__(self, token: str, endpoint: str = "https://copilot.tencent.com"):
-        self.token = token
+    def __init__(
+        self,
+        token: str | None = None,
+        endpoint: str = "https://copilot.tencent.com",
+        credential_getter: CredentialGetter | None = None,
+    ):
+        if not token and credential_getter is None:
+            raise ValueError("CodeBuddyProvider requires token or credential_getter")
+        self.token = token or ""
         self.endpoint = endpoint
+        self._credential_getter = credential_getter
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(300, connect=10))
+
+    async def _resolve_token(self) -> str:
+        if self._credential_getter is not None:
+            token = await self._credential_getter()
+            if token:
+                return token
+        if self.token:
+            return self.token
+        raise CodeBuddyError(401, "missing bearer credential")
 
     async def complete(self, request: ChatCompletionRequest) -> dict:
         """Non-streaming completion (aggregated from stream). Raises CodeBuddyError on failure."""
@@ -85,13 +112,14 @@ class CodeBuddyProvider(Provider):
                     aggregator.process(obj)
             except Exception:
                 pass
+        request.observe_usage(aggregator.usage)
         return aggregator.response()
 
     async def stream(self, request: ChatCompletionRequest) -> AsyncIterator[bytes]:
         """Stream chat completion. Raises CodeBuddyError on upstream failure."""
         url = f"{self.endpoint}/v2/chat/completions"
         body = self._build_body(request)
-        headers = self._build_headers()
+        headers = await self._build_headers()
 
         async with self._client.stream("POST", url, json=body, headers=headers) as resp:
             if resp.status_code != 200:
@@ -115,7 +143,8 @@ class CodeBuddyProvider(Provider):
                 if choices:
                     delta = choices[0].get("delta", {})
                     if delta.get("tool_calls"):
-                        from ..sse import normalize_tool_call_id, inject_tool_call_index
+                        from ..sse import inject_tool_call_index, normalize_tool_call_id
+
                         delta["tool_calls"] = inject_tool_call_index(delta["tool_calls"])
                         delta["tool_calls"] = [normalize_tool_call_id(tc) for tc in delta["tool_calls"]]
 
@@ -142,9 +171,11 @@ class CodeBuddyProvider(Provider):
             "stream": True,
         }
 
-        for key in ("temperature", "max_tokens", "max_completion_tokens", "top_p",
-                     "stop", "presence_penalty", "frequency_penalty", "n",
-                     "response_format", "seed", "user"):
+        for key in (
+            "temperature", "max_tokens", "max_completion_tokens", "top_p",
+            "stop", "presence_penalty", "frequency_penalty", "n",
+            "response_format", "seed", "user",
+        ):
             val = getattr(request, key, None)
             if val is not None:
                 body[key] = val
@@ -161,10 +192,11 @@ class CodeBuddyProvider(Provider):
 
         return body
 
-    def _build_headers(self) -> dict:
+    async def _build_headers(self) -> dict:
+        token = await self._resolve_token()
         return {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.token}",
+            "Authorization": f"Bearer {token}",
             "User-Agent": "CLI/1.0.8 CodeBuddy/1.0.8",
             "X-Product": "SaaS",
             "X-Domain": "copilot.tencent.com",

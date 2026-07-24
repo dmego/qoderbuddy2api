@@ -5,6 +5,10 @@ from collections.abc import AsyncIterator
 
 from fastapi.testclient import TestClient
 
+from qb2api.config import Settings
+from qb2api.models import ModelDefinition
+from qb2api.worker.app import create_worker_app
+
 
 class FakeProvider:
     name = "codebuddy"
@@ -73,23 +77,16 @@ class FakeProvider:
         return None
 
 
-def setup_fake_provider():
-    from qb2api import app as app_module
-    from qb2api.config import Settings
-    from qb2api.logger import RequestLogger
-    from qb2api.models import ModelDefinition
-
-    app_module.registry.clear()
-    app_module.registry.register(FakeProvider())
-    app_module._model_index.clear()
-    app_module._model_index["codebuddy"] = {"deepseek-v4-flash"}
-    app_module.model_definitions = {
+def setup_fake_provider(client: TestClient) -> None:
+    state = client.app.state.proxy_state
+    state.registry.clear()
+    state.registry.register(FakeProvider())
+    state.model_definitions = {
         "codebuddy": [
             ModelDefinition("deepseek-v4-flash", "DeepSeek V4 Flash", "codebuddy"),
         ]
     }
-    app_module.settings = Settings()
-    app_module.request_logger = RequestLogger(enabled=False)
+    state._build_model_index()
 
 
 def test_anthropic_request_converts_system_tools_and_tool_results():
@@ -168,19 +165,17 @@ def test_anthropic_response_converts_text_tools_and_usage():
 
 
 def test_v1_messages_returns_anthropic_message():
-    from qb2api.app import app
-
-    setup_fake_provider()
-    client = TestClient(app)
-
-    resp = client.post(
-        "/v1/messages",
-        json={
-            "model": "codebuddy/deepseek-v4-flash",
-            "max_tokens": 64,
-            "messages": [{"role": "user", "content": "hi"}],
-        },
-    )
+    application = create_worker_app(lambda: Settings(codebuddy_tokens=["ck-worker"]))
+    with TestClient(application) as client:
+        setup_fake_provider(client)
+        resp = client.post(
+            "/v1/messages",
+            json={
+                "model": "codebuddy/deepseek-v4-flash",
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
 
     assert resp.status_code == 200
     body = resp.json()
@@ -190,22 +185,20 @@ def test_v1_messages_returns_anthropic_message():
 
 
 def test_v1_messages_streams_anthropic_events():
-    from qb2api.app import app
-
-    setup_fake_provider()
-    client = TestClient(app)
-
-    with client.stream(
-        "POST",
-        "/v1/messages",
-        json={
-            "model": "codebuddy/deepseek-v4-flash",
-            "max_tokens": 64,
-            "stream": True,
-            "messages": [{"role": "user", "content": "hi"}],
-        },
-    ) as resp:
-        text = resp.read().decode()
+    application = create_worker_app(lambda: Settings(codebuddy_tokens=["ck-worker"]))
+    with TestClient(application) as client:
+        setup_fake_provider(client)
+        with client.stream(
+            "POST",
+            "/v1/messages",
+            json={
+                "model": "codebuddy/deepseek-v4-flash",
+                "max_tokens": 64,
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        ) as resp:
+            text = resp.read().decode()
 
     assert resp.status_code == 200
     assert "event: message_start" in text

@@ -1,0 +1,63 @@
+"""Control Plane domain API contracts."""
+
+from __future__ import annotations
+
+from cryptography.fernet import Fernet
+from fastapi.testclient import TestClient
+
+from qb2api.config import Settings
+from qb2api.control.app import create_control_app
+
+
+def test_settings_models_usage_metrics_and_audit_are_secret_safe(tmp_path) -> None:
+    settings = Settings(
+        admin_key="admin-secret",
+        credential_key=Fernet.generate_key().decode(),
+        data_dir=str(tmp_path),
+    )
+    headers = {"Authorization": "Bearer admin-secret"}
+    with TestClient(create_control_app(lambda: settings)) as client:
+        response = client.get("/api/admin/settings", headers=headers)
+        assert response.status_code == 200
+        assert response.json()["schema"]["checkin.at"]["type"] == "str"
+
+        changed = client.patch(
+            "/api/admin/settings",
+            headers=headers,
+            json={"key": "checkin.at", "value": "01:20", "value_version": 0},
+        )
+        assert changed.status_code == 200
+        assert changed.json()["apply_status"] == "effective"
+        assert client.app.state.settings.checkin_at == "01:20"
+        invalid = client.patch(
+            "/api/admin/settings",
+            headers=headers,
+            json={"key": "checkin.at", "value": "25:00", "value_version": 1},
+        )
+        assert invalid.status_code == 400
+        assert client.app.state.settings.checkin_at == "01:20"
+
+        assert client.get("/api/admin/models", headers=headers).json()["models"] == []
+        assert client.get("/api/admin/usage/summary", headers=headers).json()["summary"]["request_count"] == 0
+        assert client.get("/api/admin/metrics/accounts", headers=headers).json()["snapshots"] == []
+        refreshed = client.post("/api/admin/metrics/refresh", headers=headers)
+        assert refreshed.status_code == 200
+        assert refreshed.json()["status"]["fresh"] == 0
+        audit = client.get("/api/admin/audit", headers=headers)
+        assert audit.status_code == 200
+        assert audit.json()["events"][0]["action"] == "settings.update"
+
+        credentials = client.get("/api/admin/credentials", headers=headers)
+        assert credentials.status_code == 200
+        assert "encrypted_payload" not in credentials.text
+
+        backup = client.post("/api/admin/backup", headers=headers)
+        assert backup.status_code == 200
+        backup_id = backup.json()["backup_id"]
+        dry_run = client.post(
+            f"/api/admin/backup/{backup_id}/restore",
+            headers=headers,
+            json={"dry_run": True},
+        )
+        assert dry_run.status_code == 200
+        assert dry_run.json()["next_step"] == "offline_restore_required"

@@ -14,3 +14,13 @@ nohup.out
 .DS_Store
 .claude/
 *.lock
+data/
+creds/
+*.sqlite3
+*.sqlite3-*
+*/node_modules/
+
+# The admin console is built and served as same-origin Control Plane assets.
+!frontend/package-lock.json
+!src/qb2api/web/dist/
+!src/qb2api/web/dist/**

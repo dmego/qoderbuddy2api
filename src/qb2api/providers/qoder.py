@@ -3,20 +3,21 @@
 import base64
 import hashlib
 import json
+import logging
+import re
 import time
 import uuid
-import re
-import logging
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 from email.utils import formatdate
 
 import httpx
-from cryptography.hazmat.primitives import serialization, padding as sym_pad
+from cryptography.hazmat.primitives import padding as sym_pad
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import padding as asym_pad
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from .base import Provider
 from ..openai import ChatCompletionRequest, stream_chunk, stream_done
+from .base import Provider
 
 logger = logging.getLogger("qb2api")
 
@@ -215,6 +216,7 @@ class QoderProvider(Provider):
                     aggregator.process(obj)
             except Exception:
                 pass
+        request.observe_usage(aggregator.usage)
         return aggregator.response()
 
     async def stream(self, request: ChatCompletionRequest) -> AsyncIterator[bytes]:
@@ -265,7 +267,7 @@ class QoderProvider(Provider):
                     if delta.get("reasoning_content"):
                         out["reasoning_content"] = delta["reasoning_content"]
                     if delta.get("tool_calls"):
-                        from ..sse import normalize_tool_call_id, inject_tool_call_index
+                        from ..sse import inject_tool_call_index, normalize_tool_call_id
                         delta["tool_calls"] = inject_tool_call_index(delta["tool_calls"])
                         delta["tool_calls"] = [normalize_tool_call_id(tc) for tc in delta["tool_calls"]]
                         out["tool_calls"] = delta["tool_calls"]

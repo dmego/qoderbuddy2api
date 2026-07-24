@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>2api Admin</title>
+  <!-- 关键样式兜底：即使外链 CSS 失败也有基本可读布局 -->
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin:0; background:#0d1117; color:#c9d1d9; font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+    a { color:#58a6ff; }
+    .topbar { display:flex; gap:12px; align-items:center; padding:12px 20px; background:#161b22; border-bottom:1px solid #30363d; }
+    .brand { font-weight:600; }
+    .nav a { color:#8b949e; padding:10px 12px; margin-right:4px; border-radius:6px; text-decoration:none; }
+    .nav a:hover, .nav a.active { color:#c9d1d9; background:#21262d; }
+    .main { max-width:960px; margin:0 auto; padding:24px 20px 48px; }
+    .hidden { display:none !important; }
+    .card, .login-wrap { background:#161b22; border:1px solid #30363d; border-radius:6px; padding:16px; margin-bottom:16px; }
+    .btn { min-height:44px; padding:8px 14px; border-radius:6px; border:1px solid #30363d; background:#21262d; color:#c9d1d9; cursor:pointer; }
+    .btn.primary { background:#1f6feb; border-color:#1f6feb; color:#fff; }
+    .btn.danger { background:#21262d; border-color:#f85149; color:#f85149; }
+    .btn.ghost { background:transparent; }
+    .field { margin-bottom:12px; }
+    .field label { display:block; margin-bottom:4px; color:#8b949e; }
+    .field input, input, select, textarea { width:100%; max-width:420px; min-height:44px; padding:8px 10px; border-radius:6px; border:1px solid #30363d; background:#0d1117; color:#c9d1d9; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { text-align:left; padding:8px; border-bottom:1px solid #30363d; vertical-align:top; }
+    .muted { color:#8b949e; }
+    .error { color:#f85149; }
+    .badge { display:inline-block; padding:2px 8px; border-radius:999px; background:#21262d; font-size:12px; }
+    .badge.ok { color:#3fb950; }
+    .badge.warn { color:#d29922; }
+    .badge.err { color:#f85149; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; }
+    .stat { background:#161b22; border:1px solid #30363d; border-radius:6px; padding:12px; }
+    .stat .label { color:#8b949e; font-size:12px; }
+    .stat .value { font-size:22px; font-weight:600; }
+    .mono { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; }
+    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .tabs { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
+    .tabs button.active { background:#1f6feb; border-color:#1f6feb; color:#fff; }
+    .toast { position:fixed; right:16px; bottom:16px; background:#21262d; border:1px solid #30363d; padding:10px 14px; border-radius:6px; z-index:50; }
+  </style>
+  <link rel="stylesheet" href="/admin/assets/admin.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="brand">2api Admin</div>
+      <nav id="nav" class="nav hidden" aria-label="主导航">
+        <a href="#/" data-route="/">概览</a>
+        <a href="#/accounts" data-route="/accounts">账号</a>
+        <a href="#/accounts/add" data-route="/accounts/add">添加</a>
+        <a href="#/checkin" data-route="/checkin">签到</a>
+        <a href="#/settings" data-route="/settings">设置</a>
+      </nav>
+      <button id="logout-btn" type="button" class="btn ghost hidden">退出</button>
+    </header>
+    <main id="main" class="main" aria-live="polite"></main>
+    <div id="toast" class="toast hidden" role="status"></div>
+  </div>
+  <script type="module" src="/admin/assets/admin.js"></script>
+</body>
+</html>
