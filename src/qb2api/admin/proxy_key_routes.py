@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from .crypto import hash_token
 from .dependencies import admin_state, require_admin
+from .mutation_audit import add_audit
 from .validation import json_object, label
 
 router = APIRouter()
@@ -33,12 +34,21 @@ async def create_proxy_key(request: Request) -> dict[str, Any]:
     key_id, raw = _new_key()
     expires_at = _expiry(body.get("expires_at"))
     key_name = label(body.get("name"), default="Proxy key")
-    await _repository(request).create_proxy_api_key(
-        key_id=key_id,
-        name=key_name,
-        key_hash=hash_token(raw),
-        expires_at=expires_at,
-    )
+    repository = _repository(request)
+    async with repository.transaction():
+        await repository.create_proxy_api_key(
+            key_id=key_id,
+            name=key_name,
+            key_hash=hash_token(raw),
+            expires_at=expires_at,
+        )
+        await add_audit(
+            repository,
+            action="proxy_key.create",
+            resource_type="proxy_key",
+            resource_id=key_id,
+            metadata={"runtime_apply": "pending"},
+        )
     publication = await _after_key_change(request, "proxy_key.create", key_id)
     return {
         "key_id": key_id,
@@ -52,8 +62,17 @@ async def create_proxy_key(request: Request) -> dict[str, Any]:
 @router.post("/proxy-keys/{key_id}/revoke")
 async def revoke_proxy_key(key_id: str, request: Request) -> dict[str, Any]:
     await require_admin(request)
-    if not await _repository(request).revoke_proxy_api_key(key_id):
-        raise HTTPException(status_code=404, detail="proxy_key_not_found")
+    repository = _repository(request)
+    async with repository.transaction():
+        if not await repository.revoke_proxy_api_key(key_id):
+            raise HTTPException(status_code=404, detail="proxy_key_not_found")
+        await add_audit(
+            repository,
+            action="proxy_key.revoke",
+            resource_type="proxy_key",
+            resource_id=key_id,
+            metadata={"runtime_apply": "pending"},
+        )
     publication = await _after_key_change(request, "proxy_key.revoke", key_id)
     status = "succeeded" if publication["runtime_apply"]["status"] == "succeeded" else "runtime_pending"
     return {"status": status, "key_id": key_id, **publication}
@@ -78,6 +97,13 @@ async def rotate_proxy_key(key_id: str, request: Request) -> dict[str, Any]:
             name=current["name"],
             key_hash=hash_token(raw),
             expires_at=current.get("expires_at"),
+        )
+        await add_audit(
+            repository,
+            action="proxy_key.rotate",
+            resource_type="proxy_key",
+            resource_id=replacement_id,
+            metadata={"runtime_apply": "pending"},
         )
     publication = await _after_key_change(request, "proxy_key.rotate", replacement_id)
     return {

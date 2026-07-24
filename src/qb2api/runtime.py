@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,7 @@ class RuntimeServices:
         self.metrics_scheduler: MetricsScheduler | None = None
         self.backup_service: BackupService | None = None
         self.usage_rollup_service: UsageRollupService | None = None
+        self.metrics_refresh_tasks: set[asyncio.Task[Any]] = set()
         self.admin_sessions = AdminSessionStore(
             ttl_hours=settings.admin_session_ttl_hours,
             idle_minutes=settings.admin_session_idle_minutes,
@@ -60,7 +62,9 @@ class RuntimeServices:
         vault = CredentialVault(self.settings.credential_key or "")
         repository = AccountRepository(self._database_path())
         await repository.connect()
+        self.account_repo = repository
         await repository.migrate()
+        await repository.recover_metric_refresh_operations()
         registry = AccountRegistry(
             repository,
             vault,
@@ -74,7 +78,6 @@ class RuntimeServices:
             skew_seconds=self.settings.codebuddy_oauth_refresh_skew,
         )
         self.credential_vault = vault
-        self.account_repo = repository
         self.account_registry = registry
         self.credential_resolver = resolver
         self.backup_service = BackupService(
@@ -152,6 +155,7 @@ class RuntimeServices:
             "backup_service", "usage_rollup_service",
         ):
             setattr(app.state, name, getattr(self, name))
+        app.state.metrics_refresh_tasks = self.metrics_refresh_tasks
         app.state.refresh_provider_pools = self.refresh_accounts
 
     async def close(self) -> None:
@@ -160,6 +164,7 @@ class RuntimeServices:
         self._closed = True
         if self.checkin_scheduler is not None:
             await self.checkin_scheduler.stop()
+        await self._cancel_metric_refresh_tasks()
         if self.metrics_scheduler is not None:
             await self.metrics_scheduler.stop()
         if self.usage_rollup_service is not None:
@@ -169,6 +174,15 @@ class RuntimeServices:
         await self.codebuddy_oauth.aclose()
         if self.account_repo is not None:
             await self.account_repo.close()
+
+    async def _cancel_metric_refresh_tasks(self) -> None:
+        tasks = list(self.metrics_refresh_tasks)
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self.metrics_refresh_tasks.clear()
 
     async def apply_setting(self, key: str, value: Any) -> str:
         from .control.settings import SettingsApplier

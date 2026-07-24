@@ -2,13 +2,26 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from cryptography.fernet import Fernet
 
+from qb2api.accounts.repository import AccountRepository
 from qb2api.config import Settings
 from qb2api.providers import ProviderRegistry
 from qb2api.runtime import RuntimeServices
 from qb2api.worker.runtime import WorkerRuntime, local_snapshot
+
+
+class _BlockingRefresh:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+
+    async def refresh_once(self) -> dict[str, int]:
+        self.started.set()
+        await asyncio.Event().wait()
+        return {}
 
 
 @pytest.mark.asyncio
@@ -57,3 +70,56 @@ async def test_runtime_rejects_admin_mode_without_required_keys(tmp_path) -> Non
 
     with pytest.raises(ValueError, match="QB2API_ADMIN_KEY"):
         await RuntimeServices.start(settings)
+
+
+@pytest.mark.asyncio
+async def test_runtime_recovers_interrupted_metric_refresh(tmp_path) -> None:
+    settings = Settings(
+        admin_key="admin-secret",
+        credential_key=Fernet.generate_key().decode(),
+        data_dir=str(tmp_path),
+    )
+    repository = AccountRepository(str(tmp_path / "qb2api.sqlite3"))
+    await repository.connect()
+    await repository.migrate()
+    operation_id = await repository.create_metric_refresh_operation()
+    await repository.close()
+
+    runtime = await RuntimeServices.start(settings)
+    try:
+        operation = await runtime.account_repo.get_metric_refresh_operation(operation_id)
+        assert operation["status"] == "cancelled"
+        assert operation["error_code"] == "refresh_interrupted"
+        audit = await runtime.account_repo.list_audit_events()
+        recovered = [event for event in audit if event["resource_id"] == operation_id]
+        assert recovered[0]["result"] == "cancelled"
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_close_cancels_refresh_wrappers_before_repository(tmp_path) -> None:
+    settings = Settings(
+        admin_key="admin-secret",
+        credential_key=Fernet.generate_key().decode(),
+        data_dir=str(tmp_path),
+    )
+    runtime = await RuntimeServices.start(settings)
+    operation_id = await runtime.account_repo.create_metric_refresh_operation()
+    scheduler = _BlockingRefresh()
+    task = asyncio.create_task(
+        runtime.account_repo.run_metric_refresh_operation(operation_id, scheduler)
+    )
+    runtime.metrics_refresh_tasks.add(task)
+    task.add_done_callback(runtime.metrics_refresh_tasks.discard)
+    await scheduler.started.wait()
+    await runtime.close()
+
+    repository = AccountRepository(str(tmp_path / "qb2api.sqlite3"))
+    await repository.connect()
+    try:
+        operation = await repository.get_metric_refresh_operation(operation_id)
+        assert operation["status"] == "cancelled"
+        assert operation["error_code"] == "refresh_cancelled"
+    finally:
+        await repository.close()

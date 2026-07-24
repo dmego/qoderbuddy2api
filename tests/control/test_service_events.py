@@ -75,6 +75,33 @@ def test_service_events_are_persisted_secret_safe_and_cursor_paginated(tmp_path)
         assert audit.status_code == 200
         assert audit.json()["events"][0]["action"] == "service.reload"
 
+        operations = client.get(
+            "/api/admin/service/events?event_type=operation&result=succeeded",
+            headers=headers,
+        )
+        operations_by_status = client.get(
+            "/api/admin/service/events?event_type=operation&status=succeeded",
+            headers=headers,
+        )
+        assert operations.status_code == 200
+        assert operations.json()["events"]
+        assert all(event["event_type"] == "operation" for event in operations.json()["events"])
+        assert all(event["status"] == "succeeded" for event in operations.json()["events"])
+        assert all(event["in_flight"] == 0 for event in operations.json()["events"])
+        assert operations_by_status.json()["events"] == operations.json()["events"]
+        assert "error_message" not in operations.text
+
+        invalid_type = client.get(
+            "/api/admin/service/events?event_type=lifecycle", headers=headers
+        )
+        invalid_result = client.get(
+            "/api/admin/service/events?result=unknown", headers=headers
+        )
+        assert invalid_type.status_code == 400
+        assert invalid_type.json()["detail"] == "invalid_event_type"
+        assert invalid_result.status_code == 400
+        assert invalid_result.json()["detail"] == "invalid_status"
+
 
 def _supervisor(settings, **kwargs) -> ServiceSupervisor:
     return ServiceSupervisor(
@@ -84,3 +111,36 @@ def _supervisor(settings, **kwargs) -> ServiceSupervisor:
         signal_sender=lambda process, group, requested: process.terminate(),
         **kwargs,
     )
+
+
+def test_failed_service_operation_is_audited_without_raw_error(tmp_path) -> None:
+    settings = Settings(
+        admin_key="admin-secret",
+        credential_key=Fernet.generate_key().decode(),
+        data_dir=str(tmp_path),
+        worker_autostart=False,
+    )
+
+    def failing_supervisor(current, **kwargs) -> ServiceSupervisor:
+        def fail_start(_command, _env):
+            raise RuntimeError("worker-secret-must-not-leak")
+
+        return ServiceSupervisor(current, process_factory=fail_start, **kwargs)
+
+    app = create_control_app(lambda: settings, supervisor_factory=failing_supervisor)
+    headers = {"Authorization": "Bearer admin-secret"}
+    with TestClient(app) as client:
+        response = client.post("/api/admin/service/start", headers=headers)
+        events = client.get(
+            "/api/admin/service/events?event_type=operation&result=failed",
+            headers=headers,
+        )
+        audit = client.get(
+            "/api/admin/audit?action=service.start&result=failed", headers=headers
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert events.json()["events"][0]["error_code"] == "service_operation_failed"
+    assert audit.json()["events"][0]["result"] == "failed"
+    assert "worker-secret-must-not-leak" not in response.text + events.text + audit.text

@@ -131,7 +131,10 @@ def time_range(
     before = _timestamp(started_before, "invalid_started_before")
     if after is not None and before is not None and after >= before:
         raise HTTPException(status_code=400, detail="invalid_time_range")
-    return started_after, started_before
+    return (
+        after.isoformat() if after is not None else None,
+        before.isoformat() if before is not None else None,
+    )
 
 
 def page_slice(items: Sequence[Any], cursor: int | None, limit: int) -> tuple[list[Any], int | None]:

@@ -40,5 +40,6 @@ class SupervisorOperation:
     action: str
     status: OperationStatus = "running"
     error: str | None = None
+    in_flight: int = 0
     created_at: float = field(default_factory=time.time)
     finished_at: float | None = None

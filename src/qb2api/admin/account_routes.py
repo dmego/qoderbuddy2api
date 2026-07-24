@@ -10,8 +10,10 @@ from fastapi.responses import JSONResponse
 from qb2api.accounts.promote import promote_env_account
 from qb2api.checkin.service import CheckinInProgressError, CheckinTarget
 
+from .account_support import account_audit, empty_mutation_body, filter_accounts, published_view
 from .catalog_routes import ProbeError, probe_model_for_account
 from .dependencies import admin_state, require_admin
+from .mutation_audit import add_audit, audit_operation, refresh_after_mutation
 from .validation import (
     bounded_int,
     choice_filter,
@@ -42,7 +44,7 @@ async def list_accounts(
 ) -> dict[str, Any]:
     await require_admin(request)
     views = admin_state(request).account_registry.list_views()
-    selected = _filter_accounts(
+    selected = filter_accounts(
         [account_view_dict(view) for view in views],
         provider=provider_filter(provider),
         source=choice_filter(
@@ -82,11 +84,19 @@ async def delete_account(provider: str, account_id: str, request: Request) -> di
     state = admin_state(request)
     if state.account_registry.is_env_account(provider, account_id):
         raise HTTPException(status_code=400, detail="cannot_delete_env_account")
-    if not await state.account_repo.delete_account(provider, account_id):
-        raise HTTPException(status_code=404, detail="account_not_found")
+    resource_id = f"{provider}:{account_id}"
+    async with state.account_repo.transaction():
+        if not await state.account_repo.delete_account(provider, account_id):
+            raise HTTPException(status_code=404, detail="account_not_found")
+        await add_audit(
+            state.account_repo, action="account.delete", resource_type="account",
+            resource_id=resource_id,
+        )
     state.credential_resolver.invalidate(provider, account_id)
-    await state.refresh_provider_pools()
-    await _audit(request, "account.delete", provider, account_id)
+    await refresh_after_mutation(
+        state, mutation_action="account.delete", resource_type="account",
+        resource_id=resource_id,
+    )
     return {"status": "ok"}
 
 
@@ -104,16 +114,20 @@ async def promote_account(provider: str, account_id: str, request: Request) -> d
             provider=provider,
             account_id=account_id,
             label=selected_label,
+            audit_action="account.promote",
+            rebuild=False,
         )
     except LookupError as error:
         raise HTTPException(status_code=404, detail="account_not_found") from error
     except ValueError as error:
         raise HTTPException(status_code=400, detail="account_promotion_rejected") from error
-    await state.refresh_provider_pools()
-    await _audit(request, "account.promote", provider, new_id)
+    await refresh_after_mutation(
+        state, mutation_action="account.promote", resource_type="account",
+        resource_id=f"{provider}:{new_id}",
+    )
     return {
         "status": "ok",
-        "account": _published_view(state, provider, new_id),
+        "account": published_view(state, provider, new_id),
         "promoted_from": account_id,
     }
 
@@ -127,47 +141,57 @@ async def verify_checkin(
     await require_admin(request)
     state = admin_state(request)
     try:
-        batch = await state.checkin_service.run_batch(
-            trigger="verify",
-            targets=[CheckinTarget(provider=provider, account_id=account_id)],
-            skip_already_done=False,
-        )
+        async with audit_operation(
+            state.account_repo, action="account.verify_checkin",
+            resource_type="account", resource_id=f"{provider}:{account_id}",
+            failure_code="checkin_verification_failed",
+        ):
+            batch = await state.checkin_service.run_batch(
+                trigger="verify",
+                targets=[CheckinTarget(provider=provider, account_id=account_id)],
+                skip_already_done=False,
+            )
     except CheckinInProgressError:
         return JSONResponse(status_code=409, content={"error": "checkin_run_in_progress"})
-    await state.refresh_provider_pools()
-    await _audit(request, "account.verify_checkin", provider, account_id)
+    await refresh_after_mutation(
+        state, mutation_action="account.verify_checkin", resource_type="account",
+        resource_id=f"{provider}:{account_id}",
+    )
     return {"status": "ok", "run_id": batch.run_id, "results": batch.results}
 
 
 @router.post("/accounts/{provider}/{account_id}/refresh")
 async def refresh_account(provider: str, account_id: str, request: Request) -> dict[str, Any]:
     await require_admin(request)
-    await _empty_mutation_body(request, "refresh_body_not_allowed")
+    await empty_mutation_body(request, "refresh_body_not_allowed")
     state = admin_state(request)
     if find_account_view(state, provider, account_id) is None:
         raise HTTPException(status_code=404, detail="account_not_found")
     state.credential_resolver.invalidate(provider, account_id)
-    await state.refresh_provider_pools()
-    await _audit(request, "account.refresh", provider, account_id)
+    async with audit_operation(
+        state.account_repo, action="account.refresh", resource_type="account",
+        resource_id=f"{provider}:{account_id}", failure_code="account_refresh_failed",
+    ):
+        await state.refresh_provider_pools()
     return {
         "status": "succeeded",
-        "account": _published_view(state, provider, account_id),
+        "account": published_view(state, provider, account_id),
     }
 
 
 @router.post("/accounts/{provider}/{account_id}/probe")
 async def probe_account(provider: str, account_id: str, request: Request) -> dict[str, Any]:
     await require_admin(request)
-    await _empty_mutation_body(request, "probe_body_not_allowed")
+    await empty_mutation_body(request, "probe_body_not_allowed")
     state = admin_state(request)
     if find_account_view(state, provider, account_id) is None:
         raise HTTPException(status_code=404, detail="account_not_found")
     try:
         result = await probe_model_for_account(state, provider, account_id)
     except ProbeError as error:
-        await _audit(request, "account.probe", provider, account_id, result="failed")
+        await account_audit(state, "account.probe", provider, account_id, result="failed")
         raise HTTPException(status_code=error.status_code, detail=error.code) from error
-    await _audit(request, "account.probe", provider, account_id)
+    await account_audit(state, "account.probe", provider, account_id)
     return result
 
 
@@ -185,9 +209,12 @@ async def patch_account(provider: str, account_id: str, request: Request) -> dic
     async with state.account_repo.transaction():
         await _update_account(state, account, body)
         await _update_purposes(state, provider, account_id, purposes, body)
-    await state.refresh_provider_pools()
-    await _audit(request, "account.update", provider, account_id)
-    return _published_view(state, provider, account_id)
+        await account_audit(state, "account.update", provider, account_id)
+    await refresh_after_mutation(
+        state, mutation_action="account.update", resource_type="account",
+        resource_id=f"{provider}:{account_id}",
+    )
+    return published_view(state, provider, account_id)
 
 
 async def _find_account(state: Any, provider: str, account_id: str) -> dict[str, Any]:
@@ -240,61 +267,3 @@ async def _update_purposes(
             failure_count=current.get("failure_count", 0),
             last_error=current.get("last_error"),
         )
-
-
-def _published_view(state: Any, provider: str, account_id: str) -> dict[str, Any]:
-    view = find_account_view(state, provider, account_id)
-    if view is None:
-        raise HTTPException(status_code=404, detail="account_not_found")
-    return account_view_dict(view)
-
-
-def _filter_accounts(
-    accounts: list[dict[str, Any]],
-    *,
-    provider: str | None,
-    source: str | None,
-    status: str | None,
-    purpose: str | None,
-    query: str | None,
-) -> list[dict[str, Any]]:
-    needle = query.lower() if query else None
-    return [
-        account
-        for account in accounts
-        if (provider is None or account["provider"] == provider)
-        and (source is None or account["source"] == source)
-        and (status is None or account["summary_status"] == status)
-        and (purpose is None or purpose in account["purposes"])
-        and (
-            needle is None
-            or needle in f"{account['label']} {account['account_id']}".lower()
-        )
-    ]
-
-
-async def _empty_mutation_body(request: Request, detail: str) -> None:
-    body = await json_object(request, allow_empty=True)
-    if body:
-        raise HTTPException(status_code=400, detail=detail)
-
-
-async def _audit(
-    request: Request,
-    action: str,
-    provider: str,
-    account_id: str,
-    *,
-    result: str = "succeeded",
-) -> None:
-    repository = getattr(admin_state(request), "account_repo", None)
-    if repository is None:
-        return
-    await repository.add_audit_event(
-        actor_type="admin",
-        actor_id=None,
-        action=action,
-        resource_type="account",
-        resource_id=f"{provider}:{account_id}",
-        result=result,
-    )

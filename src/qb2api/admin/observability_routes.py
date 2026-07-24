@@ -11,6 +11,24 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
 from .dependencies import admin_state, require_admin
+from .observability_support import (
+    audit_action_filters,
+)
+from .observability_support import (
+    page as _page,
+)
+from .observability_support import (
+    repository as _repository,
+)
+from .observability_support import (
+    safe_event as _safe_event,
+)
+from .observability_support import (
+    track_task as _track_task,
+)
+from .observability_support import (
+    usage_filters as _filters,
+)
 from .validation import (
     bounded_int,
     cursor_value,
@@ -228,6 +246,9 @@ async def audit_events(
     limit: str | None = None,
     cursor: str | None = None,
     action: str | None = None,
+    action_prefix: str | None = None,
+    category: str | None = None,
+    search: str | None = None,
     resource_type: str | None = None,
     result: str | None = None,
     started_after: str | None = None,
@@ -237,60 +258,20 @@ async def audit_events(
     selected_limit = bounded_int(limit, default=100, maximum=500)
     offset = cursor_value(cursor, allow_zero=True) or 0
     after, before = time_range(started_after, started_before)
+    selected_action, selected_prefix = audit_action_filters(
+        action,
+        action_prefix,
+        category,
+    )
     events, next_cursor = await _repository(request).list_audit_events_page(
         limit=selected_limit,
         offset=offset,
-        action=text_filter(action, detail="invalid_action"),
+        action=selected_action,
+        action_prefix=selected_prefix,
+        search=text_filter(search, detail="invalid_search"),
         resource_type=text_filter(resource_type, detail="invalid_resource_type"),
         result=text_filter(result, detail="invalid_result"),
         started_after=after,
         started_before=before,
     )
     return {"events": events, "limit": selected_limit, "next_cursor": next_cursor}
-
-
-def _repository(request: Request):
-    repository = getattr(admin_state(request), "account_repo", None)
-    if repository is None:
-        raise HTTPException(status_code=503, detail="repository_unavailable")
-    return repository
-
-
-def _filters(request: Request) -> dict[str, str | None]:
-    after, before = time_range(
-        request.query_params.get("started_after"),
-        request.query_params.get("started_before"),
-    )
-    return {
-        "provider": provider_filter(request.query_params.get("provider")),
-        "account_id": optional_account_id(request.query_params.get("account_id")),
-        "model_id": text_filter(request.query_params.get("model_id"), detail="invalid_model_id"),
-        "started_after": after,
-        "started_before": before,
-    }
-
-
-def _page(key: str, values: list[Any], limit: int, offset: int) -> dict[str, Any]:
-    return {
-        key: values[:limit],
-        "limit": limit,
-        "next_cursor": offset + limit if len(values) > limit else None,
-    }
-
-
-def _track_task(app: Any, task: asyncio.Task[Any]) -> None:
-    tasks = getattr(app.state, "metrics_refresh_tasks", None)
-    if tasks is None:
-        tasks = set()
-        app.state.metrics_refresh_tasks = tasks
-    tasks.add(task)
-    task.add_done_callback(tasks.discard)
-
-
-def _safe_event(event: dict[str, Any]) -> dict[str, Any]:
-    fields = (
-        "event_id", "request_id", "provider", "account_id", "model_id", "protocol",
-        "status", "http_status", "input_tokens", "output_tokens", "latency_ms",
-        "stream_committed", "started_at", "finished_at", "error_code",
-    )
-    return {field: event.get(field) for field in fields}

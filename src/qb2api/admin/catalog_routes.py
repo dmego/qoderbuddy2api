@@ -41,18 +41,22 @@ async def list_models(
     enabled: str | None = None,
     source: str | None = None,
     capability: str | None = None,
+    search: str | None = None,
+    query: str | None = None,
     cursor: str | None = None,
     limit: str | None = None,
 ) -> dict[str, Any]:
     await require_admin(request)
     repository = _repository(request)
     selected_provider = provider_filter(provider)
+    selected_search = _model_search(search, query)
     models = await repository.list_models(selected_provider)
     selected = _filter_models(
         models,
         enabled=bool_filter(enabled),
         source=text_filter(source, detail="invalid_source"),
         capability=text_filter(capability, detail="invalid_capability"),
+        search=selected_search,
     )
     selected_limit = bounded_int(limit, default=100, maximum=100)
     page, next_cursor = page_slice(
@@ -70,9 +74,10 @@ async def patch_model(provider: str, model_id: str, request: Request) -> dict[st
     if set(body) != {"enabled"} or not isinstance(body["enabled"], bool):
         raise HTTPException(status_code=400, detail="enabled_boolean_required")
     repository = _repository(request)
-    if not await repository.set_model_enabled(provider, model_id, body["enabled"]):
-        raise HTTPException(status_code=404, detail="model_not_found")
-    await _audit(request, "model.update", provider, model_id)
+    async with repository.transaction():
+        if not await repository.set_model_enabled(provider, model_id, body["enabled"]):
+            raise HTTPException(status_code=404, detail="model_not_found")
+        await _audit(request, "model.update", provider, model_id)
     models = await repository.list_models(provider)
     return next(model for model in models if model["model_id"] == model_id)
 
@@ -83,17 +88,18 @@ async def refresh_models(request: Request) -> dict[str, Any]:
     repository = _repository(request)
     definitions = load_models_from_config(admin_state(request).settings.model_config_path)
     count = 0
-    for provider, models in definitions.items():
-        for model in models:
-            await repository.upsert_model(
-                provider=provider,
-                model_id=model.id,
-                display_name=model.id,
-                capabilities=["chat", "streaming"],
-                source="definition",
-            )
-            count += 1
-    await _audit(request, "model.refresh", "catalog", "catalog")
+    async with repository.transaction():
+        for provider, models in definitions.items():
+            for model in models:
+                await repository.upsert_model(
+                    provider=provider,
+                    model_id=model.id,
+                    display_name=model.id,
+                    capabilities=["chat", "streaming"],
+                    source="definition",
+                )
+                count += 1
+        await _audit(request, "model.refresh", "catalog", "catalog")
     return {"status": "succeeded", "refreshed": count}
 
 
@@ -192,14 +198,27 @@ def _filter_models(
     enabled: bool | None,
     source: str | None,
     capability: str | None,
+    search: str | None,
 ) -> list[dict[str, Any]]:
+    needle = search.casefold() if search is not None else None
     return [
         model
         for model in models
         if (enabled is None or model["enabled"] is enabled)
         and (source is None or model["source"] == source)
         and (capability is None or capability in model["capabilities"])
+        and (
+            needle is None
+            or needle in model["model_id"].casefold()
+            or needle in model["display_name"].casefold()
+        )
     ]
+
+
+def _model_search(search: str | None, query: str | None) -> str | None:
+    if search is not None and query is not None and search != query:
+        raise HTTPException(status_code=400, detail="conflicting_search")
+    return text_filter(search or query, detail="invalid_search")
 
 
 async def _probe_model_id(state: Any, provider: str, model_id: str | None) -> str:

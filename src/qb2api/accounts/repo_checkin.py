@@ -153,9 +153,21 @@ class CheckinRepositoryMixin:
 
     async def list_checkin_runs(self, limit: int = 20) -> list[dict[str, Any]]:
         """Return secret-free run summaries ordered by most recent start."""
+        rows, _ = await self.list_checkin_runs_page(limit=limit)
+        return rows
+
+    async def list_checkin_runs_page(
+        self,
+        *,
+        limit: int = 20,
+        cursor: tuple[str, str] | None = None,
+        status: str | None = None,
+        trigger: str | None = None,
+    ) -> tuple[list[dict[str, Any]], tuple[str, str] | None]:
+        where, params = _run_filters(cursor, status, trigger)
         async with self._operation() as db:
             cursor = await db.execute(
-                """
+                f"""
                 SELECT r.run_id, r.local_date, r.timezone, r.started_at,
                        r.finished_at, r.status, r.trigger,
                        COUNT(a.run_id) AS attempt_count,
@@ -163,14 +175,38 @@ class CheckinRepositoryMixin:
                            THEN 1 ELSE 0 END) AS successful_count
                 FROM checkin_runs AS r
                 LEFT JOIN checkin_attempts AS a ON a.run_id = r.run_id
+                WHERE {where}
                 GROUP BY r.run_id
                 ORDER BY r.started_at DESC, r.run_id DESC
                 LIMIT ?
                 """,
-                (limit,),
+                (*params, limit + 1),
             )
             rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+        page = [dict(row) for row in rows[:limit]]
+        next_key = None
+        if len(rows) > limit and page:
+            next_key = (page[-1]["started_at"], page[-1]["run_id"])
+        return page, next_key
+
+
+def _run_filters(
+    cursor: tuple[str, str] | None,
+    status: str | None,
+    trigger: str | None,
+) -> tuple[str, list[Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if status is not None:
+        clauses.append("r.status=?")
+        params.append(status)
+    if trigger is not None:
+        clauses.append("r.trigger=?")
+        params.append(trigger)
+    if cursor is not None:
+        clauses.append("(r.started_at < ? OR (r.started_at = ? AND r.run_id < ?))")
+        params.extend((cursor[0], cursor[0], cursor[1]))
+    return " AND ".join(clauses) or "1=1", params
 
 
 _UPSERT_DAILY_STATE = """

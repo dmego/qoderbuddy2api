@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from typing import Any
 
 from .schema import now_iso
 
 _SERVICE_ERROR_CODES = frozenset({"worker_state_error", "service_operation_failed"})
+_LOGGER = logging.getLogger(__name__)
 
 
 class ServiceEventRepositoryMixin:
@@ -24,15 +26,23 @@ class ServiceEventRepositoryMixin:
         )
 
     async def save_service_operation(self, operation: Any) -> None:
-        await super().save_service_operation(operation)
-        await self.add_service_event(
-            service_name="proxy-worker",
-            event_type="operation",
-            action=operation.action,
-            operation_id=operation.operation_id,
-            status=operation.status,
-            error_code="service_operation_failed" if operation.error else None,
-        )
+        async with self.transaction():
+            await super().save_service_operation(operation)
+            await self.add_service_event(
+                service_name="proxy-worker",
+                event_type="operation",
+                action=operation.action,
+                operation_id=operation.operation_id,
+                status=operation.status,
+                in_flight=operation.in_flight,
+                error_code="service_operation_failed" if operation.error else None,
+            )
+            await self.add_audit_event(
+                actor_type="admin", actor_id=None,
+                action=f"service.{operation.action}", resource_type="service",
+                resource_id="proxy-worker", result=operation.status,
+                metadata={"operation_id": operation.operation_id},
+            )
 
     async def add_service_event(
         self,
@@ -44,6 +54,7 @@ class ServiceEventRepositoryMixin:
         observed_state: str | None = None,
         operation_id: str | None = None,
         status: str | None = None,
+        in_flight: int | None = None,
         error_code: str | None = None,
     ) -> int:
         async with self._operation(write=True) as db:
@@ -51,14 +62,15 @@ class ServiceEventRepositoryMixin:
                 """
                 INSERT INTO service_events (
                     event_id, service_name, event_type, action, desired_state,
-                    observed_state, operation_id, status, error_code, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    observed_state, operation_id, status, in_flight, error_code, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(uuid.uuid4()), service_name, event_type, action, desired_state,
                     observed_state,
                     operation_id,
                     status,
+                    in_flight,
                     error_code if error_code in _SERVICE_ERROR_CODES else None,
                     now_iso(),
                 ),
@@ -70,14 +82,27 @@ class ServiceEventRepositoryMixin:
         *,
         cursor: int | None = None,
         limit: int = 50,
+        event_type: str | None = None,
+        status: str | None = None,
     ) -> tuple[list[dict[str, Any]], int | None]:
-        where = "WHERE cursor < ?" if cursor is not None else ""
-        params: tuple[int, ...] = (cursor, limit + 1) if cursor is not None else (limit + 1,)
+        clauses: list[str] = []
+        params: list[Any] = []
+        if cursor is not None:
+            clauses.append("cursor < ?")
+            params.append(cursor)
+        if event_type is not None:
+            clauses.append("event_type = ?")
+            params.append(event_type)
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit + 1)
         async with self._operation() as db:
             rows = await (
                 await db.execute(
                     f"SELECT * FROM service_events {where} ORDER BY cursor DESC LIMIT ?",
-                    params,
+                    tuple(params),
                 )
             ).fetchall()
         events = [dict(row) for row in rows[:limit]]
@@ -143,12 +168,13 @@ class ServiceEventRepositoryMixin:
             )
             await self._audit_metric_refresh(operation_id, "cancelled")
             raise
-        except Exception as error:
+        except Exception:
             status = "failed"
+            _LOGGER.exception("metrics refresh operation failed", extra={"operation_id": operation_id})
             await self.finish_metric_refresh_operation(
                 operation_id,
                 status=status,
-                error_code=type(error).__name__,
+                error_code="metrics_refresh_failed",
             )
         else:
             status = "succeeded"
@@ -158,6 +184,22 @@ class ServiceEventRepositoryMixin:
                 result=result,
             )
         await self._audit_metric_refresh(operation_id, status)
+
+    async def recover_metric_refresh_operations(self) -> list[str]:
+        async with self.transaction():
+            rows = await (await self.db.execute(
+                "SELECT operation_id FROM metric_refresh_operations WHERE status='running'"
+            )).fetchall()
+            operation_ids = [str(row[0]) for row in rows]
+            if operation_ids:
+                await self.db.execute(
+                    "UPDATE metric_refresh_operations SET status='cancelled', "
+                    "error_code='refresh_interrupted', finished_at=? WHERE status='running'",
+                    (now_iso(),),
+                )
+                for operation_id in operation_ids:
+                    await self._audit_metric_refresh(operation_id, "cancelled")
+        return operation_ids
 
     async def _audit_metric_refresh(self, operation_id: str, result: str) -> None:
         await self.add_audit_event(
@@ -175,13 +217,15 @@ class ServiceEventRepositoryMixin:
         limit: int,
         offset: int = 0,
         action: str | None = None,
+        action_prefix: str | None = None,
+        search: str | None = None,
         resource_type: str | None = None,
         result: str | None = None,
         started_after: str | None = None,
         started_before: str | None = None,
     ) -> tuple[list[dict[str, Any]], int | None]:
         clauses, params = _audit_filters(
-            action, resource_type, result, started_after, started_before
+            action, action_prefix, search, resource_type, result, started_after, started_before
         )
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.extend((limit + 1, offset))
@@ -200,6 +244,8 @@ class ServiceEventRepositoryMixin:
 
 def _audit_filters(
     action: str | None,
+    action_prefix: str | None,
+    search: str | None,
     resource_type: str | None,
     result: str | None,
     started_after: str | None,
@@ -211,6 +257,16 @@ def _audit_filters(
         if value:
             clauses.append(f"{column}=?")
             params.append(value)
+    if action_prefix:
+        clauses.append("action LIKE ? ESCAPE '\\'")
+        params.append(f"{_escape_like(action_prefix)}.%")
+    if search:
+        pattern = f"%{_escape_like(search)}%"
+        clauses.append(
+            "(event_id LIKE ? ESCAPE '\\' OR action LIKE ? ESCAPE '\\' "
+            "OR resource_id LIKE ? ESCAPE '\\')"
+        )
+        params.extend((pattern, pattern, pattern))
     if started_after:
         clauses.append("created_at>=?")
         params.append(started_after)
@@ -218,6 +274,10 @@ def _audit_filters(
         clauses.append("created_at<?")
         params.append(started_before)
     return clauses, params
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _audit_row(row: Any) -> dict[str, Any]:

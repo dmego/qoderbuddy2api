@@ -20,6 +20,7 @@ from .repo_service_events import ServiceEventRepositoryMixin
 from .repo_sessions import SessionRepositoryMixin
 from .repo_telemetry import TelemetryRepositoryMixin
 from .schema import SCHEMA
+from .schema_management import MANAGEMENT_SCHEMA
 
 __all__ = ["AccountRepository", "CredentialVersionConflict"]
 
@@ -62,11 +63,13 @@ class AccountRepository(
     async def migrate(self) -> None:
         async with self._operation_lock:
             await self.db.executescript(SCHEMA)
+            await self.db.executescript(MANAGEMENT_SCHEMA)
             await self._ensure_column(
                 "usage_rollups",
                 "token_event_count",
                 "INTEGER NOT NULL DEFAULT 0",
             )
+            await self._ensure_column("service_events", "in_flight", "INTEGER")
             await self._ensure_column(
                 "usage_rollups",
                 "missing_token_count",

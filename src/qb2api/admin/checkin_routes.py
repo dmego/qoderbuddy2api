@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import json
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -10,7 +13,8 @@ from fastapi.responses import JSONResponse
 from qb2api.checkin.service import CheckinInProgressError, CheckinTarget
 
 from .dependencies import admin_state, require_admin
-from .validation import json_object, required_string
+from .mutation_audit import audit_operation
+from .validation import bounded_int, choice_filter, json_object, required_string
 
 router = APIRouter()
 
@@ -29,11 +33,18 @@ async def checkin_run(request: Request) -> Any:
     body = await json_object(request, allow_empty=True)
     targets = _targets(body)
     try:
-        batch = await state.checkin_service.run_batch(
-            trigger="manual",
-            targets=targets,
-            skip_already_done=False,
-        )
+        async with audit_operation(
+            state.account_repo,
+            action="checkin.run",
+            resource_type="checkin",
+            resource_id="manual",
+            failure_code="checkin_run_failed",
+        ):
+            batch = await state.checkin_service.run_batch(
+                trigger="manual",
+                targets=targets,
+                skip_already_done=False,
+            )
     except CheckinInProgressError:
         return JSONResponse(status_code=409, content={"error": "checkin_run_in_progress"})
     return {
@@ -46,12 +57,32 @@ async def checkin_run(request: Request) -> Any:
 
 
 @router.get("/checkin/runs")
-async def checkin_runs(request: Request, limit: int = 20) -> dict[str, Any]:
+async def checkin_runs(
+    request: Request,
+    limit: str | None = None,
+    cursor: str | None = None,
+    status: str | None = None,
+    trigger: str | None = None,
+) -> dict[str, Any]:
     await require_admin(request)
-    if not 1 <= limit <= 100:
-        raise HTTPException(status_code=400, detail="invalid_limit")
-    runs = await admin_state(request).account_repo.list_checkin_runs(limit)
-    return {"runs": runs, "limit": limit}
+    selected_limit = bounded_int(limit, default=20, maximum=100)
+    selected_status = choice_filter(
+        status,
+        {"running", "finished", "failed", "cancelled"},
+        detail="invalid_status",
+    )
+    selected_trigger = _trigger_filter(trigger)
+    runs, next_key = await admin_state(request).account_repo.list_checkin_runs_page(
+        limit=selected_limit,
+        cursor=_decode_cursor(cursor),
+        status=selected_status,
+        trigger=selected_trigger,
+    )
+    return {
+        "runs": runs,
+        "limit": selected_limit,
+        "next_cursor": _encode_cursor(next_key),
+    }
 
 
 @router.get("/checkin/runs/{run_id}")
@@ -89,3 +120,50 @@ def _next_run(state: Any) -> str | None:
     scheduler = state.checkin_scheduler
     next_run = scheduler.next_run_at if scheduler is not None else None
     return next_run.isoformat() if next_run is not None else None
+
+
+def _trigger_filter(value: str | None) -> str | None:
+    normalized = "scheduler" if value == "scheduled" else value
+    return choice_filter(
+        normalized,
+        {"manual", "scheduler", "catch_up", "verify"},
+        detail="invalid_trigger",
+    )
+
+
+def _decode_cursor(value: str | None) -> tuple[str, str] | None:
+    if value is None:
+        return None
+    if len(value) > 512:
+        raise HTTPException(status_code=400, detail="invalid_cursor")
+    try:
+        padding = "=" * (-len(value) % 4)
+        payload = base64.urlsafe_b64decode(f"{value}{padding}")
+        decoded = json.loads(payload)
+    except (ValueError, UnicodeError, json.JSONDecodeError) as error:
+        raise HTTPException(status_code=400, detail="invalid_cursor") from error
+    if not _valid_cursor_payload(decoded):
+        raise HTTPException(status_code=400, detail="invalid_cursor")
+    return decoded[0], decoded[1]
+
+
+def _encode_cursor(value: tuple[str, str] | None) -> str | None:
+    if value is None:
+        return None
+    payload = json.dumps(value, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+
+def _valid_cursor_payload(value: Any) -> bool:
+    if not isinstance(value, list) or len(value) != 2:
+        return False
+    started_at, run_id = value
+    if not isinstance(started_at, str) or not isinstance(run_id, str):
+        return False
+    if not 1 <= len(started_at) <= 64 or not 1 <= len(run_id) <= 128:
+        return False
+    try:
+        datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True

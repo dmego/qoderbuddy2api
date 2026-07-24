@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -15,6 +16,7 @@ from qb2api.accounts.resolver import CredentialResolver
 from qb2api.accounts.vault import CredentialVault
 from qb2api.admin.auth import AdminSessionStore
 from qb2api.admin.router import router as admin_router
+from qb2api.checkin.service import CheckinInProgressError
 from qb2api.config import Settings
 
 
@@ -22,6 +24,38 @@ class _MetricsScheduler:
     async def refresh_once(self) -> dict[str, int]:
         await asyncio.sleep(0)
         return {"fresh": 2, "stale": 0, "unknown": 1, "unavailable": 0, "skipped": 0}
+
+
+class _FailingMetricsScheduler:
+    async def refresh_once(self) -> dict[str, int]:
+        raise RuntimeError("upstream-secret-must-not-leak")
+
+
+class _BlockingMetricsScheduler:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+
+    async def refresh_once(self) -> dict[str, int]:
+        self.started.set()
+        await asyncio.Event().wait()
+        return {}
+
+
+class _ManualCheckinService:
+    def __init__(self, mode: str) -> None:
+        self.mode = mode
+        self.started = asyncio.Event()
+
+    async def run_batch(self, **_kwargs):
+        if self.mode == "busy":
+            raise CheckinInProgressError("busy")
+        if self.mode == "blocking":
+            self.started.set()
+            await asyncio.Event().wait()
+        return SimpleNamespace(
+            run_id="manual-run", status="finished", local_date="2026-07-24",
+            timezone="Asia/Shanghai", results=[],
+        )
 
 
 @pytest.fixture
@@ -85,6 +119,62 @@ async def test_account_refresh_filters_pagination_and_mutation_audit(management_
 
 
 @pytest.mark.asyncio
+async def test_committed_mutation_audit_survives_derived_refresh_failure(
+    management_context,
+) -> None:
+    app, repository, _refreshes = management_context
+
+    async def fail_refresh() -> None:
+        raise RuntimeError("derived refresh failed")
+
+    app.state.refresh_provider_pools = fail_refresh
+    async with _client(app) as client:
+        response = await client.delete(
+            "/api/admin/accounts/qoder/qd-2", headers=_headers()
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "provider_pool_refresh_failed"
+    assert not any(
+        item["account_id"] == "qd-2" for item in await repository.list_accounts("qoder")
+    )
+    audit = await repository.list_audit_events()
+    outcomes = {(item["action"], item["result"]) for item in audit}
+    assert ("account.delete", "succeeded") in outcomes
+    assert ("provider_pool.refresh", "failed") in outcomes
+
+
+@pytest.mark.asyncio
+async def test_manual_checkin_audits_success_failure_and_cancellation(
+    management_context,
+) -> None:
+    app, repository, _refreshes = management_context
+    async with _client(app) as client:
+        app.state.checkin_service = _ManualCheckinService("success")
+        succeeded = await client.post("/api/admin/checkin/run", headers=_headers())
+        app.state.checkin_service = _ManualCheckinService("busy")
+        failed = await client.post("/api/admin/checkin/run", headers=_headers())
+        blocker = _ManualCheckinService("blocking")
+        app.state.checkin_service = blocker
+        task = asyncio.create_task(
+            client.post("/api/admin/checkin/run", headers=_headers())
+        )
+        await blocker.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert succeeded.status_code == 200
+    assert failed.status_code == 409
+    results = [
+        item["result"]
+        for item in await repository.list_audit_events()
+        if item["action"] == "checkin.run"
+    ]
+    assert sorted(results) == ["cancelled", "failed", "succeeded"]
+
+
+@pytest.mark.asyncio
 async def test_metrics_detail_and_refresh_operation_are_trackable(management_context) -> None:
     app, repository, _refreshes = management_context
     async with _client(app) as client:
@@ -108,6 +198,42 @@ async def test_metrics_detail_and_refresh_operation_are_trackable(management_con
 
 
 @pytest.mark.asyncio
+async def test_metric_refresh_failure_and_cancellation_use_stable_codes(
+    management_context,
+) -> None:
+    _app, repository, _refreshes = management_context
+    failed_id = await repository.create_metric_refresh_operation()
+    await repository.run_metric_refresh_operation(failed_id, _FailingMetricsScheduler())
+
+    cancelled_id = await repository.create_metric_refresh_operation()
+    scheduler = _BlockingMetricsScheduler()
+    task = asyncio.create_task(
+        repository.run_metric_refresh_operation(cancelled_id, scheduler)
+    )
+    await scheduler.started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    failed = await repository.get_metric_refresh_operation(failed_id)
+    cancelled = await repository.get_metric_refresh_operation(cancelled_id)
+    assert failed["status"] == "failed"
+    assert failed["error_code"] == "metrics_refresh_failed"
+    assert "RuntimeError" not in str(failed)
+    assert "upstream-secret" not in str(failed)
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["error_code"] == "refresh_cancelled"
+    audit = await repository.list_audit_events()
+    outcomes = {
+        event["resource_id"]: event["result"]
+        for event in audit
+        if event["action"] == "metrics.refresh"
+    }
+    assert outcomes[failed_id] == "failed"
+    assert outcomes[cancelled_id] == "cancelled"
+
+
+@pytest.mark.asyncio
 async def test_usage_and_audit_filters_reject_invalid_ranges(management_context) -> None:
     app, _repository, _refreshes = management_context
     async with _client(app) as client:
@@ -127,6 +253,206 @@ async def test_usage_and_audit_filters_reject_invalid_ranges(management_context)
     assert bad_time.json()["detail"] == "invalid_started_after"
     assert bad_limit.status_code == 400
     assert bad_limit.json()["detail"] == "invalid_limit"
+
+
+@pytest.mark.asyncio
+async def test_equivalent_timezones_select_the_same_usage_and_audit_rows(
+    management_context,
+) -> None:
+    app, repository, _refreshes = management_context
+    await repository.add_request_event(
+        {
+            "event_id": "evt-timezone",
+            "request_id": "req-timezone",
+            "provider": "qoder",
+            "account_id": "qd-1",
+            "model_id": "model-timezone",
+            "protocol": "openai",
+            "status": "succeeded",
+            "latency_ms": 20,
+            "started_at": "2026-07-24T00:00:00+00:00",
+        }
+    )
+    audit_id = await repository.add_audit_event(
+        actor_type="admin",
+        actor_id=None,
+        action="account.refresh",
+        resource_type="account",
+        resource_id="qoder:qd-1",
+        result="succeeded",
+    )
+    await repository.db.execute(
+        "UPDATE audit_events SET created_at=? WHERE event_id=?",
+        ("2026-07-24T00:00:00+00:00", audit_id),
+    )
+    await repository.db.commit()
+
+    async with _client(app) as client:
+        for started_after in (
+            "2026-07-24T00:00:00Z",
+            "2026-07-24T00:00:00+00:00",
+            "2026-07-24T08:00:00+08:00",
+        ):
+            params = {
+                "started_after": started_after,
+                "started_before": "2026-07-24T00:01:00+00:00",
+            }
+            usage = await client.get(
+                "/api/admin/usage/events", headers=_headers(), params=params
+            )
+            audit = await client.get(
+                "/api/admin/audit", headers=_headers(), params=params
+            )
+            assert [item["event_id"] for item in usage.json()["events"]] == [
+                "evt-timezone"
+            ]
+            assert [item["event_id"] for item in audit.json()["events"]] == [audit_id]
+
+
+@pytest.mark.asyncio
+async def test_model_usage_and_audit_query_contracts(management_context) -> None:
+    app, repository, _refreshes = management_context
+    await repository.upsert_model(
+        provider="qoder",
+        model_id="Qwen3.7-Max",
+        display_name="Qwen Max Production",
+        capabilities=["chat"],
+    )
+    await repository.upsert_model(
+        provider="qoder",
+        model_id="Qwen3.7-Flash",
+        display_name="Qwen Flash",
+        capabilities=["chat"],
+    )
+    for index, latency in enumerate((100, 200, 300), start=1):
+        await repository.add_request_event(
+            {
+                "event_id": f"evt-success-{index}",
+                "request_id": f"req-success-{index}",
+                "provider": "qoder",
+                "account_id": "qd-1",
+                "model_id": "Qwen3.7-Max",
+                "protocol": "openai",
+                "status": "succeeded",
+                "latency_ms": latency,
+                "started_at": f"2026-07-24T00:00:0{index}+00:00",
+            }
+        )
+    await repository.add_request_event(
+        {
+            "event_id": "evt-failed",
+            "request_id": "req-failed",
+            "provider": "qoder",
+            "account_id": "qd-1",
+            "model_id": "Qwen3.7-Max",
+            "protocol": "openai",
+            "status": "failed",
+            "latency_ms": None,
+            "started_at": "2026-07-24T00:00:04+00:00",
+        }
+    )
+    account_event = await repository.add_audit_event(
+        actor_type="admin",
+        actor_id=None,
+        action="account.delete",
+        resource_type="account",
+        resource_id="qoder:qd-1",
+        result="succeeded",
+    )
+    await repository.add_audit_event(
+        actor_type="admin",
+        actor_id=None,
+        action="credential.rotate",
+        resource_type="credential",
+        resource_id="qoder:qd-1:chat",
+        result="succeeded",
+    )
+
+    async with _client(app) as client:
+        models = await client.get(
+            "/api/admin/models?search=max", headers=_headers()
+        )
+        queried_models = await client.get(
+            "/api/admin/models?query=flash", headers=_headers()
+        )
+        summary = await client.get(
+            "/api/admin/usage/summary?status=succeeded", headers=_headers()
+        )
+        failed_summary = await client.get(
+            "/api/admin/usage/summary?status=failed", headers=_headers()
+        )
+        events = await client.get(
+            "/api/admin/usage/events?status=failed", headers=_headers()
+        )
+        timeseries = await client.get(
+            "/api/admin/usage/timeseries?status=failed", headers=_headers()
+        )
+        exported = await client.get(
+            "/api/admin/usage/export?status=failed", headers=_headers()
+        )
+        audit = await client.get(
+            "/api/admin/audit?action=account&search=qd-1", headers=_headers()
+        )
+        category_audit = await client.get(
+            "/api/admin/audit?category=credential", headers=_headers()
+        )
+        invalid_status = await client.get(
+            "/api/admin/usage/summary?status=unknown", headers=_headers()
+        )
+        invalid_category = await client.get(
+            "/api/admin/audit?category=unknown", headers=_headers()
+        )
+
+    assert [item["model_id"] for item in models.json()["models"]] == ["Qwen3.7-Max"]
+    assert [item["model_id"] for item in queried_models.json()["models"]] == [
+        "Qwen3.7-Flash"
+    ]
+    assert summary.json()["summary"]["request_count"] == 3
+    assert summary.json()["summary"]["avg_latency_ms"] == 200
+    assert summary.json()["summary"]["p95_latency_ms"] == 300
+    assert failed_summary.json()["summary"]["request_count"] == 1
+    assert failed_summary.json()["summary"]["avg_latency_ms"] is None
+    assert failed_summary.json()["summary"]["p95_latency_ms"] is None
+    assert [item["event_id"] for item in events.json()["events"]] == ["evt-failed"]
+    assert timeseries.json()["rollups"][0]["request_count"] == 1
+    assert "evt-failed" in exported.text
+    assert "evt-success" not in exported.text
+    assert [item["event_id"] for item in audit.json()["events"]] == [account_event]
+    assert category_audit.json()["events"][0]["action"] == "credential.rotate"
+    assert invalid_status.status_code == 400
+    assert invalid_status.json()["detail"] == "invalid_status"
+    assert invalid_category.status_code == 400
+    assert invalid_category.json()["detail"] == "invalid_category"
+
+
+@pytest.mark.asyncio
+async def test_model_mutation_rolls_back_when_audit_insert_fails(
+    management_context,
+) -> None:
+    app, repository, _refreshes = management_context
+    await repository.upsert_model(
+        provider="qoder", model_id="atomic-model", enabled=True
+    )
+    await repository.db.execute(
+        """CREATE TRIGGER reject_model_audit BEFORE INSERT ON audit_events
+        WHEN NEW.action='model.update'
+        BEGIN SELECT RAISE(ABORT, 'audit rejected'); END"""
+    )
+    await repository.db.commit()
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="https://test") as client:
+        response = await client.patch(
+            "/api/admin/models/qoder/atomic-model",
+            headers=_headers(),
+            json={"enabled": False},
+        )
+
+    model = next(
+        item for item in await repository.list_models("qoder")
+        if item["model_id"] == "atomic-model"
+    )
+    assert response.status_code == 500
+    assert model["enabled"] is True
 
 
 async def _seed(repository: AccountRepository, vault: CredentialVault) -> None:

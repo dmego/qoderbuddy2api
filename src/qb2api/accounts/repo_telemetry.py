@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from .schema import now_iso
+from .telemetry_queries import filtered_usage_rollups, percentile, telemetry_filters
 
 
 class TelemetryRepositoryMixin:
@@ -53,13 +54,15 @@ class TelemetryRepositoryMixin:
         provider: str | None = None,
         account_id: str | None = None,
         model_id: str | None = None,
+        status: str | None = None,
         started_after: str | None = None,
         started_before: str | None = None,
     ) -> list[dict[str, Any]]:
         limit = max(1, min(limit, 501))
         offset = max(0, offset)
-        where, params = _telemetry_filters(
-            "started_at", provider, account_id, model_id, started_after, started_before
+        where, params = telemetry_filters(
+            "started_at", provider=provider, account_id=account_id, model_id=model_id,
+            status=status, started_after=started_after, started_before=started_before,
         )
         async with self._operation() as db:
             cursor = await db.execute(
@@ -87,13 +90,22 @@ class TelemetryRepositoryMixin:
         provider: str | None = None,
         account_id: str | None = None,
         model_id: str | None = None,
+        status: str | None = None,
         started_after: str | None = None,
         started_before: str | None = None,
     ) -> list[dict[str, Any]]:
         limit = max(1, min(limit, 501))
         offset = max(0, offset)
-        where, params = _telemetry_filters(
-            "bucket_start", provider, account_id, model_id, started_after, started_before
+        if status is not None:
+            async with self._operation() as db:
+                return await filtered_usage_rollups(
+                    db, limit=limit, offset=offset, bucket_kind=bucket_kind or "minute",
+                    provider=provider, account_id=account_id, model_id=model_id,
+                    status=status, started_after=started_after, started_before=started_before,
+                )
+        where, params = telemetry_filters(
+            "bucket_start", provider=provider, account_id=account_id, model_id=model_id,
+            status=None, started_after=started_after, started_before=started_before,
         )
         if bucket_kind:
             where += " AND bucket_kind=?"
@@ -113,11 +125,13 @@ class TelemetryRepositoryMixin:
         provider: str | None = None,
         account_id: str | None = None,
         model_id: str | None = None,
+        status: str | None = None,
         started_after: str | None = None,
         started_before: str | None = None,
-    ) -> dict[str, int]:
-        where, params = _telemetry_filters(
-            "started_at", provider, account_id, model_id, started_after, started_before
+    ) -> dict[str, Any]:
+        where, params = telemetry_filters(
+            "started_at", provider=provider, account_id=account_id, model_id=model_id,
+            status=status, started_after=started_after, started_before=started_before,
         )
         async with self._operation() as db:
             cursor = await db.execute(
@@ -134,6 +148,12 @@ class TelemetryRepositoryMixin:
                 , params
             )
             row = await cursor.fetchone()
+            latency_rows = await (await db.execute(
+                f"SELECT latency_ms FROM request_events WHERE {where} "
+                "AND latency_ms IS NOT NULL ORDER BY latency_ms",
+                params,
+            )).fetchall()
+        latencies = [int(item[0]) for item in latency_rows]
         return {
             "request_count": int(row[0]),
             "input_tokens": int(row[1]),
@@ -142,6 +162,10 @@ class TelemetryRepositoryMixin:
             "error_count": int(row[4]),
             "token_event_count": int(row[5]),
             "missing_token_count": int(row[6]),
+            "avg_latency_ms": (
+                sum(latencies) / len(latencies) if latencies else None
+            ),
+            "p95_latency_ms": percentile(latencies, 0.95),
         }
 
     async def upsert_usage_rollup(self, values: dict[str, Any]) -> None:
@@ -251,30 +275,3 @@ class TelemetryRepositoryMixin:
         except (TypeError, json.JSONDecodeError):
             result["value"] = None
         return result
-
-
-def _telemetry_filters(
-    time_column: str,
-    provider: str | None,
-    account_id: str | None,
-    model_id: str | None,
-    started_after: str | None,
-    started_before: str | None,
-) -> tuple[str, list[Any]]:
-    clauses = []
-    params: list[Any] = []
-    for column, value in (
-        ("provider", provider),
-        ("account_id", account_id),
-        ("model_id", model_id),
-    ):
-        if value:
-            clauses.append(f"{column}=?")
-            params.append(value)
-    if started_after:
-        clauses.append(f"{time_column}>=?")
-        params.append(started_after)
-    if started_before:
-        clauses.append(f"{time_column}<?")
-        params.append(started_before)
-    return " AND ".join(clauses) or "1=1", params

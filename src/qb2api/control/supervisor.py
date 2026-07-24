@@ -196,6 +196,7 @@ class ServiceSupervisor:
             await self._state_writer(self._snapshot)
 
     async def _persist_operation(self, operation: SupervisorOperation) -> None:
+        operation.in_flight = self._snapshot.in_flight
         if self._operation_writer is not None:
             await self._operation_writer(operation)
 

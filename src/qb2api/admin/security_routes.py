@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from qb2api.accounts.repository import CredentialVersionConflict
 
 from .dependencies import admin_state, require_admin
+from .mutation_audit import add_audit, audit_operation, refresh_after_mutation
 from .validation import json_object, required_string
 
 router = APIRouter()
@@ -62,13 +63,16 @@ async def rotate_credential(
             await _mark_unverified_purpose(
                 repository, provider, account_id, purpose, purpose_state, expires_at, True
             )
+            await add_audit(
+                repository, action="credential.rotate", resource_type="credential",
+                resource_id=f"{provider}/{account_id}/{purpose}",
+            )
     except CredentialVersionConflict as error:
         raise HTTPException(status_code=409, detail="credential_version_conflict") from error
     state.credential_resolver.invalidate(provider, account_id, purpose)
-    await state.refresh_provider_pools()
-    await repository.add_audit_event(
-        actor_type="admin", actor_id=None, action="credential.rotate",
-        resource_type="credential", resource_id=f"{provider}/{account_id}/{purpose}", result="succeeded",
+    await refresh_after_mutation(
+        state, mutation_action="credential.rotate", resource_type="credential",
+        resource_id=f"{provider}/{account_id}/{purpose}",
     )
     return {"status": "succeeded", "credential_version": version, "verification_status": "unverified"}
 
@@ -87,11 +91,14 @@ async def revoke_credential(provider: str, account_id: str, purpose: str, reques
         await _mark_unverified_purpose(
             repository, provider, account_id, purpose, purpose_state, purpose_state.get("expires_at"), False
         )
+        await add_audit(
+            repository, action="credential.revoke", resource_type="credential",
+            resource_id=f"{provider}/{account_id}/{purpose}",
+        )
     state.credential_resolver.invalidate(provider, account_id, purpose)
-    await state.refresh_provider_pools()
-    await repository.add_audit_event(
-        actor_type="admin", actor_id=None, action="credential.revoke",
-        resource_type="credential", resource_id=f"{provider}/{account_id}/{purpose}", result="succeeded",
+    await refresh_after_mutation(
+        state, mutation_action="credential.revoke", resource_type="credential",
+        resource_id=f"{provider}/{account_id}/{purpose}",
     )
     return {"status": "succeeded"}
 
@@ -106,17 +113,13 @@ async def list_backups(request: Request) -> dict[str, Any]:
 async def create_backup(request: Request) -> dict[str, Any]:
     await require_admin(request)
     try:
-        result = await _service(request).create()
+        async with audit_operation(
+            _repository(request), action="backup.create", resource_type="backup",
+            resource_id="create", failure_code="backup_creation_failed",
+        ):
+            result = await _service(request).create()
     except Exception as error:
         raise HTTPException(status_code=422, detail="backup_creation_failed") from error
-    await _repository(request).add_audit_event(
-        actor_type="admin",
-        actor_id=None,
-        action="backup.create",
-        resource_type="backup",
-        resource_id=result["backup_id"],
-        result="succeeded",
-    )
     return result
 
 
@@ -137,17 +140,14 @@ async def validate_restore(backup_id: str, request: Request) -> dict[str, Any]:
     if body.get("dry_run", True) is not True:
         raise HTTPException(status_code=409, detail="offline_restore_required")
     try:
-        result = await _service(request).validate_restore(backup_id)
+        async with audit_operation(
+            _repository(request), action="backup.restore.validate",
+            resource_type="backup", resource_id=backup_id,
+            failure_code="backup_validation_failed",
+        ):
+            result = await _service(request).validate_restore(backup_id)
     except Exception as error:
         raise HTTPException(status_code=422, detail="backup_validation_failed") from error
-    await _repository(request).add_audit_event(
-        actor_type="admin",
-        actor_id=None,
-        action="backup.restore.validate",
-        resource_type="backup",
-        resource_id=backup_id,
-        result="succeeded",
-    )
     return result
 
 

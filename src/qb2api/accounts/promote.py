@@ -39,6 +39,8 @@ async def promote_env_account(
     account_id: str,
     label: str | None = None,
     durable_id: str | None = None,
+    audit_action: str | None = None,
+    rebuild: bool = True,
 ) -> str:
     secret = _env_secret(registry, provider, account_id)
     new_id = await _available_id(repo, registry, provider, durable_id)
@@ -46,7 +48,14 @@ async def promote_env_account(
     encrypted = vault.encrypt(promotion.payload)
     async with repo.transaction():
         await _persist_promotion(repo, provider, promotion, encrypted)
-    await registry.rebuild()
+        if audit_action is not None:
+            await repo.add_audit_event(
+                actor_type="admin", actor_id=None, action=audit_action,
+                resource_type="account", resource_id=f"{provider}:{promotion.account_id}",
+                result="succeeded",
+            )
+    if rebuild:
+        await registry.rebuild()
     return promotion.account_id
 
 
