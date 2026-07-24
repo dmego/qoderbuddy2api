@@ -60,27 +60,16 @@ async def get_settings_schema(request: Request) -> dict[str, Any]:
 @router.patch("")
 async def patch_setting(request: Request) -> dict[str, Any]:
     await require_admin(request)
-    body = await json_object(request)
-    key = body.get("key")
-    if key not in SETTING_SCHEMA or "value" not in body:
-        raise HTTPException(status_code=400, detail="unknown_setting")
-    definition = SETTING_SCHEMA[key]
-    value = body["value"]
-    if type(value) is not definition["type"]:
-        raise HTTPException(status_code=400, detail="invalid_setting_type")
+    key, definition, value, expected_version = _setting_update(await json_object(request))
     runtime = _runtime(request)
-    try:
-        runtime.validate_setting(key, value)
-        _validate_scheduler_candidate(runtime, key, value)
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+    _validate_setting(runtime, key=key, value=value)
     repository = _repository(request)
     try:
         version = await _persist_setting(
             repository,
             key=key,
             value=value,
-            expected_version=body.get("value_version"),
+            expected_version=expected_version,
             apply_mode=definition["apply_mode"],
         )
     except ValueError as error:
@@ -110,6 +99,27 @@ async def patch_setting(request: Request) -> dict[str, Any]:
         "apply_status": application["status"],
         **{name: value for name, value in application.items() if name != "status"},
     }
+
+
+def _setting_update(
+    body: dict[str, Any],
+) -> tuple[str, dict[str, Any], Any, int | None]:
+    key = body.get("key")
+    if key not in SETTING_SCHEMA or "value" not in body:
+        raise HTTPException(status_code=400, detail="unknown_setting")
+    definition = SETTING_SCHEMA[key]
+    value = body["value"]
+    if type(value) is not definition["type"]:
+        raise HTTPException(status_code=400, detail="invalid_setting_type")
+    return key, definition, value, body.get("value_version")
+
+
+def _validate_setting(runtime: Any, *, key: str, value: Any) -> None:
+    try:
+        runtime.validate_setting(key, value)
+        _validate_scheduler_candidate(runtime, key, value)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 async def _persist_setting(

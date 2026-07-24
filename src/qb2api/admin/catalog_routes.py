@@ -12,6 +12,7 @@ from qb2api.models import load_models_from_config
 from qb2api.openai import ChatCompletionRequest, ChatMessage
 from qb2api.provider_factory import ProviderFactory
 
+from .catalog_filters import filter_models
 from .dependencies import admin_state, require_admin
 from .validation import (
     bool_filter,
@@ -52,7 +53,7 @@ async def list_models(
     selected_provider = provider_filter(provider)
     selected_search = _model_search(search, query)
     models = await repository.list_models(selected_provider)
-    selected = _filter_models(
+    selected = filter_models(
         models,
         enabled=bool_filter(enabled),
         source=text_filter(source, detail="invalid_source"),
@@ -78,7 +79,12 @@ async def patch_model(provider: str, model_id: str, request: Request) -> dict[st
     async with repository.transaction():
         if not await repository.set_model_enabled(provider, model_id, body["enabled"]):
             raise HTTPException(status_code=404, detail="model_not_found")
-        await _audit(request, "model.update", provider, model_id)
+        await _audit(
+            request,
+            action="model.update",
+            resource_type=provider,
+            resource_id=model_id,
+        )
     models = await repository.list_models(provider)
     return next(model for model in models if model["model_id"] == model_id)
 
@@ -100,7 +106,12 @@ async def refresh_models(request: Request) -> dict[str, Any]:
                     source="definition",
                 )
                 count += 1
-        await _audit(request, "model.refresh", "catalog", "catalog")
+        await _audit(
+            request,
+            action="model.refresh",
+            resource_type="catalog",
+            resource_id="catalog",
+        )
     return {"status": "succeeded", "refreshed": count}
 
 
@@ -115,14 +126,19 @@ async def probe_model(provider: str, model_id: str, request: Request) -> dict[st
     except ProbeError as error:
         await _audit(
             request,
-            "model.probe",
-            provider,
-            model_id,
+            action="model.probe",
+            resource_type=provider,
+            resource_id=model_id,
             result="failed",
             metadata={"error_code": error.code},
         )
         raise HTTPException(status_code=error.status_code, detail=error.code) from error
-    await _audit(request, "model.probe", provider, model_id)
+    await _audit(
+        request,
+        action="model.probe",
+        resource_type=provider,
+        resource_id=model_id,
+    )
     return result
 
 
@@ -177,10 +193,10 @@ def _repository(request: Request):
 
 async def _audit(
     request: Request,
+    *,
     action: str,
     resource_type: str,
     resource_id: str,
-    *,
     result: str = "succeeded",
     metadata: dict[str, Any] | None = None,
 ) -> None:
@@ -191,29 +207,6 @@ async def _audit(
             resource_type=resource_type, resource_id=resource_id, result=result,
             metadata=metadata,
         )
-
-
-def _filter_models(
-    models: list[dict[str, Any]],
-    *,
-    enabled: bool | None,
-    source: str | None,
-    capability: str | None,
-    search: str | None,
-) -> list[dict[str, Any]]:
-    needle = search.casefold() if search is not None else None
-    return [
-        model
-        for model in models
-        if (enabled is None or model["enabled"] is enabled)
-        and (source is None or model["source"] == source)
-        and (capability is None or capability in model["capabilities"])
-        and (
-            needle is None
-            or needle in model["model_id"].casefold()
-            or needle in model["display_name"].casefold()
-        )
-    ]
 
 
 def _model_search(search: str | None, query: str | None) -> str | None:

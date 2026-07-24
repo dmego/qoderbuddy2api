@@ -49,7 +49,7 @@ async def create_proxy_key(request: Request) -> dict[str, Any]:
             resource_id=key_id,
             metadata={"runtime_apply": "pending"},
         )
-    publication = await _after_key_change(request, "proxy_key.create", key_id)
+    publication = await _after_key_change(request, action="proxy_key.create", key_id=key_id)
     return {
         "key_id": key_id,
         "key": raw,
@@ -73,7 +73,7 @@ async def revoke_proxy_key(key_id: str, request: Request) -> dict[str, Any]:
             resource_id=key_id,
             metadata={"runtime_apply": "pending"},
         )
-    publication = await _after_key_change(request, "proxy_key.revoke", key_id)
+    publication = await _after_key_change(request, action="proxy_key.revoke", key_id=key_id)
     status = "succeeded" if publication["runtime_apply"]["status"] == "succeeded" else "runtime_pending"
     return {"status": status, "key_id": key_id, **publication}
 
@@ -105,7 +105,11 @@ async def rotate_proxy_key(key_id: str, request: Request) -> dict[str, Any]:
             resource_id=replacement_id,
             metadata={"runtime_apply": "pending"},
         )
-    publication = await _after_key_change(request, "proxy_key.rotate", replacement_id)
+    publication = await _after_key_change(
+        request,
+        action="proxy_key.rotate",
+        key_id=replacement_id,
+    )
     return {
         "key_id": replacement_id,
         "replaced_key_id": key_id,
@@ -153,22 +157,24 @@ def _expiry(value: Any) -> str | None:
 
 async def _after_key_change(
     request: Request,
+    *,
     action: str,
     key_id: str,
 ) -> dict[str, dict[str, str]]:
     state = admin_state(request)
-    runtime_apply = await _publish_runtime(state, action, key_id)
+    runtime_apply = await _publish_runtime(state, action=action, key_id=key_id)
     audit_status = await _record_audit(
         request,
-        action,
-        key_id,
-        runtime_apply["status"],
+        action=action,
+        key_id=key_id,
+        runtime_status=runtime_apply["status"],
     )
     return {"runtime_apply": runtime_apply, "audit": audit_status}
 
 
 async def _publish_runtime(
     state: Any,
+    *,
     action: str,
     key_id: str,
 ) -> dict[str, str]:
@@ -186,6 +192,7 @@ async def _publish_runtime(
 
 async def _record_audit(
     request: Request,
+    *,
     action: str,
     key_id: str,
     runtime_status: str,

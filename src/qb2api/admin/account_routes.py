@@ -34,6 +34,7 @@ _PURPOSES = frozenset({"chat", "checkin"})
 @router.get("/accounts")
 async def list_accounts(
     request: Request,
+    *,
     provider: str | None = None,
     source: str | None = None,
     status: str | None = None,
@@ -219,7 +220,13 @@ async def patch_account(provider: str, account_id: str, request: Request) -> dic
     purposes = await state.account_repo.list_purposes(provider, account_id)
     async with state.account_repo.transaction():
         await _update_account(state, account, body)
-        await _update_purposes(state, provider, account_id, purposes, body)
+        await _update_purposes(
+            state,
+            provider=provider,
+            account_id=account_id,
+            purposes=purposes,
+            body=body,
+        )
         await account_audit(
             state,
             "account.update",
@@ -255,6 +262,7 @@ async def _update_account(state: Any, account: dict[str, Any], body: dict[str, A
 
 async def _update_purposes(
     state: Any,
+    *,
     provider: str,
     account_id: str,
     purposes: list[dict[str, Any]],

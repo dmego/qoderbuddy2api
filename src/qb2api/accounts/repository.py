@@ -11,10 +11,12 @@ from typing import Any
 
 import aiosqlite
 
-from .repo_accounts import AccountRepositoryMixin, CredentialVersionConflict
+from .repo_accounts import AccountRepositoryMixin
 from .repo_catalog import CatalogRepositoryMixin
 from .repo_checkin import CheckinRepositoryMixin
 from .repo_control import ControlRepositoryMixin
+from .repo_credentials import CredentialRepositoryMixin, CredentialVersionConflict
+from .repo_metric_refresh import MetricRefreshRepositoryMixin
 from .repo_proxy_keys import ProxyKeyRepositoryMixin
 from .repo_service_events import ServiceEventRepositoryMixin
 from .repo_sessions import SessionRepositoryMixin
@@ -26,8 +28,10 @@ __all__ = ["AccountRepository", "CredentialVersionConflict"]
 
 class AccountRepository(
     AccountRepositoryMixin,
+    CredentialRepositoryMixin,
     CatalogRepositoryMixin,
     ServiceEventRepositoryMixin,
+    MetricRefreshRepositoryMixin,
     ControlRepositoryMixin,
     ProxyKeyRepositoryMixin,
     CheckinRepositoryMixin,

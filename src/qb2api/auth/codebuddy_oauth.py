@@ -158,46 +158,59 @@ class CodeBuddyOAuthClient:
         """GET auth/token?state=… → pending | success | error. AUTH-01."""
         if not state:
             return OAuthPollResult(status="error", message="missing_state")
+        data = await self._poll_data(state)
+        return _poll_result(data)
 
+    async def _poll_data(self, state: str) -> Any:
         url = f"{self.token_url}?state={state}"
         try:
-            resp = await self._client.get(url, headers=_auth_poll_headers())
-            data = resp.json()
+            response = await self._client.get(url, headers=_auth_poll_headers())
+            return response.json()
         except Exception:
-            return OAuthPollResult(status="error", message="auth_poll_request_failed")
+            return _PollRequestFailure()
 
-        if not isinstance(data, dict):
-            return OAuthPollResult(status="error", message="auth_poll_invalid_json")
 
-        code = data.get("code")
-        if code == PENDING_CODE:
-            return OAuthPollResult(status="pending", code=PENDING_CODE, message="waiting")
+class _PollRequestFailure:
+    pass
 
-        if code == 0 and isinstance(data.get("data"), dict):
-            d = data["data"]
-            access = d.get("accessToken") or d.get("access_token")
-            if not access:
-                return OAuthPollResult(status="error", code=0, message="auth_poll_no_token")
-            refresh = d.get("refreshToken") or d.get("refresh_token")
-            expires_in = d.get("expiresIn") if "expiresIn" in d else d.get("expires_in")
-            try:
-                expires_in_int = int(expires_in) if expires_in is not None else None
-            except (TypeError, ValueError):
-                expires_in_int = None
-            return OAuthPollResult(
-                status="success",
-                code=0,
-                access_token=str(access),
-                refresh_token=str(refresh) if refresh else None,
-                expires_in=expires_in_int,
-                token_type=str(d.get("tokenType") or d.get("token_type") or "Bearer"),
-                domain=str(d["domain"]) if d.get("domain") else None,
-                session_state=str(d["sessionState"]) if d.get("sessionState") else None,
-            )
 
-        # do not surface upstream body
-        return OAuthPollResult(
-            status="error",
-            code=int(code) if isinstance(code, int) else None,
-            message="auth_poll_failed",
-        )
+def _poll_result(data: Any) -> OAuthPollResult:
+    if isinstance(data, _PollRequestFailure):
+        return OAuthPollResult(status="error", message="auth_poll_request_failed")
+    if not isinstance(data, dict):
+        return OAuthPollResult(status="error", message="auth_poll_invalid_json")
+    code = data.get("code")
+    if code == PENDING_CODE:
+        return OAuthPollResult(status="pending", code=PENDING_CODE, message="waiting")
+    if code == 0 and isinstance(data.get("data"), dict):
+        return _successful_poll_result(data["data"])
+    return OAuthPollResult(
+        status="error",
+        code=int(code) if isinstance(code, int) else None,
+        message="auth_poll_failed",
+    )
+
+
+def _successful_poll_result(data: dict[str, Any]) -> OAuthPollResult:
+    access = data.get("accessToken") or data.get("access_token")
+    if not access:
+        return OAuthPollResult(status="error", code=0, message="auth_poll_no_token")
+    refresh = data.get("refreshToken") or data.get("refresh_token")
+    return OAuthPollResult(
+        status="success",
+        code=0,
+        access_token=str(access),
+        refresh_token=str(refresh) if refresh else None,
+        expires_in=_expires_in(data),
+        token_type=str(data.get("tokenType") or data.get("token_type") or "Bearer"),
+        domain=str(data["domain"]) if data.get("domain") else None,
+        session_state=str(data["sessionState"]) if data.get("sessionState") else None,
+    )
+
+
+def _expires_in(data: dict[str, Any]) -> int | None:
+    value = data.get("expiresIn") if "expiresIn" in data else data.get("expires_in")
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None

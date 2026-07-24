@@ -134,7 +134,13 @@ async def codebuddy_checkin_import(request: Request) -> dict[str, Any]:
     account_id = required_string(body, "account_id", detail="account_id_required")
     await require_codebuddy_account(state, account_id, required=True)
     mode, access_token, cookie = workbuddy_input(body)
-    result = await verify_workbuddy(state, account_id, mode, access_token, cookie)
+    result = await verify_workbuddy(
+        state,
+        account_id,
+        mode,
+        access_token=access_token,
+        cookie=cookie,
+    )
     if result.outcome not in SUCCESS_OUTCOMES:
         raise HTTPException(status_code=400, detail="checkin_credential_rejected")
     await persist_codebuddy_checkin(

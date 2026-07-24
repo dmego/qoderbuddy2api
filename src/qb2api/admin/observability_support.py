@@ -76,6 +76,7 @@ def audit_search_filter(search: str | None, query: str | None) -> str | None:
 
 def page(
     key: str,
+    *,
     values: list[dict[str, Any]],
     limit: int,
     offset: int,

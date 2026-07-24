@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 from .models import Credential
 from .registry import AccountRegistry
@@ -80,13 +79,12 @@ class CredentialResolver:
         if provider is None and account_id is None and purpose is None:
             self._cache.clear()
             return
-        drop = [
-            k
-            for k in self._cache
-            if (provider is None or k[0] == provider)
-            and (account_id is None or k[1] == account_id)
-            and (purpose is None or k[2] == purpose)
-        ]
+        drop = _matching_cache_keys(
+            self._cache,
+            provider=provider,
+            account_id=account_id,
+            purpose=purpose,
+        )
         for k in drop:
             self._cache.pop(k, None)
 
@@ -119,39 +117,51 @@ class CredentialResolver:
             cached = self._cache.get(key)
             if cached is not None and not force_refresh and not self.needs_refresh(cached):
                 return cached
+            credential = await self._resolve_credential(
+                key,
+                force_refresh=force_refresh,
+            )
+            self._cache[key] = credential
+            return credential
 
-            # env static path (no DB row)
-            if self._registry is not None and self._registry.is_env_account(provider, account_id):
-                secret = self._registry.env_secret(provider, account_id, purpose)
-                if secret is None:
-                    raise LookupError(
-                        f"env account unavailable or shadowed: {provider}/{account_id}"
-                    )
-                mode = "pat" if provider == "qoder" else "bearer"
-                payload: dict[str, Any] = (
-                    {"pat": secret} if provider == "qoder" else {"access_token": secret}
-                )
-                cred = Credential(
-                    provider=provider,
-                    account_id=account_id,
-                    purpose=purpose,
-                    mode=mode,
-                    payload=payload,
-                    credential_version=1,
-                    expires_at=None,
-                    has_refresh_token=False,
-                )
-                self._cache[key] = cred
-                return cred
-
-            loaded = await self._load_from_repo(provider, account_id, purpose)
-            if force_refresh or self.needs_refresh(loaded):
-                refreshed = await self._try_refresh(key, loaded)
-                if refreshed is not None:
-                    self._cache[key] = refreshed
-                    return refreshed
-            self._cache[key] = loaded
+    async def _resolve_credential(
+        self,
+        key: CacheKey,
+        *,
+        force_refresh: bool,
+    ) -> Credential:
+        environment_credential = self._environment_credential(*key)
+        if environment_credential is not None:
+            return environment_credential
+        loaded = await self._load_from_repo(*key)
+        if not force_refresh and not self.needs_refresh(loaded):
             return loaded
+        refreshed = await self._try_refresh(key, loaded)
+        return refreshed or loaded
+
+    def _environment_credential(
+        self,
+        provider: str,
+        account_id: str,
+        purpose: str,
+    ) -> Credential | None:
+        registry = self._registry
+        if registry is None or not registry.is_env_account(provider, account_id):
+            return None
+        secret = registry.env_secret(provider, account_id, purpose)
+        if secret is None:
+            raise LookupError(f"env account unavailable or shadowed: {provider}/{account_id}")
+        payload = {"pat": secret} if provider == "qoder" else {"access_token": secret}
+        return Credential(
+            provider=provider,
+            account_id=account_id,
+            purpose=purpose,
+            mode="pat" if provider == "qoder" else "bearer",
+            payload=payload,
+            credential_version=1,
+            expires_at=None,
+            has_refresh_token=False,
+        )
 
     async def _load_from_repo(
         self, provider: str, account_id: str, purpose: str
@@ -191,3 +201,36 @@ class CredentialResolver:
         if cb is None:
             return None
         return await cb(key[0], key[1], key[2], current)
+
+
+def _matching_cache_keys(
+    cache: dict[CacheKey, Credential],
+    *,
+    provider: str | None,
+    account_id: str | None,
+    purpose: str | None,
+) -> list[CacheKey]:
+    return [
+        key
+        for key in cache
+        if _matches_cache_key(
+            key,
+            provider=provider,
+            account_id=account_id,
+            purpose=purpose,
+        )
+    ]
+
+
+def _matches_cache_key(
+    key: CacheKey,
+    *,
+    provider: str | None,
+    account_id: str | None,
+    purpose: str | None,
+) -> bool:
+    return (
+        (provider is None or key[0] == provider)
+        and (account_id is None or key[1] == account_id)
+        and (purpose is None or key[2] == purpose)
+    )

@@ -43,11 +43,26 @@ async def promote_env_account(
     rebuild: bool = True,
 ) -> str:
     secret = _env_secret(registry, provider, account_id)
-    new_id = await _available_id(repo, registry, provider, durable_id)
-    promotion = _build_promotion(provider, new_id, label or account_id, secret)
+    new_id = await _available_id(
+        repo,
+        registry=registry,
+        provider=provider,
+        requested=durable_id,
+    )
+    promotion = _build_promotion(
+        provider=provider,
+        account_id=new_id,
+        label=label or account_id,
+        secret=secret,
+    )
     encrypted = vault.encrypt(promotion.payload)
     async with repo.transaction():
-        await _persist_promotion(repo, provider, promotion, encrypted)
+        await _persist_promotion(
+            repo,
+            provider=provider,
+            promotion=promotion,
+            encrypted_payload=encrypted,
+        )
         if audit_action is not None:
             await repo.add_audit_event(
                 actor_type="admin", actor_id=None, action=audit_action,
@@ -72,6 +87,7 @@ def _env_secret(registry: AccountRegistry, provider: str, account_id: str) -> st
 
 async def _available_id(
     repo: AccountRepository,
+    *,
     registry: AccountRegistry,
     provider: str,
     requested: str | None,
@@ -90,10 +106,7 @@ async def _available_id(
 
 
 def _build_promotion(
-    provider: str,
-    account_id: str,
-    label: str,
-    secret: str,
+    *, provider: str, account_id: str, label: str, secret: str
 ) -> _Promotion:
     is_qoder = provider == "qoder"
     return _Promotion(
@@ -110,6 +123,7 @@ def _build_promotion(
 
 async def _persist_promotion(
     repo: AccountRepository,
+    *,
     provider: str,
     promotion: _Promotion,
     encrypted_payload: str,
@@ -122,7 +136,7 @@ async def _persist_promotion(
         enabled=True,
         masked_identity=promotion.masked_identity,
     )
-    await _persist_purposes(repo, provider, promotion)
+    await _persist_purposes(repo, provider=provider, promotion=promotion)
     await repo.upsert_credential(
         provider=provider,
         account_id=promotion.account_id,
@@ -134,6 +148,7 @@ async def _persist_promotion(
 
 async def _persist_purposes(
     repo: AccountRepository,
+    *,
     provider: str,
     promotion: _Promotion,
 ) -> None:

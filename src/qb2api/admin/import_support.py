@@ -57,6 +57,7 @@ async def verify_workbuddy(
     state: Any,
     account_id: str,
     mode: str,
+    *,
     access_token: str | None,
     cookie: str | None,
 ) -> Any:

@@ -84,6 +84,7 @@ async def usage_event(event_id: str, request: Request) -> dict[str, Any]:
 @router.get("/usage/rollups")
 async def usage_rollups(
     request: Request,
+    *,
     bucket_kind: str | None = None,
     limit: str | None = None,
     cursor: str | None = None,
@@ -99,12 +100,13 @@ async def usage_rollups(
         offset=offset,
         **_filters(request),
     )
-    return _page("rollups", rollups, selected_limit, offset)
+    return _page("rollups", values=rollups, limit=selected_limit, offset=offset)
 
 
 @router.get("/usage/timeseries")
 async def usage_timeseries(
     request: Request,
+    *,
     bucket_kind: str = "minute",
     limit: str | None = None,
     cursor: str | None = None,
@@ -120,7 +122,7 @@ async def usage_timeseries(
         offset=offset,
         **_filters(request),
     )
-    result = _page("rollups", rollups, selected_limit, offset)
+    result = _page("rollups", values=rollups, limit=selected_limit, offset=offset)
     result["bucket_kind"] = bucket_kind
     return result
 
@@ -175,6 +177,7 @@ async def refresh_rollups(request: Request) -> dict[str, Any]:
 @router.get("/metrics/accounts")
 async def account_metrics(
     request: Request,
+    *,
     provider: str | None = None,
     cursor: str | None = None,
     limit: str | None = None,

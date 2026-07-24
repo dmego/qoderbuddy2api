@@ -31,15 +31,35 @@ def filter_accounts(
     return [
         account
         for account in accounts
-        if (provider is None or account["provider"] == provider)
-        and (source is None or account["source"] == source)
-        and (status is None or account["summary_status"] == status)
-        and (purpose is None or purpose in account["purposes"])
-        and (
-            needle is None
-            or needle in f"{account['label']} {account['account_id']}".lower()
+        if _matches_account(
+            account,
+            provider=provider,
+            source=source,
+            status=status,
+            purpose=purpose,
+            needle=needle,
         )
     ]
+
+
+def _matches_account(
+    account: dict[str, Any],
+    *,
+    provider: str | None,
+    source: str | None,
+    status: str | None,
+    purpose: str | None,
+    needle: str | None,
+) -> bool:
+    if provider is not None and account["provider"] != provider:
+        return False
+    if source is not None and account["source"] != source:
+        return False
+    if status is not None and account["summary_status"] != status:
+        return False
+    if purpose is not None and purpose not in account["purposes"]:
+        return False
+    return needle is None or needle in f"{account['label']} {account['account_id']}".lower()
 
 
 async def empty_mutation_body(request: Request, detail: str) -> None:

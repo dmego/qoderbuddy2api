@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import hmac
-from dataclasses import dataclass, field
 from typing import Any
 
 from .models import AccountSlot, AccountView
+from .registry_loader import DynamicSlot, EnvSlot, load_dynamic_slots, load_environment, mark_shadowed
 from .repository import AccountRepository
 from .vault import CredentialVault
 
@@ -20,17 +19,6 @@ def _mask_secret(secret: str) -> str:
     if len(secret) <= 8:
         return "***"
     return f"{secret[:3]}***{secret[-2:]}"
-
-
-def _secrets_equal(a: str, b: str) -> bool:
-    """Constant-time equality for secret strings of equal length."""
-    if a is None or b is None:
-        return False
-    ba, bb = a.encode(), b.encode()
-    if len(ba) != len(bb):
-        # length mismatch: still do a dummy compare to reduce timing branch noise
-        return hmac.compare_digest(ba, ba) and False
-    return hmac.compare_digest(ba, bb)
 
 
 def _summary_status(
@@ -48,30 +36,6 @@ def _summary_status(
         if p.get("enabled") and p.get("status") == "active":
             return "active"
     return "pending"
-
-
-@dataclass
-class _EnvSlot:
-    provider: str
-    account_id: str
-    secret: str
-    index: int
-    shadowed: bool = False
-
-
-@dataclass
-class _DynSlot:
-    provider: str
-    account_id: str
-    label: str
-    source: str
-    enabled: bool
-    masked_identity: str | None
-    created_at: str | None
-    updated_at: str | None
-    purposes: dict[str, dict[str, Any]] = field(default_factory=dict)
-    # purpose -> plaintext primary secret (chat only, for shadow compare)
-    chat_secret: str | None = None
 
 
 class AccountRegistry:
@@ -92,8 +56,8 @@ class AccountRegistry:
         self._vault = vault
         self._codebuddy_tokens = list(codebuddy_tokens or [])
         self._qoder_tokens = list(qoder_tokens or [])
-        self._env: list[_EnvSlot] = []
-        self._dyn: dict[tuple[str, str], _DynSlot] = {}
+        self._env: list[EnvSlot] = []
+        self._dyn: dict[tuple[str, str], DynamicSlot] = {}
         # (provider, account_id, purpose) -> secret for env-only resolve
         self._env_secrets: dict[tuple[str, str, str], str] = {}
         self._built = False
@@ -111,87 +75,17 @@ class AccountRegistry:
 
     async def rebuild(self) -> None:
         """Reload env + DB into memory snapshots."""
-        env: list[_EnvSlot] = []
-        env_secrets: dict[tuple[str, str, str], str] = {}
-        for i, tok in enumerate(self._codebuddy_tokens):
-            if not tok:
-                continue
-            aid = f"cb-env-{i}"
-            env.append(_EnvSlot("codebuddy", aid, tok, i))
-            env_secrets[("codebuddy", aid, "chat")] = tok
-        for i, tok in enumerate(self._qoder_tokens):
-            if not tok:
-                continue
-            aid = f"qd-env-{i}"
-            env.append(_EnvSlot("qoder", aid, tok, i))
-            env_secrets[("qoder", aid, "chat")] = tok
-
-        dyn: dict[tuple[str, str], _DynSlot] = {}
-        accounts = await self._repo.list_accounts()
-        for acc in accounts:
-            key = (acc["provider"], acc["account_id"])
-            purposes_list = await self._repo.list_purposes(acc["provider"], acc["account_id"])
-            purpose_map: dict[str, dict[str, Any]] = {}
-            chat_secret: str | None = None
-            for p in purposes_list:
-                purpose_map[p["purpose"]] = {
-                    "enabled": p["enabled"],
-                    "status": p["status"],
-                    "verification_status": p["verification_status"],
-                    "capabilities": list(p.get("capabilities") or []),
-                    "verified_at": p.get("verified_at"),
-                    "expires_at": p.get("expires_at"),
-                    "last_success_at": p.get("last_success_at"),
-                    "failure_count": p.get("failure_count", 0),
-                    "last_error": p.get("last_error"),
-                }
-                if (
-                    p["purpose"] == "chat"
-                    and self._vault is not None
-                    and acc.get("enabled")
-                    and p.get("enabled")
-                ):
-                    cred = await self._repo.get_credential(
-                        acc["provider"], acc["account_id"], "chat"
-                    )
-                    if cred:
-                        try:
-                            payload = self._vault.decrypt(cred["encrypted_payload"])
-                            chat_secret = self._primary_secret(acc["provider"], payload)
-                        except ValueError:
-                            chat_secret = None
-            dyn[key] = _DynSlot(
-                provider=acc["provider"],
-                account_id=acc["account_id"],
-                label=acc.get("label") or acc["account_id"],
-                source=acc.get("source") or "manual",
-                enabled=bool(acc.get("enabled")),
-                masked_identity=acc.get("masked_identity"),
-                created_at=acc.get("created_at"),
-                updated_at=acc.get("updated_at"),
-                purposes=purpose_map,
-                chat_secret=chat_secret,
-            )
-
-        # shadow: dynamic secret wins over same env secret
-        for e in env:
-            for d in dyn.values():
-                if d.provider != e.provider or not d.enabled:
-                    continue
-                if d.chat_secret and _secrets_equal(d.chat_secret, e.secret):
-                    e.shadowed = True
-                    break
+        env, env_secrets = load_environment(
+            codebuddy_tokens=self._codebuddy_tokens,
+            qoder_tokens=self._qoder_tokens,
+        )
+        dyn = await load_dynamic_slots(self._repo, self._vault)
+        mark_shadowed(env, dyn)
 
         self._env = env
         self._dyn = dyn
         self._env_secrets = env_secrets
         self._built = True
-
-    @staticmethod
-    def _primary_secret(provider: str, payload: dict[str, Any]) -> str | None:
-        if provider == "qoder":
-            return payload.get("pat") or payload.get("access_token")
-        return payload.get("access_token") or payload.get("token")
 
     def env_secret(self, provider: str, account_id: str, purpose: str = "chat") -> str | None:
         """Return env plaintext secret if present and not shadowed (internal only)."""
@@ -208,47 +102,8 @@ class AccountRegistry:
     def snapshot(self, purpose: str = "chat") -> list[AccountSlot]:
         """Active, non-shadowed slots for a purpose (pool membership)."""
         self._ensure_built()
-        slots: list[AccountSlot] = []
-        # env static tokens: chat only (design: ck_/pt_ default not for check-in)
-        if purpose == "chat":
-            for e in self._env:
-                if e.shadowed:
-                    continue
-                slots.append(
-                    AccountSlot(
-                        provider=e.provider,
-                        account_id=e.account_id,
-                        source="env",
-                        enabled=True,
-                        status="active",
-                        verification_status="not_required",
-                        shadowed=False,
-                        capabilities=["proxy.chat"],
-                    )
-                )
-        for d in sorted(self._dyn.values(), key=lambda x: (x.provider, x.account_id)):
-            if not d.enabled:
-                continue
-            p = d.purposes.get(purpose)
-            if not p or not p.get("enabled"):
-                continue
-            if p.get("status") not in _CHAT_OK_STATUS and purpose == "chat":
-                continue
-            if purpose == "checkin":
-                if p.get("status") != "active" or p.get("verification_status") != "verified":
-                    continue
-            slots.append(
-                AccountSlot(
-                    provider=d.provider,
-                    account_id=d.account_id,
-                    source=d.source,
-                    enabled=True,
-                    status=p["status"],
-                    verification_status=p["verification_status"],
-                    shadowed=False,
-                    capabilities=list(p.get("capabilities") or []),
-                )
-            )
+        slots = _environment_snapshot(self._env) if purpose == "chat" else []
+        slots.extend(_dynamic_snapshot(self._dyn.values(), purpose=purpose))
         return slots
 
     def list_views(self) -> list[AccountView]:
@@ -298,3 +153,55 @@ class AccountRegistry:
     def _ensure_built(self) -> None:
         if not self._built:
             raise RuntimeError("registry not built; call rebuild() first")
+
+
+def _environment_snapshot(environment: list[EnvSlot]) -> list[AccountSlot]:
+    return [
+        AccountSlot(
+            provider=slot.provider,
+            account_id=slot.account_id,
+            source="env",
+            enabled=True,
+            status="active",
+            verification_status="not_required",
+            shadowed=False,
+            capabilities=["proxy.chat"],
+        )
+        for slot in environment
+        if not slot.shadowed
+    ]
+
+
+def _dynamic_snapshot(slots: Any, *, purpose: str) -> list[AccountSlot]:
+    return [
+        account_slot
+        for slot in sorted(slots, key=lambda item: (item.provider, item.account_id))
+        if (account_slot := _slot_for_purpose(slot, purpose=purpose)) is not None
+    ]
+
+
+def _slot_for_purpose(slot: DynamicSlot, *, purpose: str) -> AccountSlot | None:
+    purpose_state = slot.purposes.get(purpose)
+    if not slot.enabled or not purpose_state or not purpose_state.get("enabled"):
+        return None
+    if purpose == "chat" and purpose_state.get("status") not in _CHAT_OK_STATUS:
+        return None
+    if purpose == "checkin" and not _verified_active(purpose_state):
+        return None
+    return AccountSlot(
+        provider=slot.provider,
+        account_id=slot.account_id,
+        source=slot.source,
+        enabled=True,
+        status=purpose_state["status"],
+        verification_status=purpose_state["verification_status"],
+        shadowed=False,
+        capabilities=list(purpose_state.get("capabilities") or []),
+    )
+
+
+def _verified_active(purpose_state: dict[str, Any]) -> bool:
+    return (
+        purpose_state.get("status") == "active"
+        and purpose_state.get("verification_status") == "verified"
+    )

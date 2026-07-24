@@ -48,31 +48,38 @@ def classify_path(method: str, path: str) -> PathClass:
     """Classify method+path for auth middleware (design §7.1)."""
     method = (method or "GET").upper()
     path = _normalize_path(path)
+    for classifier in _PATH_CLASSIFIERS:
+        path_class = classifier(method, path)
+        if path_class is not None:
+            return path_class
+    return "other"
 
+
+def _classify_public(method: str, path: str) -> PathClass | None:
     if method == "GET" and path in _PUBLIC_EXISTING:
         return "public_existing"
-
     if method == "POST" and path == "/api/admin/session":
         return "public_admin_bootstrap"
-
-    if method == "GET" and (
-        path == "/admin"
-        or path.startswith("/admin/")
-        or path.startswith("/admin/assets/")
-        or path.startswith("/static/admin/")
-    ):
+    if method == "GET" and _is_admin_bootstrap_path(path):
         return "public_admin_bootstrap"
+    return None
 
+
+def _is_admin_bootstrap_path(path: str) -> bool:
+    return path == "/admin" or path.startswith(("/admin/", "/admin/assets/", "/static/admin/"))
+
+
+def _classify_private(_: str, path: str) -> PathClass | None:
     if path == "/api/admin" or path.startswith("/api/admin/"):
         return "admin_protected"
-
     if path == "/api/config" or path.startswith("/api/config/"):
         return "admin_legacy_private"
-
     if path.startswith("/v1") or path in _PROXY_EXACT or path.startswith("/api/v1/"):
         return "proxy_private"
+    return None
 
-    return "other"
+
+_PATH_CLASSIFIERS = (_classify_public, _classify_private)
 
 
 def extract_bearer(auth_header: str | None) -> str | None:

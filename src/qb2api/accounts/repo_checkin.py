@@ -13,15 +13,17 @@ class CheckinRepositoryMixin:
         provider: str,
         account_id: str,
         local_date: str,
-        timezone: str,
+        *legacy_timezone: str,
+        timezone: str | None = None,
     ) -> dict[str, Any] | None:
+        selected_timezone = _daily_state_timezone(legacy_timezone, timezone=timezone)
         async with self._operation() as db:
             cursor = await db.execute(
                 """
                 SELECT * FROM checkin_daily_state
                 WHERE provider=? AND account_id=? AND local_date=? AND timezone=?
                 """,
-                (provider, account_id, local_date, timezone),
+                (provider, account_id, local_date, selected_timezone),
             )
             row = await cursor.fetchone()
         return dict(row) if row else None
@@ -207,6 +209,16 @@ def _run_filters(
         clauses.append("(r.started_at < ? OR (r.started_at = ? AND r.run_id < ?))")
         params.extend((cursor[0], cursor[0], cursor[1]))
     return " AND ".join(clauses) or "1=1", params
+
+
+def _daily_state_timezone(legacy: tuple[str, ...], *, timezone: str | None) -> str:
+    if timezone is not None:
+        if legacy:
+            raise TypeError("timezone passed both positionally and by keyword")
+        return timezone
+    if len(legacy) != 1:
+        raise TypeError("get_checkin_daily_state requires a timezone")
+    return legacy[0]
 
 
 _UPSERT_DAILY_STATE = """
