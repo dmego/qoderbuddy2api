@@ -18,6 +18,8 @@ test.describe.serial("2api Control Plane", () => {
     await expect(page.getByRole("link", { name: "代理服务" })).toBeVisible();
     await expect(page.getByRole("link", { name: "代理密钥" })).toBeVisible();
     await expect(page.getByRole("link", { name: "审计" })).toBeVisible();
+    await expect(page.getByTestId("admin-sidebar").getByRole("button", { name: /切换主题/ })).toBeVisible();
+    await expect(page.locator("header").first()).toHaveCSS("position", "sticky");
     await expect(page.locator("main")).toContainText("运行总览");
     expect(await page.evaluate(() => ({ ...localStorage, ...sessionStorage }))).toEqual({});
   });
@@ -60,8 +62,8 @@ test.describe.serial("2api Control Plane", () => {
     const toggle = page.getByRole("button", { name: "展开导航" });
     await expect(toggle).toBeVisible();
     await toggle.click();
-    await expect(page.getByRole("button", { name: "收起导航" })).toHaveAttribute("aria-expanded", "true");
-    await expect(page.locator(".sidebar")).toHaveCSS("transform", "matrix(1, 0, 0, 1, 0, 0)");
+    await expect(page.getByRole("banner").getByRole("button", { name: "收起导航" })).toHaveAttribute("aria-expanded", "true");
+    await expect(page.getByTestId("admin-sidebar")).toHaveClass(/translate-x-0/);
     await expect(page.getByRole("link", { name: "审计" })).toBeVisible();
     await page.getByRole("link", { name: "审计" }).click();
     await expect(page.getByRole("heading", { name: "审计与备份" })).toBeVisible();
