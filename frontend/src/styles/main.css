@@ -169,9 +169,9 @@ td small { margin-top: 4px; color: var(--faint); font-size: 11px; }
 .state-pill--active .state-pill__dot, .state-pill--enabled .state-pill__dot, .state-pill--succeeded .state-pill__dot, .state-pill--healthy .state-pill__dot, .state-pill--claimed .state-pill__dot, .state-pill--already-checked-in .state-pill__dot, .state-pill--verified .state-pill__dot, .state-pill--valid .state-pill__dot, .state-pill--fresh .state-pill__dot, .state-pill--effective .state-pill__dot, .state-pill--finished .state-pill__dot { background: var(--green); }
 .state-pill--failed, .state-pill--disabled, .state-pill--expired, .state-pill--needs-reauth, .state-pill--unavailable, .state-pill--rejected { border-color: #6d3d3a; color: var(--red); }
 .state-pill--failed .state-pill__dot, .state-pill--disabled .state-pill__dot, .state-pill--expired .state-pill__dot, .state-pill--needs-reauth .state-pill__dot, .state-pill--unavailable .state-pill__dot, .state-pill--rejected .state-pill__dot { background: var(--red); }
-.state-pill--unknown, .state-pill--pending, .state-pill--unconfigured, .state-pill--running, .state-pill--stale, .state-pill--expiring, .state-pill--no-expiry { border-color: #66553b; color: var(--amber); }
-.state-pill--unknown .state-pill__dot, .state-pill--pending .state-pill__dot, .state-pill--unconfigured .state-pill__dot, .state-pill--running .state-pill__dot, .state-pill--stale .state-pill__dot, .state-pill--expiring .state-pill__dot, .state-pill--no-expiry .state-pill__dot { background: var(--amber); }
-.detail-drawer { position: fixed; z-index: 40; top: 74px; right: 25px; width: min(440px, calc(100vw - 30px)); max-height: calc(100dvh - 100px); overflow: auto; box-shadow: 0 20px 70px #00000080; }
+.state-pill--unknown, .state-pill--pending, .state-pill--unconfigured, .state-pill--running, .state-pill--stale, .state-pill--expiring, .state-pill--no-expiry, .state-pill--partial, .state-pill--skipped { border-color: #66553b; color: var(--amber); }
+.state-pill--unknown .state-pill__dot, .state-pill--pending .state-pill__dot, .state-pill--unconfigured .state-pill__dot, .state-pill--running .state-pill__dot, .state-pill--stale .state-pill__dot, .state-pill--expiring .state-pill__dot, .state-pill--no-expiry .state-pill__dot, .state-pill--partial .state-pill__dot, .state-pill--skipped .state-pill__dot { background: var(--amber); }
+.drawer-backdrop { position: fixed; z-index: 900; inset: 0; background: #05070699; } .detail-drawer { position: fixed; z-index: 40; top: 74px; right: 25px; width: min(440px, calc(100vw - 30px)); max-height: calc(100dvh - 100px); overflow: auto; box-shadow: 0 20px 70px #00000080; }
 .drawer-heading { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
 .drawer-heading h2 { font-size: 20px; }
 .drawer-heading p:not(.eyebrow) { color: var(--muted); font-size: 12px; }
@@ -263,6 +263,8 @@ td small { margin-top: 4px; color: var(--faint); font-size: 11px; }
 .operation-status span, .operation-status time, .operation-status p { margin: 0; color: var(--faint); font-size: 10px; overflow-wrap: anywhere; }
 .operation-status p, .operation-status time { grid-column: 1 / -1; }
 .operation-status--failed { border-color: #6d3d3a; }
+.operation-status--partial { border-color: #66553b; }
+.operation-items { display: grid; grid-column: 1 / -1; gap: 6px; margin: 4px 0 0; padding: 0; list-style: none; } .operation-items li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 9px; align-items: center; padding-top: 6px; border-top: 1px solid var(--line); } .operation-items li > small { grid-column: 2; }
 .dialog-backdrop { position: fixed; z-index: 1000; inset: 0; display: grid; place-items: center; padding: 20px; background: #050706b8; }
 .confirm-dialog { width: min(480px, 100%); border: 1px solid #46554f; border-radius: 7px; padding: 20px; background: #171d1b; box-shadow: 0 24px 80px #00000090; }
 .dialog-heading { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: start; }

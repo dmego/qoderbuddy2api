@@ -4,6 +4,7 @@ import { Activity, Boxes, Check, Filter, RefreshCcw, Search, X } from "@lucide/v
 import { computed, ref } from "vue";
 
 import { apiRequest } from "@/api/client";
+import AccessibleDrawer from "@/components/AccessibleDrawer.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import NotificationRegion from "@/components/NotificationRegion.vue";
 import OperationStatus from "@/components/OperationStatus.vue";
@@ -18,7 +19,7 @@ type Model = {
   source: string; enabled: boolean; last_seen_at?: string; description?: string;
 };
 type ModelPage = { models: Model[]; next_cursor?: string | null; total?: number };
-type UsageSummary = { request_count: number; success_count: number; error_count: number; avg_latency_ms?: number; p95_latency_ms?: number };
+type UsageSummary = { request_count: number; success_count: number; error_count: number; latency_avg_ms?: number | null; latency_p95_ms?: number | null };
 
 const queryClient = useQueryClient();
 const draftSearch = ref("");
@@ -35,7 +36,7 @@ const { notifications, notify, dismiss } = useNotifications();
 
 const models = useQuery({
   queryKey: ["models", cursor, search, provider, source, enabled, capability],
-  queryFn: () => apiRequest<ModelPage>(appendQuery("/models", { limit: 20, cursor: cursor.value, search: search.value, provider: provider.value, source: source.value, enabled: enabled.value, capability: capability.value })),
+  queryFn: () => apiRequest<ModelPage>(appendQuery("/models", { limit: 20, cursor: cursor.value, query: search.value, provider: provider.value, source: source.value, enabled: enabled.value, capability: capability.value })),
   staleTime: 30_000,
 });
 const modelUsage = useQuery({
@@ -95,14 +96,15 @@ function errorRate(summary?: UsageSummary): string { if (!summary?.request_count
 
     <OperationStatus :operation="lastOperation" />
 
-    <aside v-if="selected" class="detail-drawer data-panel" aria-label="模型详情">
-      <div class="drawer-heading"><div><p class="eyebrow">Model detail</p><h2>{{ selected.display_name || selected.model_id }}</h2><p class="mono">{{ selected.provider }} / {{ selected.model_id }}</p></div><button class="icon-button" type="button" aria-label="关闭模型详情" @click="selected = null"><X :size="16" /></button></div>
-      <dl class="detail-list"><div><dt>状态</dt><dd><StatePill :value="selected.enabled" /></dd></div><div><dt>来源</dt><dd>{{ selected.source }}</dd></div><div><dt>能力</dt><dd>{{ selected.capabilities.join("、") || "未声明" }}</dd></div><div><dt>最近发现</dt><dd>{{ selected.last_seen_at ?? "--" }}</dd></div></dl>
-      <h3>当前筛选用量摘要</h3>
-      <div v-if="modelUsage.isPending.value" class="loading-row">正在读取用量摘要…</div><div v-else-if="modelUsage.isError.value" class="data-state data-state--warning">用量摘要暂不可用，模型管理操作仍可继续。</div>
-      <div v-else class="detail-metrics"><div><span>请求数</span><strong>{{ modelUsage.data.value?.summary.request_count ?? 0 }}</strong></div><div><span>错误率</span><strong>{{ errorRate(modelUsage.data.value?.summary) }}</strong></div><div><span>P95 延迟</span><strong>{{ modelUsage.data.value?.summary.p95_latency_ms ? `${modelUsage.data.value.summary.p95_latency_ms} ms` : "--" }}</strong></div></div>
-      <button type="button" :disabled="probe.isPending.value" @click="probe.mutate(selected)"><Activity :size="16" />执行安全探测</button>
-    </aside>
+    <AccessibleDrawer :open="Boolean(selected)" :title="selected?.display_name || selected?.model_id || '模型详情'" eyebrow="Model detail" :subtitle="selected ? `${selected.provider} / ${selected.model_id}` : ''" close-label="关闭模型详情" @close="selected = null">
+      <template v-if="selected">
+        <dl class="detail-list"><div><dt>状态</dt><dd><StatePill :value="selected.enabled" /></dd></div><div><dt>来源</dt><dd>{{ selected.source }}</dd></div><div><dt>能力</dt><dd>{{ selected.capabilities.join("、") || "未声明" }}</dd></div><div><dt>最近发现</dt><dd>{{ selected.last_seen_at ?? "--" }}</dd></div></dl>
+        <h3>当前筛选用量摘要</h3>
+        <div v-if="modelUsage.isPending.value" class="loading-row">正在读取用量摘要…</div><div v-else-if="modelUsage.isError.value" class="data-state data-state--warning">用量摘要暂不可用，模型管理操作仍可继续。</div>
+        <div v-else class="detail-metrics"><div><span>请求数</span><strong>{{ modelUsage.data.value?.summary.request_count ?? 0 }}</strong></div><div><span>错误率</span><strong>{{ errorRate(modelUsage.data.value?.summary) }}</strong></div><div><span>P95 延迟</span><strong>{{ modelUsage.data.value?.summary.latency_p95_ms != null ? `${modelUsage.data.value.summary.latency_p95_ms} ms` : "--" }}</strong></div></div>
+        <button type="button" :disabled="probe.isPending.value" @click="probe.mutate(selected)"><Activity :size="16" />执行安全探测</button>
+      </template>
+    </AccessibleDrawer>
 
     <ConfirmDialog :open="Boolean(pendingDisable)" title="停用这个模型？" :description="`停用 ${pendingDisable?.model_id ?? ''} 后，新请求将无法再选择该模型；历史用量不受影响。`" confirm-label="确认停用" tone="danger" :busy="toggle.isPending.value" @cancel="pendingDisable = null" @confirm="pendingDisable && toggle.mutate(pendingDisable); pendingDisable = null" />
     <NotificationRegion :notifications="notifications" @dismiss="dismiss" />

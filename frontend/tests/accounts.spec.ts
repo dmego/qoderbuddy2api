@@ -41,8 +41,60 @@ describe("AccountsPage", () => {
     await wrapper.find(".table-link").trigger("click");
     await flushPromises();
 
-    expect(wrapper.text()).toContain("已使用 37%");
-    expect(wrapper.text()).toContain("接口协议尚未验证");
-    expect(wrapper.text()).not.toContain("protocol_not_verified");
+    expect(document.body.textContent).toContain("已使用 37%");
+    expect(document.body.textContent).toContain("接口协议尚未验证");
+    expect(document.body.textContent).not.toContain("protocol_not_verified");
+  });
+
+  it("keeps env accounts read-only and reports per-account batch failures", async () => {
+    const calls: Array<{ url: string; method: string }> = [];
+    let removeFailing = false;
+    const envAccount = { ...account, account_id: "qd-env", label: "环境账号", source: "env" };
+    const failingAccount = { ...account, account_id: "qd-fail", label: "失败账号" };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input); const method = init?.method ?? "GET"; calls.push({ url, method });
+      if (url.includes("/metrics/accounts")) return response({ snapshots: [] });
+      if (method === "POST" && url.includes("qd-fail")) return response({ detail: "probe_failed" }, 422);
+      if (method === "POST") return response({ status: "succeeded" });
+      return response({ accounts: removeFailing ? [envAccount, account] : [envAccount, account, failingAccount], next_cursor: null });
+    }));
+    const wrapper = mount(AccountsPage, { global: { plugins: [createPinia(), VueQueryPlugin] } });
+    await flushPromises();
+
+    expect(wrapper.get('input[aria-label="环境变量账号不可选择 环境账号"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.get('button[aria-label="环境变量账号不可停用 环境账号"]').attributes("disabled")).toBeDefined();
+    await wrapper.get('button[aria-label="刷新 环境账号"]').trigger("click");
+    await flushPromises();
+    expect(calls).toContainEqual({ url: "/api/admin/accounts/qoder/qd-env/refresh", method: "POST" });
+
+    await wrapper.get('input[aria-label="选择 研发账号"]').setValue(true);
+    await wrapper.get('input[aria-label="选择 失败账号"]').setValue(true);
+    const batchProbe = wrapper.findAll("button").find((button) => button.text().includes("批量探测"));
+    await batchProbe?.trigger("click");
+    document.querySelector<HTMLButtonElement>(".dialog-actions button:not(.secondary-button)")?.click();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("研发账号");
+    expect(wrapper.text()).toContain("失败账号");
+    expect(wrapper.text()).toContain("probe_failed");
+    expect(calls.some((item) => item.method === "PATCH" && item.url.includes("qd-env"))).toBe(false);
+
+    await wrapper.get('input[aria-label="选择 研发账号"]').setValue(true);
+    await wrapper.get('input[aria-label="选择 失败账号"]').setValue(true);
+    removeFailing = true;
+    await wrapper.get('button[aria-label="刷新 环境账号"]').trigger("click");
+    await flushPromises();
+    const batchDisable = wrapper.findAll("button").find((button) => button.text().includes("批量停用"));
+    await batchDisable?.trigger("click");
+    document.querySelector<HTMLButtonElement>(".dialog-actions button:not(.secondary-button)")?.click();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("account_not_on_current_page");
+    expect(wrapper.text()).toContain("1 跳过");
+    expect(calls.some((item) => item.method === "PATCH" && item.url.includes("qd-env"))).toBe(false);
   });
 });
+
+function response(body: unknown, status = 200): Response {
+  return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
+}

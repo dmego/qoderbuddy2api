@@ -36,7 +36,7 @@ describe("UsagePage", () => {
         });
       }
       if (url.includes("/usage/events")) {
-        return response({ events: [{ event_id: "event-q1", provider: "qoder", account_id: "qd-1", model_id: "model-a", protocol: "openai", status: "succeeded", http_status: 200, input_tokens: 4, output_tokens: 3, latency_ms: 120, started_at: "2026-07-23T00:00:00+00:00" }] });
+        return response({ events: [{ event_id: "event-q1", provider: "qoder", account_id: "qd-1", model_id: "model-a", protocol: "openai", status: "succeeded", http_status: 200, input_tokens: 4, output_tokens: 3, latency_ms: 120, started_at: "2026-07-23T00:00:00+00:00" }], next_cursor: url.includes("cursor=usage-next") ? null : "usage-next" });
       }
       if (url.includes("/usage/summary")) {
         return response({ summary: { request_count: 1, input_tokens: 4, output_tokens: 3, success_count: 1, error_count: 0, token_event_count: 1, missing_token_count: 0 } });
@@ -58,14 +58,23 @@ describe("UsagePage", () => {
     await wrapper.find('[data-testid="usage-event-event-q1"]').trigger("click");
     await flushPromises();
 
-    expect(wrapper.text()).toContain("request-q1");
-    expect(wrapper.text()).not.toContain("must never render");
+    expect(document.body.textContent).toContain("request-q1");
+    expect(document.body.textContent).not.toContain("must never render");
 
     await wrapper.find('[aria-label="Provider"]').setValue("qoder");
+    await wrapper.find('[aria-label="请求状态"]').setValue("failed");
     await flushPromises();
 
     expect(wrapper.find('a[download="usage-events.csv"]').attributes("href")).toContain("provider=qoder");
-    expect(calls.some((url) => url.includes("/usage/timeseries") && url.includes("provider=qoder"))).toBe(true);
+    expect(wrapper.find('option[value="workbuddy"]').exists()).toBe(false);
+    expect(calls).toContain("/api/admin/usage/summary?provider=qoder&status=failed");
+    expect(calls).toContain("/api/admin/usage/timeseries?bucket_kind=minute&limit=60&provider=qoder&status=failed");
+    expect(calls).toContain("/api/admin/usage/events?provider=qoder&status=failed&limit=25");
+
+    const next = wrapper.findAll("button").find((button) => button.text().includes("下一页"));
+    await next?.trigger("click");
+    await flushPromises();
+    expect(calls).toContain("/api/admin/usage/events?provider=qoder&status=failed&limit=25&cursor=usage-next");
   });
 });
 

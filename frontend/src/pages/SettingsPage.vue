@@ -14,6 +14,7 @@ import { useNotifications } from "@/composables/useNotifications";
 type Setting = { key: string; value: unknown; value_version: number; source?: string; apply_mode: string; apply_status: string; last_error?: string };
 type Schema = Record<string, { type: "bool" | "int" | "str"; apply_mode: string; default?: unknown }>;
 type Meta = { label: string; description: string; min?: number; max?: number; step?: number; unit?: string };
+type SettingOutcome = { key: string; label: string; status: "succeeded" | "failed"; error?: string; value_version?: number };
 
 const metadata: Record<string, Meta> = {
   "service.worker.autostart": { label: "Worker 自动启动", description: "Control Plane 启动后自动拉起 Proxy Worker。" },
@@ -39,15 +40,30 @@ watch(() => settings.data.value?.settings, (items) => { for (const item of items
 
 const mutation = useMutation({
   mutationFn: async (items: Setting[]) => {
-    const results: Record<string, unknown>[] = [];
-    for (const item of items) results.push(await apiRequest<Record<string, unknown>>("/settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: item.key, value: draft[item.key], value_version: item.value_version }) }));
+    const results: SettingOutcome[] = [];
+    for (const item of items) results.push(await saveSetting(item));
     return results;
   },
-  onSuccess: async (results) => { const failed = results.filter((item) => item.apply_status === "failed").length; lastOperation.value = { action: "应用运行设置", status: failed ? "failed" : "succeeded", total: results.length, failed }; notify(failed ? "部分设置应用失败" : "运行设置已应用", { message: `${results.length} 项设置已写入新版本`, tone: failed ? "warning" : "success" }); await queryClient.invalidateQueries({ queryKey: ["settings"] }); },
-  onError: (error) => notify("设置保存失败", { message: `${error}。请刷新后检查是否发生版本冲突。`, tone: "error", timeout: 0 }),
+  onSuccess: async (results) => {
+    const failed = results.filter((item) => item.status === "failed").length;
+    const succeeded = results.length - failed;
+    const status = failed ? succeeded ? "partial" : "failed" : "succeeded";
+    lastOperation.value = { action: "应用运行设置", status, total: results.length, succeeded, failed, items: results };
+    notify(failed ? "部分设置应用失败" : "运行设置已应用", { message: `${succeeded} 成功 · ${failed} 失败`, tone: failed ? "warning" : "success", timeout: failed ? 0 : 5000 });
+    await queryClient.invalidateQueries({ queryKey: ["settings"] });
+  },
 });
 
 function schemaType(item: Setting): string { return settings.data.value?.schema[item.key]?.type ?? typeof item.value; }
+async function saveSetting(item: Setting): Promise<SettingOutcome> {
+  const label = metadata[item.key]?.label ?? item.key;
+  try {
+    const result = await apiRequest<Record<string, unknown>>("/settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: item.key, value: draft[item.key], value_version: item.value_version }) });
+    return { key: item.key, label, status: "succeeded", value_version: Number(result.value_version) };
+  } catch (error) {
+    return { key: item.key, label, status: "failed", error: error instanceof Error ? error.message : String(error) };
+  }
+}
 function requestSave(items: Setting[]): void { if (!items.length || items.some((item) => errors.value[item.key])) return; const risky = items.some((item) => item.key === "usage.detail_retention_days" && Number(draft[item.key]) < Number(item.value)); if (risky) pendingItems.value = items; else mutation.mutate(items); }
 function confirmSave(): void { const items = pendingItems.value; pendingItems.value = []; mutation.mutate(items); }
 function resetDraft(): void { for (const item of settings.data.value?.settings ?? []) draft[item.key] = item.value; }

@@ -20,15 +20,15 @@ type ServiceState = {
   last_exit_code?: number; runtime_snapshot_version?: number;
 };
 type ServiceEvent = {
-  event_id: string; event_type?: string; action?: string; status?: string; result?: string;
+  event_id: string; event_type?: string; action?: string; status?: string;
   desired_state?: string; observed_state?: string; in_flight?: number; operation_id?: string;
-  error_code?: string; error_message?: string; created_at: string | number;
+  error_code?: string; created_at: string | number;
 };
-type EventPage = { events: ServiceEvent[]; next_cursor?: string | null; total?: number };
+type EventPage = { events: ServiceEvent[]; next_cursor?: string | null };
 
 const queryClient = useQueryClient();
 const eventType = ref("");
-const eventResult = ref("");
+const eventStatus = ref("");
 const recent = ref<Record<string, unknown>[]>([]);
 const activeOperation = ref<Record<string, unknown> | null>(null);
 const confirmAction = ref<"stop" | "restart" | null>(null);
@@ -37,8 +37,8 @@ const { notifications, notify, dismiss } = useNotifications();
 
 const service = useQuery({ queryKey: ["service"], queryFn: () => apiRequest<ServiceState>("/service"), refetchInterval: 3000 });
 const events = useQuery({
-  queryKey: ["service-events", cursor, eventType, eventResult],
-  queryFn: () => apiRequest<EventPage>(appendQuery("/service/events", { limit: 20, cursor: cursor.value, event_type: eventType.value, result: eventResult.value })),
+  queryKey: ["service-events", cursor, eventType, eventStatus],
+  queryFn: () => apiRequest<EventPage>(appendQuery("/service/events", { limit: 20, cursor: cursor.value, event_type: eventType.value, status: eventStatus.value })),
   refetchInterval: 5000,
   staleTime: 10_000,
 });
@@ -65,7 +65,7 @@ function requestAction(name: "start" | "stop" | "restart" | "reload"): void {
   else action.mutate(name);
 }
 function confirmServiceAction(): void { if (confirmAction.value) action.mutate(confirmAction.value); confirmAction.value = null; }
-function resetEventFilters(): void { eventType.value = ""; eventResult.value = ""; reset(); }
+function resetEventFilters(): void { eventType.value = ""; eventStatus.value = ""; reset(); }
 function operationKey(actionName: string): string { return `${actionName}-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
 function displayTime(value?: string | number): string { if (!value) return "--"; const date = new Date(typeof value === "number" && value < 10_000_000_000 ? value * 1000 : value); return Number.isNaN(date.valueOf()) ? String(value) : date.toLocaleString(); }
 </script>
@@ -117,11 +117,11 @@ function displayTime(value?: string | number): string { if (!value) return "--";
 
     <section class="data-panel">
       <PanelHeader title="持久化事件" :description="`第 ${page} 页 · Worker 重启后仍可追溯`">
-        <div class="toolbar"><select v-model="eventType" aria-label="筛选事件类型" @change="reset"><option value="">全部事件</option><option value="lifecycle">生命周期</option><option value="operation">管理操作</option><option value="health">健康检查</option></select><select v-model="eventResult" aria-label="筛选事件结果" @change="reset"><option value="">全部结果</option><option value="succeeded">成功</option><option value="failed">失败</option><option value="running">运行中</option></select><button class="secondary-button compact-button" type="button" @click="resetEventFilters">清除</button></div>
+        <div class="toolbar"><select v-model="eventType" aria-label="筛选事件类型" @change="reset"><option value="">全部事件</option><option value="state">状态快照</option><option value="operation">管理操作</option></select><select v-model="eventStatus" aria-label="筛选事件状态" @change="reset"><option value="">全部状态</option><option value="succeeded">成功</option><option value="failed">失败</option><option value="running">运行中</option></select><button class="secondary-button compact-button" type="button" @click="resetEventFilters">清除</button></div>
       </PanelHeader>
-      <PaginatedTable aria-label="服务持久化事件" :loading="events.isPending.value" :error="events.isError.value ? `事件读取失败：${events.error.value}` : ''" :empty="!(events.data.value?.events.length)" empty-title="暂无服务事件" empty-description="执行生命周期操作后，事件会持久化到这里。" :stale="events.isStale.value" :page="page" :total="events.data.value?.total" :can-previous="canPrevious.length > 0" :can-next="Boolean(events.data.value?.next_cursor)" @retry="events.refetch()" @previous="previous" @next="next(events.data.value?.next_cursor)">
+      <PaginatedTable aria-label="服务持久化事件" :loading="events.isPending.value" :error="events.isError.value ? `事件读取失败：${events.error.value}` : ''" :empty="!(events.data.value?.events.length)" empty-title="暂无服务事件" empty-description="执行生命周期操作后，事件会持久化到这里。" :stale="events.isStale.value" :page="page" :can-previous="canPrevious.length > 0" :can-next="Boolean(events.data.value?.next_cursor)" @retry="events.refetch()" @previous="previous" @next="next(events.data.value?.next_cursor)">
         <template #header><tr><th>时间</th><th>事件 / 操作</th><th>状态迁移</th><th>活动请求</th><th>结果</th><th>错误</th></tr></template>
-        <tr v-for="event in events.data.value?.events ?? []" :key="event.event_id"><td><strong>{{ displayTime(event.created_at) }}</strong><small class="mono">{{ event.event_id }}</small></td><td>{{ event.event_type ?? "service" }}<small>{{ event.action ?? event.operation_id ?? "--" }}</small></td><td>{{ event.desired_state ?? "--" }} / {{ event.observed_state ?? "--" }}</td><td>{{ event.in_flight ?? "--" }}</td><td><StatePill :value="event.status ?? event.result" /></td><td :class="{ 'text-danger': event.error_code || event.error_message }">{{ event.error_code ?? event.error_message ?? "--" }}</td></tr>
+        <tr v-for="event in events.data.value?.events ?? []" :key="event.event_id"><td><strong>{{ displayTime(event.created_at) }}</strong><small class="mono">{{ event.event_id }}</small></td><td>{{ event.event_type ?? "service" }}<small>{{ event.action ?? event.operation_id ?? "--" }}</small></td><td>{{ event.desired_state ?? "--" }} / {{ event.observed_state ?? "--" }}</td><td>{{ event.in_flight ?? "--" }}</td><td><StatePill :value="event.status" /></td><td :class="{ 'text-danger': event.error_code }">{{ event.error_code ?? "--" }}</td></tr>
       </PaginatedTable>
     </section>
 
