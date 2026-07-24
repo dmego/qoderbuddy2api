@@ -1,10 +1,10 @@
 # SDD Progress Ledger
 
 - Goal: implement `docs/design/macmini-multi-account-proxy-checkin.md` fully
-- Active plan: `docs/superpowers/plans/2026-07-23-full-control-plane-refactor.md`
+- Active plan: `docs/superpowers/plans/2026-07-24-2api-completion-plan.md`
 - Branch: `codex/multi-account-proxy-checkin`
-- Execution: single agent on the existing branch; no auto commits or pushes
-- Last saved: `2026-07-24 09:30 CST`
+- Execution: root integrator plus up to three isolated-worktree subagents; one commit per large delivery task
+- Last saved: `2026-07-24 10:00 CST`
 
 ## Approved architecture
 
@@ -78,15 +78,19 @@
 
 ## Resume checkpoint
 
-1. Implement and test the explicit remote-HTTP admin session mode requested by the user: keep `auto` secure-by-default, allow `QB2API_ADMIN_COOKIE_SECURE=false` for trusted Tailscale/LAN HTTP, show a visible security warning, and update the design/deployment docs.
-2. Finish the Proxy API Key frontend workflow and extend the real two-process smoke so a newly created key authenticates the Worker and a revoked key is rejected after snapshot reload.
-3. Finish remaining management API contracts: pagination/filter validation, model probing, account detail actions, metrics detail, service events, and mutation audit/no-secret coverage.
-4. Run browser desktop/mobile screenshots and console-error checks against a real Control Plane; fix overflow, empty states, and interaction gaps.
-5. Add fresh-data/migrated-data smoke, deployment/HTTP access documentation, compatibility checks, and remove only confirmed unused code/assets after reference search.
-6. Rerun the full Python and frontend gates, inspect all files against the 300-line limit, and record exact results before considering the refactor complete.
+1. Execute Wave 1 of the active plan: root Task 1 plus parallel Tasks 2, 3 and 4.
+2. Integrate one task commit at a time and run the Wave 1 full Python/frontend/two-process gate.
+3. Execute Wave 2 Tasks 5, 6 and 7 in isolated worktrees.
+4. Complete Task 8 code-quality/legacy cleanup, then Task 9 browser acceptance and final audit.
+5. Report progress only as integrated task commits out of 9.
 
 ## Deliberately deferred at this checkpoint
 
-- No commit, push, branch rewrite, or destructive cleanup was performed.
+- No push, branch rewrite, or destructive cleanup has been performed; the current code baseline is committed at `703cdfc`.
 - Remote HTTP behavior is not yet changed; the current implementation still follows the existing secure-cookie policy.
 - The design document still needs its deployment/session wording aligned with the trusted remote-HTTP option.
+
+## Commit checkpoints
+
+- `703cdfc feat: add control plane refactor baseline`
+- Next checkpoint: commit the 9-task parallel completion plan before starting Wave 1.
