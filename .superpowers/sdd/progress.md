@@ -4,7 +4,7 @@
 - Active plan: `docs/superpowers/plans/2026-07-24-2api-completion-plan.md`
 - Branch: `codex/multi-account-proxy-checkin`
 - Execution: root integrator plus up to three isolated-worktree subagents; one commit per large delivery task
-- Last saved: `2026-07-24` Wave 1 integrated and verified
+- Last saved: `2026-07-24` Task 8 integrated and verified
 
 ## Approved architecture
 
@@ -18,33 +18,20 @@
 
 ### Active 9-task completion plan
 
-- Integrated: Task 1 Security/Proxy access, Task 2 management backend, Task 3
-  provider/check-in hardening, and Task 4 operations console. Progress:
-  **4/9 delivery tasks integrated**.
-- Wave 1 integration fixes aligned schema visibility, audit/search contracts,
-  service and check-in response shapes, settings/import transaction audit,
-  stable error codes, secret-safe logging, metrics latency fields and final Vue
-  operation feedback.
-- Wave 1 full gate passed: 266 Python tests, 30 frontend tests, Ruff,
-  compileall, typecheck, ESLint, production build and `git diff --check`.
-- Wave 2 Tasks 5, 6 and 7 are integrated. Progress: **7/9 delivery tasks
-  integrated**. Root rebuilt `dist` once and completed the Wave 2 gate.
-- Wave 2 full gate passed: 278 Python tests, 32 frontend tests, Ruff,
-  compileall, typecheck, ESLint, production build, fresh/migrated real process
-  smoke, launchd plist validation and `git diff --check`.
-
-- Expanded unique design baseline: complete and self-reviewed
-- Full implementation plan: complete and self-reviewed
-- Task 1 frontend build contract: complete
-- Task 2 Control Plane/Worker split: complete for the current boundary; independent factories, process boundary, Worker-owned proxy handlers, versioned runtime snapshot/handshake, memory-only Worker runtime, and the 8-line compatibility entrypoint are implemented and covered by a real TCP two-process smoke
-- Task 3 Supervisor lifecycle: core complete; persistent service state, operation records, loopback internal routes, authenticated reload, and identity-checked Worker startup/shutdown are implemented; additional crash/drain/timeout edge-case coverage remains
-- Task 4 persistence/runtime settings: core schema migrations, WAL repository boundary, runtime settings application, backup validation and repository/transaction tests implemented; migrated-data smoke remains
-- Task 5 account/pool hardening: purpose-scoped registry/resolver, stable pool, pre-first-chunk failover and credential CAS implemented; final retirement/cancellation audit remains
-- Task 6 full management APIs: in progress; service/accounts/import/credentials/models/usage/metrics/settings/audit/backup/check-in history domains exist; Usage now includes compound filters, safe event detail, timeseries and audited CSV export; Proxy API Key create/list/revoke/rotate is implemented with one-time reveal and hash-only Worker verification, while pagination/no-secret tests remain incomplete across every mutation; legacy `/api/config` is read-only and Admin-Key-only during migration
-- Task 7 telemetry/metrics/check-in: Worker telemetry, rollups, token/quota/points snapshots, retry/backoff and schedulers implemented; external WorkBuddy/Qoder protocol spikes remain explicit gates
-- Task 8 full Vue console: in progress; authenticated Vue routes for overview, service, accounts, credentials, models, usage, check-in, settings and audit/backup exist; Usage filters, shared summary/trend/event queries, safe event detail and filtered CSV export are complete; Proxy Key management UI, visual browser acceptance and remaining detail workflows are pending
-- Task 9 migration/deployment: pending
-- Task 10 final review/gates: pending
+- Tasks 1 through 7 are integrated and passed their Wave 1 and Wave 2 gates.
+- Task 8 code-quality and legacy cleanup is integrated. Progress: **8/9
+  delivery tasks integrated**.
+- Task 8 removed legacy admin assets and production source maps, split persistence,
+  registry, admin, runtime, protocol, Provider and Control lifecycle duties, and
+  split all remaining oversized test suites.
+- The repository code-limit checker now enforces production file/function,
+  complexity, nesting and positional-argument limits plus the 300-line test-file
+  limit. The current repository has zero violations.
+- Task 8 full gate passed: 281 Python tests, 32 frontend tests, Ruff,
+  compileall, typecheck, ESLint, production build, fresh/migrated real-process
+  smoke, source-map absence and `git diff --check`.
+- Task 9 browser acceptance, final documentation alignment and final cleanup is
+  the only remaining delivery task. The project is not yet complete.
 
 ## Existing implementation evidence
 
@@ -95,11 +82,9 @@
 
 ## Resume checkpoint
 
-1. Tasks 1 through 4 are integrated on `codex/multi-account-proxy-checkin`.
-2. Wave 1 full Python/frontend/static/build gate passed on commit `c701bd1`.
-3. Tasks 5 through 7 are integrated and the Wave 2 gate passed.
-4. Execute Task 8 as one behavior-preserving cleanup batch, then Task 9 browser
-   acceptance and final completion audit.
+1. Tasks 1 through 8 are integrated on `codex/multi-account-proxy-checkin`.
+2. Wave 1, Wave 2 and Task 8 Python/frontend/static/build gates passed.
+3. Execute Task 9 browser acceptance and final completion audit.
 
 ## Deliberately deferred at this checkpoint
 
@@ -135,3 +120,11 @@
 - Wave 2 gate: 278 Python tests and 32 frontend tests passed; Ruff, compileall,
   typecheck, ESLint, production build, fresh/migrated smoke, launchd plist and
   diff checks passed.
+- `42d268d refactor(web): remove legacy admin assets`
+- `32ffde9 refactor(runtime): reduce complexity debt`
+- `27f5016 refactor(accounts): split persistence duties`
+- `1964dc1 refactor(runtime): close code limit gaps`
+- `5322c97 test: split oversized suites`
+- Task 8 gate: 281 Python tests and 32 frontend tests passed; Ruff, compileall,
+  repository code limits, typecheck, ESLint, production build, source-map
+  absence, fresh/migrated smoke and diff checks passed.
