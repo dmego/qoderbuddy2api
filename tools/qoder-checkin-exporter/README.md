@@ -72,10 +72,14 @@ the validator to prevent accidental export of full profile data.
 1. Promote/import the Qoder chat account first if only a transient `qd-env-N`
    account exists. Record the durable `account_id` selected in the admin UI.
 2. Open the 2api management console over HTTPS or an explicitly trusted admin
-   connection. Go to **Accounts -> Add -> Qoder check-in import**.
-3. Select the durable account and paste only `access_token` and
-   `refresh_token` from the validated file. Do not paste `version`, provider,
-   profile files, PAT, or COSY material into another credential field.
+   connection. Use the dedicated Qoder check-in import workflow when it is
+   available in the integrated Admin UI.
+3. The protected Control Plane contract is `POST /api/admin/auth/qoder/checkin`
+   with only `account_id`, `access_token`, and `refresh_token`. It does not
+   accept an `auth-v2.dat` file, a complete desktop profile, a chat PAT, or a
+   COSY Authorization value. Do not put this JSON into curl arguments, shell
+   history, a URL, browser storage, or a generic credential endpoint; submit it
+   through the dedicated authenticated UI workflow.
 4. Treat import as successful only after the server-side Qoder status probe
    reports the check-in purpose as active and verified. A failed probe must not
    replace the existing stored credential.
@@ -92,3 +96,15 @@ authorized redacted probe records HTTP status and outcome.
 This Task 3 verification ran on macOS. The Windows DPAPI and `icacls` paths are
 covered by platform simulation tests but were not exercised on a real Windows
 host in this round.
+
+## Boundaries and handoff
+
+The exporter only prepares the Qoder access/refresh pair. It does not import
+anything into 2api, run daily check-in, retain profile data, or make Windows a
+part of the Mac Mini service. After a successful import, delete the temporary
+JSON according to local policy and confirm only redacted status in the Admin UI.
+
+WorkBuddy/CodeBuddy check-in credentials use a separate provider-specific
+workflow. Do not repurpose this exporter, reuse Qoder fields, or save a
+WorkBuddy Cookie/Bearer in `.env`, a URL, browser storage, or an unsupported
+generic credential API while that workflow is unavailable.

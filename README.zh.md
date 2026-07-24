@@ -1,183 +1,143 @@
-<p align="center">
-  <img src="https://img.shields.io/badge/Python-3.11%2B-blue?style=flat-square&logo=python" alt="Python">
-  <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License">
-  <img src="https://img.shields.io/badge/FastAPI-0.115%2B-009688?style=flat-square&logo=fastapi" alt="FastAPI">
-</p>
+# qoderbuddy2api
 
-<h1 align="center">qoderbuddy2api</h1>
+`qoderbuddy2api` 是 CodeBuddy 与 Qoder CN 账号的本地运维平台。常驻 Control
+Plane 负责管理台、加密凭据、SQLite、调度、备份和 Worker 监督；Proxy Worker 提供
+OpenAI / Anthropic 兼容模型接口。
 
-<p align="center">
-  <strong>CodeBuddy & Qoder CN → OpenAI / Anthropic 兼容 API 代理</strong><br>
-  将企业级大模型解锁给 Claude Code、Codex 及 OpenAI 或 Anthropic 兼容客户端使用。
-</p>
+要求 Python 3.11 及以上。它服务于 Mac Mini 或开发机器上的一位可信运维者，不是公网
+多租户网关。
 
----
+## 拓扑与凭据边界
 
-## 为什么需要它？
-
-CodeBuddy 和 Qoder CN 提供顶尖模型（DeepSeek-V4、Qwen3.8、Qwen3.7、Kimi-K2.7-Code、GLM-5.2、MiniMax-M2.7），但它们原生 API 不兼容 OpenAI 或 Anthropic SDK。**qoderbuddy2api** 通过本地轻量代理补齐这一层。
-
-- 🚀 **即插即用** — 兼容 Claude Code、Codex、Continue、Aider 及任意 OpenAI SDK
-- 🧩 **原生 Anthropic Messages** — `/v1/messages` 适配 Claude 风格客户端
-- 🔧 **工具调用** — 完整支持 Function Calling，适配 Claude Code 智能体工作流
-- ⚖️ **负载均衡** — 多 API Key 轮询 + 自动故障转移
-
-## 快速开始
-
-### 本地部署
-
-```bash
-pip install qoderbuddy2api
-cp .env.example .env   # 编辑填入 API Key
-qb2api                 # 启动在 9999 端口
+```text
+浏览器（管理） ───────> Control Plane :9999
+                         ├─ 管理台、SQLite、审计、备份、Supervisor
+                         └─ Proxy Worker 127.0.0.1:10001 ──> /v1、/v1/messages
 ```
 
-### 环境变量
+Control Plane 是唯一常驻服务，它启动和管理 Worker；不要为 Worker 单独建立
+launchd/systemd 服务。Worker 默认仅监听 loopback，且不直接访问 SQLite，不持有
+Admin Key 或凭据加密主密钥。
 
-从模板创建 `.env`，填入你的 token：
+三类值必须彼此不同：
+
+| 变量 | 作用 |
+| --- | --- |
+| `QB2API_PROXY_API_KEY` | Worker 的模型客户端请求 |
+| `QB2API_ADMIN_KEY` | 首次管理登录和管理员自动化 |
+| `QB2API_CREDENTIAL_KEY` | 持久 Provider 凭据的静态加密 |
+
+不要把 key、token、Cookie、Authorization、prompt 或 completion 放进 URL、浏览器
+LocalStorage/sessionStorage、Git、截图或普通日志。
+
+## 本地快速开始
 
 ```bash
+git clone https://github.com/dmego/qoderbuddy2api.git
+cd qoderbuddy2api
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev]'
 cp .env.example .env
+chmod 600 .env
+mkdir -p data logs && chmod 700 data logs
 ```
 
-**获取 Token：**
-
-- **CodeBuddy** — 在 CodeBuddy 账号设置中复制 session token，格式为 `ck_xxx…`
-- **Qoder CN** — 在 [Qoder CN 集成页面](https://qoder.com.cn/account/integrations) 生成个人访问令牌（PAT），格式为 `pt_xxx…`
-
-```ini
-# 单 Key
-CODEBUDDY_TOKEN=ck_your_key
-QODER_TOKEN=pt_your_key
-
-# 多 Key（负载均衡轮询）
-CODEBUDDY_TOKEN=ck_key1,ck_key2,ck_key3
-QODER_TOKEN=pt_key1,pt_key2,pt_key3
-
-# 可选：用 Bearer Token 保护 API
-QB2API_API_KEY=your-secret
-```
-
-## 使用方式
-
-### 配合 Claude Code
-
-```json
-{
-  "providers": {
-    "qoderbuddy2api": {
-      "baseURL": "http://localhost:9999/v1",
-      "apiKey": "optional-if-set"
-    }
-  }
-}
-```
-
-### 直接调用 API
+在本机生成两份独立 HTTP Key 与一份 Fernet 凭据密钥，填入 `.env`：
 
 ```bash
-# 列出模型
-curl http://localhost:9999/v1/models
-
-# 流式对话
-curl -N http://localhost:9999/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"codebuddy/deepseek-v3","messages":[{"role":"user","content":"你好！"}],"stream":true}'
-
-# 工具调用（非流式）
-curl http://localhost:9999/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"qoder/auto","messages":[{"role":"user","content":"东京天气怎么样？"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}],"tool_choice":"auto"}'
-
-# Anthropic Messages API
-curl http://localhost:9999/v1/messages \
-  -H "Content-Type: application/json" \
-  -d '{"model":"codebuddy/deepseek-v4-flash","max_tokens":512,"messages":[{"role":"user","content":"你好！"}]}'
+.venv/bin/python -c 'import secrets; print(secrets.token_urlsafe(32))'
+.venv/bin/python -c 'import secrets; print(secrets.token_urlsafe(32))'
+.venv/bin/python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
 ```
 
-## 支持的模型
-
-### CodeBuddy（14 个模型）
-
-| 模型 | 能力 |
-|-------|------|
-| `codebuddy/auto` | 自动路由 |
-| `codebuddy/deepseek-v3` | 对话、流式、**工具调用** |
-| `codebuddy/deepseek-v4-pro` | 对话、流式 |
-| `codebuddy/deepseek-v4-flash` | 对话、流式 |
-| `codebuddy/deepseek-r1` | 对话、**推理** |
-| `codebuddy/glm-5.1`、`glm-5.2`、`glm-5v-turbo` | 对话、流式 |
-| `codebuddy/kimi-k2.6`、`kimi-k2.7` | 对话（k2.7：推理） |
-| `codebuddy/minimax-m3`、`minimax-m2.7` | 对话（m2.7：推理） |
-| `codebuddy/hy3` | 对话 |
-| `codebuddy/deepseek-v3-0324` | 对话 |
-
-### Qoder CN（10 个模型）
-
-| 模型 | 能力 |
-|-------|------|
-| `qoder/auto` | 自动路由、**工具调用**、推理强度、上下文窗口 |
-| `qoder/Qwen3.8-Max-Preview` | **工具调用**、推理强度、上下文窗口 |
-| `qoder/Qwen3.7-Max` | **工具调用**、推理强度、上下文窗口 |
-| `qoder/DeepSeek-V4-Pro` | **工具调用**、上下文窗口 |
-| `qoder/Kimi-K2.7-Code` | **工具调用**、上下文窗口 |
-| `qoder/Qwen3.7-Plus` | 对话、上下文窗口 |
-| `qoder/Qwen3.6-Flash` | 对话、上下文窗口 |
-| `qoder/DeepSeek-V4-Flash` | 对话、上下文窗口 |
-| `qoder/GLM-5.2` | 对话、上下文窗口 |
-| `qoder/MiniMax-M2.7` | 对话、上下文窗口 |
-
-使用 `codebuddy/` 或 `qoder/` 前缀显式路由，或用裸模型名自动发现。
-
-## 架构
-
-```
-客户端 (Claude Code / OpenAI SDK)
-        │
-        ▼
-   qoderbuddy2api (FastAPI)
-        │
-   ┌────┴────────────┐
-   │                 │
-   ▼                 ▼
-CodeBuddy          Qoder CN
-(HTTPS)           (COSY 协议)
-```
-
-## 高级用法
-
-### 负载均衡
-
-逗号分隔多个 Token 即可启用轮询：
-
-```ini
-QODER_TOKEN=pt_账号1,pt_账号2,pt_账号3
-```
-
-故障实例被冷却 30 秒后重试。
-
-### API Key 保护
-
-```ini
-QB2API_API_KEY=your-secret
-```
-
-配置后，除 `/health` 外的所有端点需要 `Authorization: Bearer <key>`。
-
-### 服务管理
+启用管理台、持久账号、签到或备份前必须设置 `QB2API_ADMIN_KEY` 与
+`QB2API_CREDENTIAL_KEY`。从仓库根目录启动，以读取 `.env`：
 
 ```bash
-./server.sh start     # 前台启动
-./server.sh stop      # 按端口停止
-./server.sh status    # 查看状态
+.venv/bin/qb2api --mode control
 ```
 
-## License
+默认地址：
 
-MIT — 详见 [LICENSE](LICENSE)
+- Control health：`http://127.0.0.1:9999/health`
+- 管理台：`http://127.0.0.1:9999/admin/`
+- Worker 模型：`http://127.0.0.1:10001/v1/models`
+- OpenAI base URL：`http://127.0.0.1:10001/v1`
+- Anthropic Messages：`http://127.0.0.1:10001/v1/messages`
 
----
+模型客户端访问 Worker 地址，并仅用 `Authorization: Bearer …` 请求头传递 Proxy
+Key。Control Plane 不会转发 `/v1` 流量。
 
-<p align="center">
-  <sub>为追求模型自由的开发者而建。</sub>
-</p>
+## 可信远程 HTTP 与 HTTPS
+
+所有非 loopback 浏览器优先使用 HTTPS。默认
+`QB2API_ADMIN_COOKIE_SECURE=auto` 允许本机 HTTP，但拒绝远程 HTTP 登录。
+
+如果可信 Tailscale/LAN 暂时无法提供 TLS，可以显式支持 HTTP：
+
+```ini
+QB2API_CONTROL_HOST=100.101.102.103
+QB2API_CONTROL_PORT=9999
+QB2API_ADMIN_COOKIE_SECURE=false
+```
+
+这是明确接受传输风险的模式：Cookie 仍是 `HttpOnly` 与 `SameSite=Lax`，但首次提交
+Admin Key 没有加密。它只适用于受信 tailnet/LAN，绝不能结合公网 DNS、端口转发、共享
+Wi-Fi 或公共反向代理。
+
+HTTPS 模式下让 Control Plane 继续绑定 loopback，并使用 TLS 反向代理。只有明确其直连
+对端 CIDR 后，才开启转发头信任：
+
+```ini
+QB2API_CONTROL_HOST=127.0.0.1
+QB2API_ADMIN_COOKIE_SECURE=auto
+QB2API_TRUSTED_PROXY_HEADERS=true
+QB2API_TRUSTED_PROXY_NETWORKS=127.0.0.1/32
+```
+
+代理必须覆盖 `X-Forwarded-For`、`X-Forwarded-Proto`；不要向任意客户端或宽泛网段开放
+该信任。
+
+## 运维、备份与 smoke
+
+Service 页（或 Admin-Key-protected service API）只管理 Worker。Control Plane 必须通过
+launchd/systemd 重启。重启 Control Plane 会停止其 Worker，并按设计撤销浏览器 session，
+因此需要重新登录。
+
+备份 restore API 仅做校验：检查 checksum、SQLite 完整性和 schema 兼容性，返回
+`offline_restore_required`。真实恢复须停止 Control Plane 后再用已验证的 SQLite 备份
+覆盖活动数据库。
+
+```bash
+PYTHON_BIN=.venv/bin/python bash scripts/smoke_fresh_install.sh
+PYTHON_BIN=.venv/bin/python bash scripts/smoke_migrated_install.sh
+```
+
+smoke 使用临时数据目录，验证 Control/Worker 启动、Worker 异常后受管重启和备份 dry-run。
+除非设置 `QB2API_SMOKE_KEEP=1`，它会删除临时产物。
+
+## 运行手册
+
+- [Mac Mini 部署与运维](docs/deployment/macmini.md)
+- [单进程迁移](docs/migration/single-process-to-control-worker.md)
+- [launchd Control Plane 模板](deploy/launchd/cn.qb2api.control.plist)
+- [可选 systemd 开发模板](deploy/systemd/qb2api-control.service)
+- [Qoder Windows 签到导出器](tools/qoder-checkin-exporter/README.md)
+
+环境变量 token 只是 transient chat slot。需要长期身份、签到或凭据轮换时，通过管理台
+promote/import。Qoder chat PAT 和 Qoder 签到 access/refresh 是不同值。没有可用的
+WorkBuddy 专用导入器时，不要把 Cookie/Bearer 放进 `.env`、URL、浏览器存储或不支持的
+通用接口来绕过。
+
+## 开发验证
+
+```bash
+pytest -q
+ruff check src tests
+python -m compileall -q src/qb2api
+git diff --check
+```
+
+## 许可证
+
+MIT — 见 [LICENSE](LICENSE)。
