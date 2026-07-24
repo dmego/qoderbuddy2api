@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import Any
 
 from .accounts import AccountRegistry, AccountRepository, CredentialResolver, CredentialVault
@@ -17,6 +16,7 @@ from .checkin.scheduler import CheckinScheduler
 from .checkin.service import CheckinService
 from .config import Settings
 from .control.telemetry import UsageRollupService
+from .storage_permissions import ensure_private_directory
 
 
 class RuntimeServices:
@@ -195,6 +195,5 @@ class RuntimeServices:
         SettingsApplier.validate(key, value)
 
     def _database_path(self) -> str:
-        data_dir = Path(self.settings.data_dir)
-        data_dir.mkdir(parents=True, exist_ok=True)
+        data_dir = ensure_private_directory(self.settings.data_dir)
         return str(data_dir / "qb2api.sqlite3")

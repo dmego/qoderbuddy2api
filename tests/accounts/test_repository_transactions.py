@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import stat
+
 import pytest
 
 from qb2api.accounts.repository import AccountRepository
@@ -123,4 +125,26 @@ async def test_attempt_and_daily_state_roll_back_together(tmp_path) -> None:
         "codebuddy", "cb-main", "2026-07-22", "Asia/Shanghai"
     )
     assert state is None
+    await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_repository_restricts_new_database_file(tmp_path) -> None:
+    path = tmp_path / "accounts.sqlite3"
+    repository = AccountRepository(str(path))
+    await repository.connect()
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_repository_restricts_existing_database_file(tmp_path) -> None:
+    path = tmp_path / "accounts.sqlite3"
+    path.touch()
+    path.chmod(0o644)
+    repository = AccountRepository(str(path))
+    await repository.connect()
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
     await repository.close()

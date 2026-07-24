@@ -1,6 +1,8 @@
 """Request logger resilience and redacted error coverage."""
 
 import json
+import stat
+from datetime import datetime
 
 from qb2api.logger import RequestLogger
 
@@ -48,3 +50,21 @@ class TestLogger:
         assert entry["success"] is False
         assert entry["status_code"] == 401
         assert entry["error"] == "Unauthorized"
+
+    def test_logger_restricts_existing_directory_and_log_file(self, tmp_path):
+        log_file = tmp_path / f"requests-{datetime.now():%Y-%m-%d}.jsonl"
+        log_file.write_text("{}\n")
+        tmp_path.chmod(0o755)
+        log_file.chmod(0o644)
+        logger = RequestLogger(log_dir=str(tmp_path), enabled=True)
+
+        logger.log_request(
+            model="test",
+            provider="test",
+            stream=False,
+            success=True,
+            duration=0.1,
+        )
+
+        assert stat.S_IMODE(tmp_path.stat().st_mode) == 0o700
+        assert stat.S_IMODE(log_file.stat().st_mode) == 0o600

@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .storage_permissions import ensure_private_directory, ensure_private_file
+
 logger = logging.getLogger("qb2api")
 
 
@@ -16,7 +18,7 @@ class RequestLogger:
         self.log_dir = Path(log_dir)
         self.enabled = enabled
         if enabled:
-            self.log_dir.mkdir(parents=True, exist_ok=True)
+            self.log_dir = ensure_private_directory(self.log_dir)
 
     def log_request(
         self,
@@ -131,6 +133,7 @@ class RequestLogger:
     def _write_entry(self, entry: dict[str, Any]) -> None:
         today = datetime.now().strftime("%Y-%m-%d")
         log_file = self.log_dir / f"requests-{today}.jsonl"
+        ensure_private_file(log_file)
         with open(log_file, "a") as file:
             file.write(json.dumps(entry, ensure_ascii=False) + "\n")
 

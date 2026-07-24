@@ -28,6 +28,18 @@ chmod 600 .env
 chmod 700 data logs
 ```
 
+Control Plane 会在启动时把既有 `QB2API_DATA_DIR` 收紧为 `0700`，并把打开或创建的
+SQLite、`worker.internal` 和新建 backup 文件收紧为 `0600`。Worker 的请求日志目录和每个
+`requests-*.jsonl` 也会被收紧为 `0700/0600`，因此历史启动留下的宽松权限不会持续存在。
+升级后可在不读取文件内容的情况下检查权限：
+
+```bash
+stat -f '%N %Sp' data logs data/qb2api.sqlite3 data/worker.internal logs/requests-*.jsonl
+```
+
+输出应分别显示目录 `drwx------` 和文件 `-rw-------`。若运行用户不拥有这些路径，
+Control Plane 应失败而不是静默以宽松权限继续运行；先修正目录 owner，再重新启动。
+
 在本机生成两个 HTTP key 和一个 Fernet key，填入 `.env`，三者不得相同：
 
 ```bash

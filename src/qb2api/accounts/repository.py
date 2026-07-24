@@ -11,6 +11,8 @@ from typing import Any
 
 import aiosqlite
 
+from qb2api.storage_permissions import ensure_private_file
+
 from .repo_accounts import AccountRepositoryMixin
 from .repo_catalog import CatalogRepositoryMixin
 from .repo_checkin import CheckinRepositoryMixin
@@ -58,6 +60,7 @@ class AccountRepository(
         path = Path(self._db_path)
         if path.parent and str(path.parent) not in ("", "."):
             path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_private_file(path)
         connection = await aiosqlite.connect(self._db_path)
         connection.row_factory = aiosqlite.Row
         await self._configure_connection(connection)

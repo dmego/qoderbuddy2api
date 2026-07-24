@@ -17,6 +17,7 @@ from fastapi import FastAPI
 
 from qb2api.config import Settings
 from qb2api.runtime import RuntimeServices
+from qb2api.storage_permissions import ensure_private_directory
 
 from .runtime_snapshot import RuntimeSnapshotService
 from .service_models import ServiceSnapshot
@@ -160,8 +161,7 @@ async def _stop_control(context: _ControlContext) -> None:
 def _ensure_internal_token(settings: Settings) -> Settings:
     if settings.worker_internal_token:
         return settings
-    data_dir = Path(settings.data_dir)
-    data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    data_dir = ensure_private_directory(settings.data_dir)
     token_path = data_dir / "worker.internal"
     token = _read_or_create_token(token_path)
     if not token:
