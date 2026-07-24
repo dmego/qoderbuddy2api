@@ -25,16 +25,16 @@ from .models import CheckInOutcome, CheckInResult
 logger = logging.getLogger("qb2api.checkin.codebuddy")
 
 AuthMode = Literal["bearer", "cookie", "bearer_cookie"]
+_AUTH_MODES = frozenset({"bearer", "cookie", "bearer_cookie"})
 
-# Confirmed: already checked in today (design §3.2 / CB-CHECKIN-01).
 _ALREADY_CODE = 10001
 
 
 class WorkBuddyClient:
     """Single-account WorkBuddy daily check-in HTTP client.
 
-    Does not share CookieJar across accounts — construct one client per account
-    or pass credentials per call via checkin().
+    Each prepared request replaces/removes Cookie so the client's response jar
+    cannot carry one account's session into another account request.
     """
 
     provider = "codebuddy"
@@ -58,7 +58,6 @@ class WorkBuddyClient:
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(timeout, connect=min(10.0, timeout)),
-            # per-client jar; never reuse across accounts
             cookies=httpx.Cookies(),
         )
 
@@ -72,11 +71,13 @@ class WorkBuddyClient:
     def _build_headers(
         self,
         *,
-        auth_mode: AuthMode,
+        auth_mode: AuthMode | str,
         access_token: str | None,
         cookie: str | None,
         extra_headers: dict[str, str] | None,
     ) -> dict[str, str]:
+        if auth_mode not in _AUTH_MODES:
+            raise ValueError(f"unsupported auth_mode: {auth_mode}")
         headers: dict[str, str] = {
             "Accept": "application/json",
             "Content-Type": "application/json",
@@ -90,18 +91,38 @@ class WorkBuddyClient:
                 raise ValueError("cookie required for cookie auth")
             headers["Cookie"] = cookie
         if extra_headers:
-            # identity headers only; never override Authorization/Cookie from untrusted bulk
+            allowed = {"x-user-id", "x-enterprise-id", "x-tenant-id", "x-domain"}
             for k, v in extra_headers.items():
-                if k.lower() in ("authorization", "cookie"):
-                    continue
-                headers[k] = v
+                if k.lower() in allowed:
+                    headers[k] = v
         return headers
+
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str],
+        content: bytes | None = None,
+    ) -> httpx.Response:
+        """Prepare an exact per-account Cookie header and disable redirects."""
+        request = self._client.build_request(
+            method,
+            url,
+            headers=headers,
+            content=content,
+        )
+        if "Cookie" in headers:
+            request.headers["Cookie"] = headers["Cookie"]
+        elif "Cookie" in request.headers:
+            del request.headers["Cookie"]
+        return await self._client.send(request, follow_redirects=False)
 
     async def checkin(
         self,
         *,
         account_id: str = "",
-        auth_mode: AuthMode = "bearer",
+        auth_mode: AuthMode | str = "bearer",
         access_token: str | None = None,
         cookie: str | None = None,
         extra_headers: dict[str, str] | None = None,
@@ -135,16 +156,11 @@ class WorkBuddyClient:
         account_id: str,
         headers: dict[str, str],
     ) -> CheckInResult | None:
-        """Return early result if already checked in; None means proceed to claim.
-
-        Status contract is still spike-gated (CB-CHECKIN-01). We only short-circuit
-        on clear already-checked signals; ambiguous status falls through to claim.
-        """
+        """Return an auth/already result; ambiguous status proceeds to claim."""
         url = join_url(self.base_url, self.status_path)
         try:
-            resp = await self._client.request(self.status_method, url, headers=headers)
+            resp = await self._request(self.status_method, url, headers=headers)
         except httpx.HTTPError as exc:
-            # preflight failure is non-fatal — fall through to claim
             logger.debug("workbuddy status preflight transport error: %s", type(exc).__name__)
             return None
 
@@ -169,7 +185,6 @@ class WorkBuddyClient:
                 request_id=rid,
             )
 
-        # Heuristic already-checked signals from status body (unverified until CB-CHECKIN-01).
         if body and self._looks_already_checked(body):
             return CheckInResult(
                 outcome=CheckInOutcome.ALREADY_CHECKED_IN,
@@ -213,7 +228,7 @@ class WorkBuddyClient:
     ) -> CheckInResult:
         url = join_url(self.base_url, self.claim_path)
         try:
-            resp = await self._client.request(
+            resp = await self._request(
                 self.claim_method,
                 url,
                 headers=headers,
@@ -230,47 +245,52 @@ class WorkBuddyClient:
         rid = extract_request_id(body, resp.headers)
         code = extract_business_code(body)
         msg = extract_message(body)
+        return self._classify_claim(
+            account_id=account_id,
+            response=resp,
+            body=body,
+            request_id=rid,
+            business_code=code,
+            message=msg,
+        )
 
-        # Critical confirmed mapping (design §3.2).
-        if resp.status_code == 400 and code is not None and str(code) == str(_ALREADY_CODE):
+    def _classify_claim(
+        self,
+        *,
+        account_id: str,
+        response: httpx.Response,
+        body: dict[str, Any] | None,
+        request_id: str | None,
+        business_code: str | int | None,
+        message: str | None,
+    ) -> CheckInResult:
+        already = business_code is not None and str(business_code) == str(_ALREADY_CODE)
+        if already and (response.status_code == 400 or response.is_success):
             return CheckInResult(
                 outcome=CheckInOutcome.ALREADY_CHECKED_IN,
                 provider=self.provider,
                 account_id=account_id,
-                http_status=resp.status_code,
-                business_code=code,
-                request_id=rid,
-                message=msg or "already checked in today",
+                http_status=response.status_code,
+                business_code=business_code,
+                request_id=request_id,
+                message=message or "already checked in today",
             )
-
-        if 200 <= resp.status_code < 300:
-            # some gateways return 200 with business already-code
-            if code is not None and str(code) == str(_ALREADY_CODE):
-                return CheckInResult(
-                    outcome=CheckInOutcome.ALREADY_CHECKED_IN,
-                    provider=self.provider,
-                    account_id=account_id,
-                    http_status=resp.status_code,
-                    business_code=code,
-                    request_id=rid,
-                    message=msg or "already checked in today",
-                )
+        if response.is_success:
             return CheckInResult(
                 outcome=CheckInOutcome.CLAIMED,
                 provider=self.provider,
                 account_id=account_id,
-                http_status=resp.status_code,
-                business_code=code,
-                request_id=rid,
-                message=msg,
+                http_status=response.status_code,
+                business_code=business_code,
+                request_id=request_id,
+                message=message,
             )
-
         return classify_http_error(
             provider=self.provider,
             account_id=account_id,
-            status_code=resp.status_code,
+            status_code=response.status_code,
             body=body,
-            request_id=rid,
+            request_id=request_id,
         )
 
 

@@ -55,6 +55,18 @@ class DeferredFailureProvider(FakeProvider):
         raise RuntimeError(f"{self.account_id}-late-fail")
 
 
+class BlockingStreamProvider(FakeProvider):
+    def __init__(self, account_id: str) -> None:
+        super().__init__(account_id)
+        self.started = asyncio.Event()
+
+    async def stream(self, request: ChatCompletionRequest) -> AsyncIterator[bytes]:
+        self.stream_calls += 1
+        self.started.set()
+        await asyncio.Event().wait()
+        yield b"unreachable"
+
+
 def _req() -> ChatCompletionRequest:
     return ChatCompletionRequest(model="m", messages=[{"role": "user", "content": "hi"}])
 
@@ -161,3 +173,92 @@ async def test_retired_generation_failure_does_not_cool_replacement():
     assert result["id"] == "replacement"
     assert replacement.complete_calls == 1
     assert fallback.complete_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_stream_cancellation_releases_retired_slot():
+    provider = BlockingStreamProvider("cancelled")
+    pool = DynamicProviderPool(name="codebuddy")
+    await pool.update_slots({"account": provider})
+
+    async def consume() -> None:
+        async for _ in pool.stream(_req()):
+            pass
+
+    task = asyncio.create_task(consume())
+    await provider.started.wait()
+    await pool.update_slots({})
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert provider.closed is True
+
+
+@pytest.mark.asyncio
+async def test_qoder_provider_authenticates_once_per_account_under_concurrency(
+    monkeypatch,
+):
+    from qb2api.providers.qoder import QoderProvider, QoderSession
+
+    authentications: list[str] = []
+
+    async def authenticate(session: QoderSession) -> None:
+        authentications.append(session.pat)
+        await asyncio.sleep(0)
+        session.user_id = f"user-{session.pat}"
+        session._ready = True
+
+    monkeypatch.setattr(QoderSession, "authenticate", authenticate)
+    first = QoderProvider(pat="pat-a")
+    second = QoderProvider(pat="pat-b")
+    try:
+        first_a, first_b, second_session = await asyncio.gather(
+            first._ensure_session(),
+            first._ensure_session(),
+            second._ensure_session(),
+        )
+    finally:
+        await first.close()
+        await second.close()
+
+    assert first_a is first_b
+    assert first_a is not second_session
+    assert authentications.count("pat-a") == 1
+    assert authentications.count("pat-b") == 1
+
+
+@pytest.mark.asyncio
+async def test_qoder_provider_reauthenticates_once_before_first_chunk(monkeypatch):
+    from qb2api.providers.qoder import QoderError, QoderProvider, QoderSession
+
+    sessions: list[QoderSession] = []
+    attempts: list[QoderSession] = []
+
+    async def authenticate(session: QoderSession) -> None:
+        session.user_id = "user"
+        session._ready = True
+        sessions.append(session)
+
+    async def stream_once(
+        _provider: QoderProvider,
+        _request: ChatCompletionRequest,
+        session: QoderSession,
+    ) -> AsyncIterator[bytes]:
+        attempts.append(session)
+        if len(attempts) == 1:
+            raise QoderError("expired", status_code=401)
+        yield b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+
+    monkeypatch.setattr(QoderSession, "authenticate", authenticate)
+    monkeypatch.setattr(QoderProvider, "_stream_once", stream_once)
+    provider = QoderProvider(pat="pat-a")
+    try:
+        chunks = [chunk async for chunk in provider.stream(_req())]
+    finally:
+        await provider.close()
+
+    assert len(sessions) == 2
+    assert attempts == sessions
+    assert chunks[-1] == b"data: [DONE]\n\n"

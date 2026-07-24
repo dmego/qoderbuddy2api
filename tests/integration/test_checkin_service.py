@@ -17,14 +17,21 @@ from qb2api.config import Settings
 
 
 class _SequenceClient:
-    def __init__(self, provider: str, results: list[CheckInResult]) -> None:
+    def __init__(
+        self,
+        provider: str,
+        results: list[CheckInResult | BaseException],
+    ) -> None:
         self.provider = provider
         self.results = results
         self.calls = 0
 
     async def checkin(self, **_values) -> CheckInResult:
         self.calls += 1
-        return self.results.pop(0)
+        result = self.results.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return result
 
     async def refresh(self, **_values):
         raise AssertionError("refresh not expected")
@@ -150,6 +157,43 @@ async def test_cancelled_batch_does_not_leave_running_row(checkin_context) -> No
     await service.close()
 
 
+@pytest.mark.asyncio
+async def test_batch_isolates_account_failure_and_preserves_chat_purpose(
+    checkin_context,
+) -> None:
+    repository, vault = checkin_context
+    await _seed(repository, vault, "codebuddy", "cb-a")
+    await _seed(repository, vault, "codebuddy", "cb-b")
+    registry = await _registry(repository, vault)
+    workbuddy = _SequenceClient(
+        "codebuddy",
+        [RuntimeError("account-a-failed"), _success("codebuddy", "cb-b")],
+    )
+    service = _service(
+        repository,
+        vault,
+        registry,
+        workbuddy=workbuddy,
+        qoder=_SequenceClient("qoder", []),
+        codebuddy_enabled=True,
+        qoder_enabled=False,
+    )
+
+    batch = await service.run_batch(trigger="scheduler")
+
+    assert [item["account_id"] for item in batch.results] == ["cb-a", "cb-b"]
+    assert [item["outcome"] for item in batch.results] == [
+        CheckInOutcome.FAILED.value,
+        CheckInOutcome.CLAIMED.value,
+    ]
+    for account_id in ("cb-a", "cb-b"):
+        purposes = await repository.list_purposes("codebuddy", account_id)
+        chat = next(item for item in purposes if item["purpose"] == "chat")
+        assert chat["status"] == "active"
+        assert chat["verification_status"] == "not_required"
+    await service.close()
+
+
 async def _seed(
     repository: AccountRepository,
     vault: CredentialVault,
@@ -166,6 +210,15 @@ async def _seed(
             label=account_id,
             source="manual",
             enabled=True,
+        )
+        await repository.upsert_purpose(
+            provider=provider,
+            account_id=account_id,
+            purpose="chat",
+            enabled=True,
+            status="active",
+            verification_status="not_required",
+            capabilities=["proxy.chat"],
         )
         await repository.upsert_purpose(
             provider=provider,
