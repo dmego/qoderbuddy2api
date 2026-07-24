@@ -24,12 +24,7 @@ def _assistant_message(content: list[Any]) -> dict[str, Any]:
     text_parts: list[str] = []
     tool_calls: list[dict[str, Any]] = []
     for block in content:
-        if not isinstance(block, dict):
-            text_parts.append(str(block))
-        elif block.get("type") == "text":
-            text_parts.append(str(block.get("text", "")))
-        elif block.get("type") == "tool_use":
-            tool_calls.append(_tool_call(block))
+        _collect_assistant_block(block, text_parts=text_parts, tool_calls=tool_calls)
     message: dict[str, Any] = {
         "role": "assistant",
         "content": "\n".join(part for part in text_parts if part),
@@ -37,6 +32,22 @@ def _assistant_message(content: list[Any]) -> dict[str, Any]:
     if tool_calls:
         message["tool_calls"] = tool_calls
     return message
+
+
+def _collect_assistant_block(
+    block: Any,
+    *,
+    text_parts: list[str],
+    tool_calls: list[dict[str, Any]],
+) -> None:
+    if not isinstance(block, dict):
+        text_parts.append(str(block))
+        return
+    if block.get("type") == "text":
+        text_parts.append(str(block.get("text", "")))
+        return
+    if block.get("type") == "tool_use":
+        tool_calls.append(_tool_call(block))
 
 
 def _tool_call(block: dict[str, Any]) -> dict[str, Any]:
@@ -54,25 +65,39 @@ def _content_blocks_to_messages(role: str, content: list[Any]) -> list[dict[str,
     messages: list[dict[str, Any]] = []
     text_parts: list[str] = []
     for block in content:
-        if not isinstance(block, dict):
-            text_parts.append(str(block))
-        elif block.get("type") == "text":
-            text_parts.append(str(block.get("text", "")))
-        elif block.get("type") == "tool_result":
-            _append_text_message(messages, role, text_parts)
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": block.get("tool_use_id") or block.get("id") or "",
-                    "content": content_to_text(block.get("content")),
-                }
-            )
-        elif block.get("type") == "image":
-            text_parts.append("[image]")
-        else:
-            text_parts.append(content_to_text(block))
+        _append_content_block(block, messages=messages, role=role, text_parts=text_parts)
     _append_text_message(messages, role, text_parts)
     return messages or [{"role": role, "content": ""}]
+
+
+def _append_content_block(
+    block: Any,
+    *,
+    messages: list[dict[str, Any]],
+    role: str,
+    text_parts: list[str],
+) -> None:
+    if not isinstance(block, dict):
+        text_parts.append(str(block))
+        return
+    block_type = block.get("type")
+    if block_type == "text":
+        text_parts.append(str(block.get("text", "")))
+        return
+    if block_type == "tool_result":
+        _append_text_message(messages, role, text_parts)
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": block.get("tool_use_id") or block.get("id") or "",
+                "content": content_to_text(block.get("content")),
+            }
+        )
+        return
+    if block_type == "image":
+        text_parts.append("[image]")
+        return
+    text_parts.append(content_to_text(block))
 
 
 def _append_text_message(

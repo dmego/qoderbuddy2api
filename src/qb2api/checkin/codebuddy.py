@@ -1,8 +1,4 @@
-"""WorkBuddy / CodeBuddy check-in client (CB-CHECKIN-01).
-
-Paths and auth mode are configurable; empty status_method skips preflight.
-HTTP 400 + business code 10001 → ALREADY_CHECKED_IN (confirmed fact).
-"""
+"""WorkBuddy / CodeBuddy check-in client (CB-CHECKIN-01)."""
 
 from __future__ import annotations
 
@@ -31,11 +27,7 @@ _ALREADY_CODE = 10001
 
 
 class WorkBuddyClient:
-    """Single-account WorkBuddy daily check-in HTTP client.
-
-    Each prepared request replaces/removes Cookie so the client's response jar
-    cannot carry one account's session into another account request.
-    """
+    """Single-account client that isolates each request's Cookie header."""
 
     provider = "codebuddy"
 
@@ -105,7 +97,6 @@ class WorkBuddyClient:
         headers: dict[str, str],
         content: bytes | None = None,
     ) -> httpx.Response:
-        """Prepare an exact per-account Cookie header and disable redirects."""
         request = self._client.build_request(
             method,
             url,
@@ -127,7 +118,6 @@ class WorkBuddyClient:
         cookie: str | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> CheckInResult:
-        """Run status preflight (if configured) then claim."""
         try:
             headers = self._build_headers(
                 auth_mode=auth_mode,
@@ -156,7 +146,6 @@ class WorkBuddyClient:
         account_id: str,
         headers: dict[str, str],
     ) -> CheckInResult | None:
-        """Return an auth/already result; ambiguous status proceeds to claim."""
         url = join_url(self.base_url, self.status_path)
         try:
             resp = await self._request(self.status_method, url, headers=headers)
@@ -200,6 +189,12 @@ class WorkBuddyClient:
 
     @staticmethod
     def _looks_already_checked(body: dict[str, Any]) -> bool:
+        if WorkBuddyClient._has_completed_marker(body):
+            return True
+        return WorkBuddyClient._already_checked_flag(body)
+
+    @staticmethod
+    def _has_completed_marker(body: dict[str, Any]) -> bool:
         code = extract_business_code(body)
         if code is not None and str(code) == str(_ALREADY_CODE):
             return True
@@ -212,12 +207,18 @@ class WorkBuddyClient:
             "DONE",
         }:
             return True
-        if body.get("checkedIn") is True or body.get("checked_in") is True:
+        if body.get("checkedIn") is True:
             return True
-        if body.get("canCheckIn") is False or body.get("can_check_in") is False:
-            # only if explicit already flag also present — avoid false positive
-            if body.get("alreadyCheckedIn") or body.get("already_checked_in"):
-                return True
+        if body.get("checked_in") is True:
+            return True
+        if body.get("canCheckIn") is False:
+            return WorkBuddyClient._already_checked_flag(body)
+        if body.get("can_check_in") is False:
+            return WorkBuddyClient._already_checked_flag(body)
+        return False
+
+    @staticmethod
+    def _already_checked_flag(body: dict[str, Any]) -> bool:
         return bool(body.get("alreadyCheckedIn") or body.get("already_checked_in"))
 
     async def _claim(

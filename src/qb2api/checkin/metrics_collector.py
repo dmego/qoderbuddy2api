@@ -65,12 +65,24 @@ class MetricSnapshotCollector:
         provider = str(item["provider"])
         account_id = str(item["account_id"])
         purpose = str(item["purpose"])
-        await self._write_token_snapshot(provider, account_id, purpose, item, state)
+        await self._write_token_snapshot(
+            provider=provider,
+            account_id=account_id,
+            purpose=purpose,
+            item=item,
+            state=state,
+        )
         await self._write_checkin_snapshot(provider, account_id, state)
-        await self._write_provider_snapshot(provider, account_id, purpose, state)
+        await self._write_provider_snapshot(
+            provider=provider,
+            account_id=account_id,
+            purpose=purpose,
+            state=state,
+        )
 
     async def _write_token_snapshot(
         self,
+        *,
         provider: str,
         account_id: str,
         purpose: str,
@@ -124,6 +136,7 @@ class MetricSnapshotCollector:
 
     async def _write_provider_snapshot(
         self,
+        *,
         provider: str,
         account_id: str,
         purpose: str,

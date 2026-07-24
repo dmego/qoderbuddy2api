@@ -52,21 +52,23 @@ class QoderProvider(Provider):
     ) -> QoderSession:
         async with self._session_lock:
             current = self._session
-            if force and stale is not None and current is not stale:
-                if current is not None and current._ready:
-                    return current
-            if not force and current is not None and current._ready:
-                return current
-            candidate = QoderSession(self.pat)
-            try:
-                await candidate.authenticate()
-            except BaseException:
-                await candidate.close()
-                raise
+            reusable = _reusable_session(current, force=force, stale=stale)
+            if reusable is not None:
+                return reusable
+            candidate = await self._new_session()
             self._session = candidate
             if current is not None:
                 await current.close()
             return candidate
+
+    async def _new_session(self) -> QoderSession:
+        candidate = QoderSession(self.pat)
+        try:
+            await candidate.authenticate()
+        except BaseException:
+            await candidate.close()
+            raise
+        return candidate
 
     async def complete(self, request: ChatCompletionRequest) -> dict:
         from ..sse import StreamAggregator
@@ -126,27 +128,9 @@ class QoderProvider(Provider):
                 content=encoded.encode("utf-8"),
                 headers=headers,
             ) as response:
-                if response.status_code != 200:
-                    await response.aread()
-                    raise QoderError(
-                        f"Qoder chat failed (HTTP {response.status_code})",
-                        status_code=response.status_code,
-                    )
-                async for line in response.aiter_lines():
-                    line = line.strip()
-                    if not line.startswith("data:"):
-                        continue
-                    parsed = parse_qoder_sse_data(line[5:].strip())
-                    if parsed is None:
-                        continue
-                    delta, finish_reason = parsed
-                    if delta or finish_reason:
-                        chunk_count += 1
-                        yield stream_chunk(
-                            model,
-                            delta,
-                            finish_reason=finish_reason,
-                        )
+                async for chunk in _response_chunks(response, model):
+                    chunk_count += 1
+                    yield chunk
         logger.info("Qoder: stream completed with %s chunks", chunk_count)
 
     def _build_payload(self, request: ChatCompletionRequest, model: str) -> dict:
@@ -158,3 +142,45 @@ class QoderProvider(Provider):
             self._session = None
         if session is not None:
             await session.close()
+
+
+def _reusable_session(
+    current: QoderSession | None,
+    *,
+    force: bool,
+    stale: QoderSession | None,
+) -> QoderSession | None:
+    if not force:
+        return current if current is not None and current._ready else None
+    if stale is None or current is stale:
+        return None
+    return current if current is not None and current._ready else None
+
+
+async def _response_chunks(
+    response: httpx.Response,
+    model: str,
+) -> AsyncIterator[bytes]:
+    if response.status_code != 200:
+        await response.aread()
+        raise QoderError(
+            f"Qoder chat failed (HTTP {response.status_code})",
+            status_code=response.status_code,
+        )
+    async for line in response.aiter_lines():
+        chunk = _response_line_chunk(line, model)
+        if chunk is not None:
+            yield chunk
+
+
+def _response_line_chunk(line: str, model: str) -> bytes | None:
+    line = line.strip()
+    if not line.startswith("data:"):
+        return None
+    parsed = parse_qoder_sse_data(line[5:].strip())
+    if parsed is None:
+        return None
+    delta, finish_reason = parsed
+    if not delta and not finish_reason:
+        return None
+    return stream_chunk(model, delta, finish_reason=finish_reason)

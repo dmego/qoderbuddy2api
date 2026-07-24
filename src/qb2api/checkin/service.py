@@ -131,7 +131,12 @@ class CheckinService:
         skip_already_done: bool = True,
     ) -> CheckinBatchResult:
         context = await self._claim_run(trigger)
-        return await self._run_context(context, trigger, targets, skip_already_done)
+        return await self._run_context(
+            context=context,
+            trigger=trigger,
+            targets=targets,
+            skip_already_done=skip_already_done,
+        )
 
     async def start_batch(
         self,
@@ -143,7 +148,12 @@ class CheckinService:
         """Persist a batch before returning so a caller can poll its run ID."""
         context = await self._claim_run(trigger)
         task = asyncio.create_task(
-            self._run_context(context, trigger, targets, skip_already_done),
+            self._run_context(
+                context=context,
+                trigger=trigger,
+                targets=targets,
+                skip_already_done=skip_already_done,
+            ),
             name=f"qb2api-checkin-{context.run_id}",
         )
         self._active_task = task
@@ -169,6 +179,7 @@ class CheckinService:
 
     async def _run_context(
         self,
+        *,
         context: RunContext,
         trigger: str,
         targets: list[CheckinTarget] | None,
@@ -176,10 +187,10 @@ class CheckinService:
     ) -> CheckinBatchResult:
         try:
             await self._batch_executor.execute(
-                context,
-                trigger,
-                targets,
-                skip_already_done,
+                context=context,
+                trigger=trigger,
+                targets=targets,
+                skip_already_done=skip_already_done,
             )
             return await self._finish(context, "finished")
         except asyncio.CancelledError:

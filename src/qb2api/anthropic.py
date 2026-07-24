@@ -31,6 +31,18 @@ def _request_base(body: dict[str, Any]) -> dict[str, Any]:
 
 def _optional_request_values(body: dict[str, Any]) -> dict[str, Any]:
     request: dict[str, Any] = {}
+    for values in (
+        _completion_options(body),
+        _metadata_options(body),
+        _tool_options(body),
+        _context_options(body),
+    ):
+        request.update(values)
+    return request
+
+
+def _completion_options(body: dict[str, Any]) -> dict[str, Any]:
+    request: dict[str, Any] = {}
     if body.get("max_tokens") is not None:
         request["max_tokens"] = body["max_tokens"]
     for source, target in (
@@ -40,15 +52,29 @@ def _optional_request_values(body: dict[str, Any]) -> dict[str, Any]:
     ):
         if body.get(source) is not None:
             request[target] = body[source]
+    return request
+
+
+def _metadata_options(body: dict[str, Any]) -> dict[str, Any]:
     metadata = body.get("metadata") or {}
     if isinstance(metadata, dict) and metadata.get("user_id"):
-        request["user"] = metadata["user_id"]
+        return {"user": metadata["user_id"]}
+    return {}
+
+
+def _tool_options(body: dict[str, Any]) -> dict[str, Any]:
+    request: dict[str, Any] = {}
     tools = [_anthropic_tool_to_openai(tool) for tool in body.get("tools") or []]
     if tools:
         request["tools"] = tools
     tool_choice = _anthropic_tool_choice_to_openai(body.get("tool_choice"))
     if tool_choice is not None:
         request["tool_choice"] = tool_choice
+    return request
+
+
+def _context_options(body: dict[str, Any]) -> dict[str, Any]:
+    request: dict[str, Any] = {}
     for key in ("reasoning_effort", "context_window", "max_context_tokens"):
         if body.get(key) is not None:
             request[key] = body[key]
@@ -59,36 +85,58 @@ def openai_to_anthropic(response: dict[str, Any], model: str) -> dict[str, Any]:
     """Convert an OpenAI chat completion response into Anthropic message shape."""
     choice = (response.get("choices") or [{}])[0]
     message = choice.get("message") or {}
-    content: list[dict[str, Any]] = []
+    return _anthropic_response(
+        response=response,
+        choice=choice,
+        message=message,
+        model=model,
+    )
 
-    text = message.get("content")
-    if text:
-        content.append({"type": "text", "text": str(text)})
 
-    for tool_call in message.get("tool_calls") or []:
-        function = tool_call.get("function") or {}
-        content.append(
-            {
-                "type": "tool_use",
-                "id": tool_call.get("id") or f"toolu_{uuid.uuid4().hex[:16]}",
-                "name": function.get("name") or "",
-                "input": _parse_tool_input(function.get("arguments")),
-            }
-        )
-
-    usage = response.get("usage") or {}
+def _anthropic_response(
+    *,
+    response: dict[str, Any],
+    choice: dict[str, Any],
+    message: dict[str, Any],
+    model: str,
+) -> dict[str, Any]:
     return {
         "id": _message_id(response.get("id")),
         "type": "message",
         "role": "assistant",
         "model": model,
-        "content": content,
+        "content": _response_content(message),
         "stop_reason": map_finish_reason(choice.get("finish_reason")),
         "stop_sequence": None,
-        "usage": {
-            "input_tokens": int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0),
-            "output_tokens": int(usage.get("completion_tokens") or usage.get("output_tokens") or 0),
-        },
+        "usage": _response_usage(response),
+    }
+
+
+def _response_content(message: dict[str, Any]) -> list[dict[str, Any]]:
+    content: list[dict[str, Any]] = []
+    text = message.get("content")
+    if text:
+        content.append({"type": "text", "text": str(text)})
+    for tool_call in message.get("tool_calls") or []:
+        content.append(_tool_use_content(tool_call))
+    return content
+
+
+def _tool_use_content(tool_call: dict[str, Any]) -> dict[str, Any]:
+    function = tool_call.get("function") or {}
+    return {
+        "type": "tool_use",
+        "id": tool_call.get("id") or f"toolu_{uuid.uuid4().hex[:16]}",
+        "name": function.get("name") or "",
+        "input": _parse_tool_input(function.get("arguments")),
+    }
+
+
+def _response_usage(response: dict[str, Any]) -> dict[str, int]:
+    usage = response.get("usage") or {}
+    return {
+        "input_tokens": int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0),
+        "output_tokens": int(usage.get("completion_tokens") or usage.get("output_tokens") or 0),
     }
 
 

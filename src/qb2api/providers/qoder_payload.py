@@ -108,16 +108,33 @@ def parse_qoder_sse_data(data: str) -> tuple[dict[str, Any], str | None] | None:
     """Parse one upstream SSE data value into an OpenAI delta and finish reason."""
     if not data or data == "[DONE]":
         return None
+    inner = _decode_sse_body(data)
+    if inner is None:
+        return None
+    choice = _first_choice(inner)
+    if choice is None:
+        return None
+    return _choice_delta(choice)
+
+
+def _decode_sse_body(data: str) -> dict[str, Any] | None:
     try:
         outer = json.loads(data, strict=False)
         body = outer.get("body")
         inner = json.loads(body, strict=False) if isinstance(body, str) else outer
     except (AttributeError, json.JSONDecodeError, TypeError):
         return None
-    choices = inner.get("choices", []) if isinstance(inner, dict) else []
+    return inner if isinstance(inner, dict) else None
+
+
+def _first_choice(body: dict[str, Any]) -> dict[str, Any] | None:
+    choices = body.get("choices", [])
     if not choices or not isinstance(choices[0], dict):
         return None
-    choice = choices[0]
+    return choices[0]
+
+
+def _choice_delta(choice: dict[str, Any]) -> tuple[dict[str, Any], str | None] | None:
     delta = choice.get("delta") or {}
     if not isinstance(delta, dict):
         return None
@@ -129,15 +146,22 @@ def parse_qoder_sse_data(data: str) -> tuple[dict[str, Any], str | None] | None:
 def _message_text(content: Any) -> str:
     if not isinstance(content, list):
         return str(content or "")
-    parts: list[str] = []
-    for block in content:
-        if not isinstance(block, dict):
-            parts.append(str(block))
-        elif block.get("type") == "text":
-            parts.append(str(block.get("text", "")))
-        elif block.get("type") == "image_url":
-            parts.append("[image]")
+    parts = [
+        text
+        for block in content
+        if (text := _message_block_text(block)) is not None
+    ]
     return " ".join(parts)
+
+
+def _message_block_text(block: Any) -> str | None:
+    if not isinstance(block, dict):
+        return str(block)
+    if block.get("type") == "text":
+        return str(block.get("text", ""))
+    if block.get("type") == "image_url":
+        return "[image]"
+    return None
 
 
 def _message_entry(role: str, content: str) -> dict[str, Any]:

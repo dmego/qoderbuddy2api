@@ -1,7 +1,4 @@
-"""Dynamic 0..N provider pool with stable-key RR, lease drain, stream commit.
-
-ponytail: no health-check loop / circuit-breaker; 30s key cooldown is enough for MVP.
-"""
+"""Dynamic provider pool with stable-key RR, drain, and stream commit."""
 
 from __future__ import annotations
 
@@ -21,7 +18,13 @@ _COOLDOWN_S = 30.0
 
 
 class ProviderUnavailableError(Exception):
-    """No active slots available for this provider family."""
+    pass
+
+
+class _PrecommitStreamFailure(Exception):
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        super().__init__(str(error))
 
 
 @dataclass
@@ -33,6 +36,9 @@ class SlotHandle:
     generation: int = 0
 
 
+SlotMap = dict[str, SlotHandle]
+
+
 class DynamicProviderPool(Provider):
     """Stable 0..N pool: RR by slot key, failover pre-commit, lease drain on retire."""
 
@@ -42,7 +48,7 @@ class DynamicProviderPool(Provider):
         self._slots: dict[str, SlotHandle] = {}
         self._order: tuple[str, ...] = ()
         self._rr = 0
-        self._failed: dict[str, float] = {}  # key -> cooldown_until monotonic
+        self._failed: dict[str, float] = {}
         self._gen = 0
 
     @property
@@ -54,45 +60,67 @@ class DynamicProviderPool(Provider):
         return len(self._slots)
 
     def _apply_slots_locked(self, slots: dict[str, Provider]) -> list[Provider]:
-        """Replace active snapshot. Returns providers safe to close now."""
-        to_close: list[Provider] = []
-        new_slots: dict[str, SlotHandle] = {}
+        new_slots, to_close = self._build_slot_snapshot(slots)
+        self._retire_missing_slots(new_slots, to_close)
+        self._commit_slot_snapshot(slots, new_slots)
+        return to_close
 
+    def _build_slot_snapshot(self, slots: dict[str, Provider]) -> tuple[SlotMap, list[Provider]]:
+        new_slots: SlotMap = {}
+        to_close: list[Provider] = []
         for key, provider in slots.items():
             old = self._slots.get(key)
-            if old is not None and old.provider is provider:
-                old.state = "active"
+            if self._reuse_slot(old, provider):
+                assert old is not None
                 new_slots[key] = old
                 continue
-            if old is not None:
-                old.state = "retiring"
-                if old.in_flight == 0:
-                    to_close.append(old.provider)
-            self._gen += 1
-            new_slots[key] = SlotHandle(
-                key=key, provider=provider, state="active", generation=self._gen
-            )
+            self._retire_replaced_slot(old, to_close)
+            new_slots[key] = self._new_slot(key, provider)
+        return new_slots, to_close
 
+    def _reuse_slot(self, old: SlotHandle | None, provider: Provider) -> bool:
+        if old is None or old.provider is not provider:
+            return False
+        old.state = "active"
+        return True
+
+    def _retire_replaced_slot(self, old: SlotHandle | None, to_close: list[Provider]) -> None:
+        if old is not None:
+            old.state = "retiring"
+            if old.in_flight == 0:
+                to_close.append(old.provider)
+
+    def _new_slot(self, key: str, provider: Provider) -> SlotHandle:
+        self._gen += 1
+        return SlotHandle(key=key, provider=provider, state="active", generation=self._gen)
+
+    def _retire_missing_slots(self, new_slots: SlotMap, to_close: list[Provider]) -> None:
         for key, old in self._slots.items():
             if key in new_slots and new_slots[key] is old:
                 continue
-            if old.state != "retiring":
-                old.state = "retiring"
-            if old.in_flight == 0 and old.provider not in to_close:
-                # only close if not reused under another key (identity)
-                if all(h.provider is not old.provider for h in new_slots.values()):
-                    to_close.append(old.provider)
+            self._retire_missing_slot(old, new_slots, to_close)
 
+    @staticmethod
+    def _retire_missing_slot(old: SlotHandle, new_slots: SlotMap, to_close: list[Provider]) -> None:
+        old.state = "retiring"
+        if (
+            old.in_flight != 0
+            or old.provider in to_close
+            or any(handle.provider is old.provider for handle in new_slots.values())
+        ):
+            return
+        to_close.append(old.provider)
+
+    def _commit_slot_snapshot(
+        self,
+        slots: dict[str, Provider],
+        new_slots: SlotMap,
+    ) -> None:
         self._slots = new_slots
         self._order = tuple(slots.keys())
-        # drop cooldowns for gone keys
         live = set(new_slots)
         self._failed = {k: v for k, v in self._failed.items() if k in live}
-        if self._order:
-            self._rr %= len(self._order)
-        else:
-            self._rr = 0
-        return to_close
+        self._rr = self._rr % len(self._order) if self._order else 0
 
     async def update_slots(self, slots: dict[str, Provider]) -> None:
         async with self._lock:
@@ -110,46 +138,56 @@ class DynamicProviderPool(Provider):
             or handle.state != "active"
             or handle.generation != generation
         ):
-            # Retired generations cannot mutate health for a replacement slot.
             return
         self._failed[key] = time.monotonic() + _COOLDOWN_S
 
     async def _acquire(self, tried: set[str], *, advance: bool) -> SlotHandle | None:
         async with self._lock:
-            order = [k for k in self._order if k in self._slots]
+            order = self._live_slot_order()
             if not order:
                 return None
-            now = time.monotonic()
-            n = len(order)
-            start = self._rr % n
-            if advance:
-                self._rr = (self._rr + 1) % n
-            ordered = order[start:] + order[:start]
+            ordered = self._round_robin_order(order, advance=advance)
+            return self._available_handle(ordered, tried)
 
-            def _take(keys: list[str]) -> SlotHandle | None:
-                for k in keys:
-                    if k in tried:
-                        continue
-                    h = self._slots.get(k)
-                    if h is None or h.state != "active":
-                        continue
-                    h.in_flight += 1
-                    return h
-                return None
+    def _live_slot_order(self) -> list[str]:
+        return [key for key in self._order if key in self._slots]
 
-            healthy = [k for k in ordered if self._failed.get(k, 0) <= now]
-            handle = _take(healthy)
-            if handle is not None:
-                return handle
-            # all cooling or tried — fall back to any untried active
-            return _take(ordered)
+    def _round_robin_order(self, order: list[str], *, advance: bool) -> list[str]:
+        count = len(order)
+        start = self._rr % count
+        if advance:
+            self._rr = (self._rr + 1) % count
+        return order[start:] + order[:start]
+
+    def _available_handle(
+        self,
+        ordered: list[str],
+        tried: set[str],
+    ) -> SlotHandle | None:
+        now = time.monotonic()
+        healthy = [key for key in ordered if self._failed.get(key, 0) <= now]
+        return self._take_handle(healthy, tried) or self._take_handle(ordered, tried)
+
+    def _take_handle(
+        self,
+        keys: list[str],
+        tried: set[str],
+    ) -> SlotHandle | None:
+        for key in keys:
+            if key in tried:
+                continue
+            handle = self._slots.get(key)
+            if handle is None or handle.state != "active":
+                continue
+            handle.in_flight += 1
+            return handle
+        return None
 
     async def _release(self, handle: SlotHandle) -> None:
         should_close = False
         async with self._lock:
             handle.in_flight = max(0, handle.in_flight - 1)
             if handle.state == "retiring" and handle.in_flight == 0:
-                # still not active under same object
                 still_active = any(h is handle for h in self._slots.values())
                 if not still_active:
                     should_close = True
@@ -196,25 +234,40 @@ class DynamicProviderPool(Provider):
                     raise last_err
                 raise ProviderUnavailableError(f"{self.name}: no available slots")
             tried.add(handle.key)
-            committed = False
             try:
-                async for chunk in handle.provider.stream(request):
-                    if chunk:
-                        committed = True
-                        request.observe_stream_chunk(chunk)
-                    request.record_slot(handle.key, committed=committed)
+                async for chunk in self._stream_handle(handle, request):
                     yield chunk
                 return
-            except Exception as e:
-                request.record_slot(handle.key, committed=committed)
+            except _PrecommitStreamFailure as failure:
                 async with self._lock:
                     self._mark_failed(handle.key, handle.generation)
-                if committed:
-                    raise
-                last_err = e
-                logger.warning(f"{self.name}[{handle.key}]: stream failed pre-commit — {e}")
+                last_err = failure.error
+                logger.warning(f"{self.name}[{handle.key}]: stream failed pre-commit — {failure.error}")
+            except Exception:
+                async with self._lock:
+                    self._mark_failed(handle.key, handle.generation)
+                raise
             finally:
                 await self._release(handle)
+
+    async def _stream_handle(
+        self,
+        handle: SlotHandle,
+        request: ChatCompletionRequest,
+    ) -> AsyncIterator[bytes]:
+        committed = False
+        try:
+            async for chunk in handle.provider.stream(request):
+                if chunk:
+                    committed = True
+                    request.observe_stream_chunk(chunk)
+                request.record_slot(handle.key, committed=committed)
+                yield chunk
+        except Exception as error:
+            request.record_slot(handle.key, committed=committed)
+            if committed:
+                raise
+            raise _PrecommitStreamFailure(error) from error
 
     async def close(self) -> None:
         async with self._lock:
@@ -238,5 +291,4 @@ class LoadBalancedProvider(DynamicProviderPool):
         if not instances:
             raise ValueError("Need at least one provider instance")
         super().__init__(name=instances[0].name)
-        # init is single-threaded; no concurrent acquire yet
         self._apply_slots_locked({str(i): p for i, p in enumerate(instances)})

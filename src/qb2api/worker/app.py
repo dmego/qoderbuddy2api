@@ -101,7 +101,7 @@ def _install_telemetry(application: FastAPI) -> None:
         try:
             response = await call_next(request)
         except Exception as error:
-            _emit(request, started, 502, error)
+            _emit(request, started=started, status_code=502, error=error)
             raise
         original = response.body_iterator
 
@@ -110,16 +110,32 @@ def _install_telemetry(application: FastAPI) -> None:
                 async for chunk in original:
                     yield chunk
             except Exception as error:
-                _emit(request, started, response.status_code, error)
+                _emit(
+                    request,
+                    started=started,
+                    status_code=response.status_code,
+                    error=error,
+                )
                 raise
             else:
-                _emit(request, started, response.status_code, None)
+                _emit(
+                    request,
+                    started=started,
+                    status_code=response.status_code,
+                    error=None,
+                )
 
         response.body_iterator = iterator()
         return response
 
 
-def _emit(request: Request, started: float, status_code: int, error: Exception | None) -> None:
+def _emit(
+    request: Request,
+    *,
+    started: float,
+    status_code: int,
+    error: Exception | None,
+) -> None:
     telemetry = getattr(request.app.state, "telemetry", None)
     context = getattr(request.state, "telemetry_context", None)
     if telemetry is None or not isinstance(context, dict):

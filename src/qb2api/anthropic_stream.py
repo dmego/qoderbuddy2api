@@ -153,7 +153,14 @@ class _StreamState:
         events: list[bytes] = []
         if openai_index not in self.tool_indexes:
             self.tool_indexes[openai_index] = self._reserve_block()
-            events.append(_tool_start_event(self.tool_indexes[openai_index], openai_index, tool_call, function))
+            events.append(
+                _tool_start_event(
+                    self.tool_indexes[openai_index],
+                    openai_index=openai_index,
+                    tool_call=tool_call,
+                    function=function,
+                )
+            )
         if function.get("arguments"):
             events.append(_tool_args_event(self.tool_indexes[openai_index], function["arguments"]))
         return events
@@ -165,7 +172,13 @@ class _StreamState:
         return index
 
 
-def _tool_start_event(index: int, openai_index: int, tool_call: dict[str, Any], function: dict[str, Any]) -> bytes:
+def _tool_start_event(
+    index: int,
+    *,
+    openai_index: int,
+    tool_call: dict[str, Any],
+    function: dict[str, Any],
+) -> bytes:
     return _sse(
         "content_block_start",
         {

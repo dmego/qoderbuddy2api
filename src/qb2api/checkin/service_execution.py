@@ -42,6 +42,7 @@ class CheckinBatchExecutor:
 
     async def execute(
         self,
+        *,
         context: RunContext,
         trigger: str,
         targets: list[CheckinTarget] | None,

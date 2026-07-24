@@ -75,6 +75,11 @@ class CodeBuddyProvider(Provider):
         "reasoning_effort", "verbosity", "reasoning_summary",
         "thinking", "max_context_tokens", "context_window",
     }
+    REQUEST_KEYS = (
+        "temperature", "max_tokens", "max_completion_tokens", "top_p",
+        "stop", "presence_penalty", "frequency_penalty", "n",
+        "response_format", "seed", "user",
+    )
 
     def __init__(
         self,
@@ -122,74 +127,32 @@ class CodeBuddyProvider(Provider):
         headers = await self._build_headers()
 
         async with self._client.stream("POST", url, json=body, headers=headers) as resp:
-            if resp.status_code != 200:
-                err = (await resp.aread()).decode("utf-8", errors="replace")
-                raise CodeBuddyError(resp.status_code, err[:200])
-
-            async for line in resp.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                data_str = line[6:]
-                if data_str.strip() == "[DONE]":
-                    break
-
-                try:
-                    chunk = json.loads(data_str)
-                except json.JSONDecodeError:
-                    continue
-
-                # Normalize tool calls
-                choices = chunk.get("choices", [])
-                if choices:
-                    delta = choices[0].get("delta", {})
-                    if delta.get("tool_calls"):
-                        from ..sse import inject_tool_call_index, normalize_tool_call_id
-
-                        delta["tool_calls"] = inject_tool_call_index(delta["tool_calls"])
-                        delta["tool_calls"] = [normalize_tool_call_id(tc) for tc in delta["tool_calls"]]
-
-                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode()
+            async for chunk in self._response_chunks(resp):
+                yield chunk
 
         yield stream_done()
 
+    async def _response_chunks(self, response: httpx.Response) -> AsyncIterator[bytes]:
+        if response.status_code != 200:
+            error = (await response.aread()).decode("utf-8", errors="replace")
+            raise CodeBuddyError(response.status_code, error[:200])
+        async for line in response.aiter_lines():
+            chunk, finished = _stream_chunk(line)
+            if finished:
+                return
+            if chunk is not None:
+                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode()
+
     def _build_body(self, request: ChatCompletionRequest) -> dict:
         """Build upstream request body."""
-        messages = [msg.model_dump(exclude_none=True) for msg in request.messages]
-        # CodeBuddy API requires at least 2 messages; inject a default system prompt when missing
-        if len(messages) < 2:
-            logger.debug("CodeBuddy: injecting default system message (upstream requires >=2 messages)")
-            messages = [{"role": "system", "content": "You are a helpful assistant."}] + messages
-
-        # Scrub Claude Code identity from system messages only (upstream content filter).
-        for msg in messages:
-            if msg.get("role") == "system" and "content" in msg:
-                msg["content"] = scrub_codebuddy_content(msg["content"])
-
         body = {
             "model": request.model,
-            "messages": messages,
+            "messages": _prepared_messages(request),
             "stream": True,
         }
-
-        for key in (
-            "temperature", "max_tokens", "max_completion_tokens", "top_p",
-            "stop", "presence_penalty", "frequency_penalty", "n",
-            "response_format", "seed", "user",
-        ):
-            val = getattr(request, key, None)
-            if val is not None:
-                body[key] = val
-
-        if request.tools:
-            body["tools"] = [t.model_dump() for t in request.tools]
-            if request.tool_choice:
-                body["tool_choice"] = request.tool_choice
-
-        for key in self.PASSTHROUGH_KEYS:
-            val = getattr(request, key, None)
-            if val is not None:
-                body[key] = val
-
+        body.update(_request_values(request, self.REQUEST_KEYS))
+        body.update(_tool_values(request))
+        body.update(_request_values(request, self.PASSTHROUGH_KEYS))
         return body
 
     async def _build_headers(self) -> dict:
@@ -208,3 +171,66 @@ class CodeBuddyProvider(Provider):
 
     async def close(self) -> None:
         await self._client.aclose()
+
+
+def _stream_chunk(line: str) -> tuple[dict[str, Any] | None, bool]:
+    if not line.startswith("data: "):
+        return None, False
+    data = line[6:]
+    if data.strip() == "[DONE]":
+        return None, True
+    try:
+        chunk = json.loads(data)
+    except json.JSONDecodeError:
+        return None, False
+    _normalize_tool_calls(chunk)
+    return chunk, False
+
+
+def _normalize_tool_calls(chunk: dict[str, Any]) -> None:
+    choices = chunk.get("choices", [])
+    if not choices:
+        return
+    delta = choices[0].get("delta", {})
+    tool_calls = delta.get("tool_calls")
+    if not tool_calls:
+        return
+    from ..sse import inject_tool_call_index, normalize_tool_call_id
+
+    delta["tool_calls"] = [
+        normalize_tool_call_id(call)
+        for call in inject_tool_call_index(tool_calls)
+    ]
+
+
+def _prepared_messages(request: ChatCompletionRequest) -> list[dict[str, Any]]:
+    messages = [message.model_dump(exclude_none=True) for message in request.messages]
+    if len(messages) < 2:
+        logger.debug("CodeBuddy: injecting default system message (upstream requires >=2 messages)")
+        messages.insert(0, {"role": "system", "content": "You are a helpful assistant."})
+    return [_scrub_system_message(message) for message in messages]
+
+
+def _scrub_system_message(message: dict[str, Any]) -> dict[str, Any]:
+    if message.get("role") != "system" or "content" not in message:
+        return message
+    scrubbed = dict(message)
+    scrubbed["content"] = scrub_codebuddy_content(message["content"])
+    return scrubbed
+
+
+def _request_values(request: ChatCompletionRequest, keys: tuple[str, ...] | set[str]) -> dict[str, Any]:
+    return {
+        key: value
+        for key in keys
+        if (value := getattr(request, key, None)) is not None
+    }
+
+
+def _tool_values(request: ChatCompletionRequest) -> dict[str, Any]:
+    if not request.tools:
+        return {}
+    values: dict[str, Any] = {"tools": [tool.model_dump() for tool in request.tools]}
+    if request.tool_choice:
+        values["tool_choice"] = request.tool_choice
+    return values
