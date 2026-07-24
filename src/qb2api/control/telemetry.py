@@ -3,11 +3,28 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from qb2api.accounts.repository import AccountRepository
 from qb2api.config import Settings
+
+
+@dataclass(frozen=True)
+class RollupWindow:
+    kind: str
+    start: datetime
+
+    @property
+    def end(self) -> datetime:
+        if self.kind == "minute":
+            return self.start + timedelta(minutes=1)
+        if self.kind == "day":
+            return self.start + timedelta(days=1)
+        month = 1 if self.start.month == 12 else self.start.month + 1
+        year = self.start.year + 1 if self.start.month == 12 else self.start.year
+        return self.start.replace(year=year, month=month)
 
 
 class UsageRollupService:
@@ -37,12 +54,12 @@ class UsageRollupService:
     async def rollup_once(self, now: datetime | None = None) -> dict[str, int]:
         current = (now or datetime.now(UTC)).astimezone(UTC)
         groups = 0
-        for kind, start in _bucket_starts(current).items():
+        for window in _rollup_windows(current):
             events = await self.repository.request_events_between(
-                start.isoformat(),
-                _bucket_end(kind, start).isoformat(),
+                window.start.isoformat(),
+                window.end.isoformat(),
             )
-            for values in _aggregate(events, kind, start):
+            for values in _aggregate(events, window):
                 await self.repository.upsert_usage_rollup(values)
                 groups += 1
         cutoff = current - timedelta(days=max(1, self.settings.usage_detail_retention_days))
@@ -62,25 +79,15 @@ class UsageRollupService:
                 pass
 
 
-def _bucket_starts(current: datetime) -> dict[str, datetime]:
-    return {
-        "minute": current.replace(second=0, microsecond=0),
-        "day": current.replace(hour=0, minute=0, second=0, microsecond=0),
-        "month": current.replace(day=1, hour=0, minute=0, second=0, microsecond=0),
-    }
+def _rollup_windows(current: datetime) -> tuple[RollupWindow, ...]:
+    return (
+        RollupWindow("minute", current.replace(second=0, microsecond=0)),
+        RollupWindow("day", current.replace(hour=0, minute=0, second=0, microsecond=0)),
+        RollupWindow("month", current.replace(day=1, hour=0, minute=0, second=0, microsecond=0)),
+    )
 
 
-def _bucket_end(kind: str, start: datetime) -> datetime:
-    if kind == "minute":
-        return start + timedelta(minutes=1)
-    if kind == "day":
-        return start + timedelta(days=1)
-    next_month = 1 if start.month == 12 else start.month + 1
-    next_year = start.year + 1 if start.month == 12 else start.year
-    return start.replace(year=next_year, month=next_month)
-
-
-def _aggregate(events: list[dict[str, Any]], kind: str, start: datetime) -> list[dict[str, Any]]:
+def _aggregate(events: list[dict[str, Any]], window: RollupWindow) -> list[dict[str, Any]]:
     groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for event in events:
         key = (
@@ -89,32 +96,55 @@ def _aggregate(events: list[dict[str, Any]], kind: str, start: datetime) -> list
             str(event.get("model_id") or "unknown"),
         )
         groups.setdefault(key, []).append(event)
-    return [_group_values(key, rows, kind, start) for key, rows in groups.items()]
+    return [_group_values(key, rows, window) for key, rows in groups.items()]
 
 
-def _group_values(key, events, kind: str, start: datetime) -> dict[str, Any]:
+def _group_values(
+    key: tuple[str, str, str],
+    events: list[dict[str, Any]],
+    window: RollupWindow,
+) -> dict[str, Any]:
+    return {
+        "bucket_start": window.start.isoformat(),
+        "bucket_kind": window.kind,
+        "provider": key[0],
+        "account_id": key[1],
+        "model_id": key[2],
+        **_request_counts(events),
+        **_token_counts(events),
+        **_latency_percentiles(events),
+    }
+
+
+def _request_counts(events: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "request_count": len(events),
+        "success_count": sum(event.get("status") == "succeeded" for event in events),
+        "error_count": sum(event.get("status") != "succeeded" for event in events),
+    }
+
+
+def _token_counts(events: list[dict[str, Any]]) -> dict[str, int]:
+    token_events = [
+        event
+        for event in events
+        if event.get("input_tokens") is not None or event.get("output_tokens") is not None
+    ]
+    return {
+        "input_tokens": sum(int(event.get("input_tokens") or 0) for event in token_events),
+        "output_tokens": sum(int(event.get("output_tokens") or 0) for event in token_events),
+        "token_event_count": len(token_events),
+        "missing_token_count": len(events) - len(token_events),
+    }
+
+
+def _latency_percentiles(events: list[dict[str, Any]]) -> dict[str, int | None]:
     latencies = sorted(
         int(event["latency_ms"])
         for event in events
         if isinstance(event.get("latency_ms"), int)
     )
-    token_events = [
-        event for event in events
-        if event.get("input_tokens") is not None or event.get("output_tokens") is not None
-    ]
     return {
-        "bucket_start": start.isoformat(),
-        "bucket_kind": kind,
-        "provider": key[0],
-        "account_id": key[1],
-        "model_id": key[2],
-        "request_count": len(events),
-        "success_count": sum(event.get("status") == "succeeded" for event in events),
-        "error_count": sum(event.get("status") != "succeeded" for event in events),
-        "input_tokens": sum(int(event.get("input_tokens") or 0) for event in token_events),
-        "output_tokens": sum(int(event.get("output_tokens") or 0) for event in token_events),
-        "token_event_count": len(token_events),
-        "missing_token_count": len(events) - len(token_events),
         "latency_p50_ms": _percentile(latencies, 0.50),
         "latency_p95_ms": _percentile(latencies, 0.95),
     }

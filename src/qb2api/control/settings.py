@@ -8,6 +8,26 @@ from zoneinfo import ZoneInfo
 from qb2api.checkin.timing import parse_checkin_at
 from qb2api.config import Settings
 
+_RANGE_RULES = {
+    "service.worker.start_timeout_seconds": (1, 300, "worker start timeout must be between 1 and 300 seconds"),
+    "monitoring.metrics_interval_seconds": (30, 86400, "metrics interval must be between 30 and 86400 seconds"),
+    "usage.rollup_interval_seconds": (30, 86400, "usage rollup interval must be between 30 and 86400 seconds"),
+    "usage.detail_retention_days": (1, 3650, "usage retention must be between 1 and 3650 days"),
+    "checkin.catch_up_window_hours": (0, 72, "checkin catch-up window must be between 0 and 72 hours"),
+    "checkin.jitter_min_seconds": (0, 300, "checkin jitter must be between 0 and 300 seconds"),
+    "checkin.jitter_max_seconds": (0, 300, "checkin jitter must be between 0 and 300 seconds"),
+    "checkin.retry_limit": (0, 10, "checkin retry limit must be between 0 and 10"),
+}
+
+
+def _validate_range(key: str, value: Any) -> None:
+    rule = _RANGE_RULES.get(key)
+    if rule is None:
+        return
+    minimum, maximum, message = rule
+    if not minimum <= value <= maximum:
+        raise ValueError(message)
+
 
 class SettingsApplier:
     """Translate public setting keys into live service mutations."""
@@ -46,26 +66,12 @@ class SettingsApplier:
 
     @classmethod
     def validate(cls, key: str, value: Any) -> None:
-        if key not in cls._ATTRS:
-            raise ValueError("setting is not runtime-applicable")
+        cls.attribute(key)
         if key == "checkin.at":
             parse_checkin_at(value)
-        elif key == "checkin.timezone":
+        if key == "checkin.timezone":
             ZoneInfo(value)
-        elif key == "service.worker.start_timeout_seconds" and not 1 <= value <= 300:
-            raise ValueError("worker start timeout must be between 1 and 300 seconds")
-        elif key == "monitoring.metrics_interval_seconds" and not 30 <= value <= 86400:
-            raise ValueError("metrics interval must be between 30 and 86400 seconds")
-        elif key == "usage.rollup_interval_seconds" and not 30 <= value <= 86400:
-            raise ValueError("usage rollup interval must be between 30 and 86400 seconds")
-        elif key == "usage.detail_retention_days" and not 1 <= value <= 3650:
-            raise ValueError("usage retention must be between 1 and 3650 days")
-        elif key == "checkin.catch_up_window_hours" and not 0 <= value <= 72:
-            raise ValueError("checkin catch-up window must be between 0 and 72 hours")
-        elif key in {"checkin.jitter_min_seconds", "checkin.jitter_max_seconds"} and not 0 <= value <= 300:
-            raise ValueError("checkin jitter must be between 0 and 300 seconds")
-        elif key == "checkin.retry_limit" and not 0 <= value <= 10:
-            raise ValueError("checkin retry limit must be between 0 and 10")
+        _validate_range(key, value)
 
     @classmethod
     def attribute(cls, key: str) -> str:

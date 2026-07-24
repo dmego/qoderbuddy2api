@@ -4,23 +4,33 @@ import json
 import uuid
 from typing import Any
 
+from .anthropic_content import anthropic_message_to_openai as _anthropic_message_to_openai
+from .anthropic_content import content_to_text as _content_to_text
+
 
 def anthropic_to_openai(body: dict[str, Any]) -> dict[str, Any]:
     """Convert an Anthropic Messages request body into an OpenAI chat request."""
+    request = _request_base(body)
+    request.update(_optional_request_values(body))
+    return request
+
+
+def _request_base(body: dict[str, Any]) -> dict[str, Any]:
     messages: list[dict[str, Any]] = []
     system_text = _content_to_text(body.get("system"))
     if system_text:
         messages.append({"role": "system", "content": system_text})
-
     for message in body.get("messages", []):
         messages.extend(_anthropic_message_to_openai(message))
-
-    request: dict[str, Any] = {
+    return {
         "model": body.get("model"),
         "messages": messages,
         "stream": bool(body.get("stream", False)),
     }
 
+
+def _optional_request_values(body: dict[str, Any]) -> dict[str, Any]:
+    request: dict[str, Any] = {}
     if body.get("max_tokens") is not None:
         request["max_tokens"] = body["max_tokens"]
     for source, target in (
@@ -30,23 +40,18 @@ def anthropic_to_openai(body: dict[str, Any]) -> dict[str, Any]:
     ):
         if body.get(source) is not None:
             request[target] = body[source]
-
     metadata = body.get("metadata") or {}
     if isinstance(metadata, dict) and metadata.get("user_id"):
         request["user"] = metadata["user_id"]
-
     tools = [_anthropic_tool_to_openai(tool) for tool in body.get("tools") or []]
     if tools:
         request["tools"] = tools
-
     tool_choice = _anthropic_tool_choice_to_openai(body.get("tool_choice"))
     if tool_choice is not None:
         request["tool_choice"] = tool_choice
-
     for key in ("reasoning_effort", "context_window", "max_context_tokens"):
         if body.get(key) is not None:
             request[key] = body[key]
-
     return request
 
 
@@ -87,74 +92,6 @@ def openai_to_anthropic(response: dict[str, Any], model: str) -> dict[str, Any]:
     }
 
 
-def _anthropic_message_to_openai(message: dict[str, Any]) -> list[dict[str, Any]]:
-    role = message.get("role", "user")
-    content = message.get("content", "")
-
-    if role == "assistant" and isinstance(content, list):
-        text_parts: list[str] = []
-        tool_calls: list[dict[str, Any]] = []
-        for block in content:
-            if not isinstance(block, dict):
-                text_parts.append(str(block))
-                continue
-            block_type = block.get("type")
-            if block_type == "text":
-                text_parts.append(str(block.get("text", "")))
-            elif block_type == "tool_use":
-                tool_calls.append(
-                    {
-                        "id": block.get("id") or f"toolu_{uuid.uuid4().hex[:16]}",
-                        "type": "function",
-                        "function": {
-                            "name": block.get("name") or "",
-                            "arguments": json.dumps(block.get("input") or {}, ensure_ascii=False),
-                        },
-                    }
-                )
-        out: dict[str, Any] = {"role": "assistant", "content": "\n".join(p for p in text_parts if p)}
-        if tool_calls:
-            out["tool_calls"] = tool_calls
-        return [out]
-
-    if isinstance(content, str):
-        return [{"role": role, "content": content}]
-
-    if not isinstance(content, list):
-        return [{"role": role, "content": _content_to_text(content)}]
-
-    out: list[dict[str, Any]] = []
-    text_parts: list[str] = []
-
-    def flush_text() -> None:
-        if text_parts:
-            out.append({"role": role, "content": "\n".join(part for part in text_parts if part)})
-            text_parts.clear()
-
-    for block in content:
-        if not isinstance(block, dict):
-            text_parts.append(str(block))
-            continue
-        block_type = block.get("type")
-        if block_type == "text":
-            text_parts.append(str(block.get("text", "")))
-        elif block_type == "tool_result":
-            flush_text()
-            out.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": block.get("tool_use_id") or block.get("id") or "",
-                    "content": _content_to_text(block.get("content")),
-                }
-            )
-        elif block_type == "image":
-            text_parts.append("[image]")
-        else:
-            text_parts.append(_content_to_text(block))
-    flush_text()
-    return out or [{"role": role, "content": ""}]
-
-
 def _anthropic_tool_to_openai(tool: dict[str, Any]) -> dict[str, Any]:
     return {
         "type": "function",
@@ -183,34 +120,6 @@ def _anthropic_tool_choice_to_openai(tool_choice: Any) -> Any:
     if choice_type == "tool":
         return {"type": "function", "function": {"name": tool_choice.get("name") or ""}}
     return tool_choice
-
-
-def _content_to_text(content: Any) -> str:
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, dict):
-                item_type = item.get("type")
-                if item_type == "text":
-                    parts.append(str(item.get("text", "")))
-                elif item_type == "tool_result":
-                    parts.append(_content_to_text(item.get("content")))
-                elif item_type == "image":
-                    parts.append("[image]")
-                else:
-                    parts.append(json.dumps(item, ensure_ascii=False))
-            else:
-                parts.append(str(item))
-        return "\n".join(part for part in parts if part)
-    if isinstance(content, dict):
-        if content.get("type") == "text":
-            return str(content.get("text", ""))
-        return json.dumps(content, ensure_ascii=False)
-    return str(content)
 
 
 def _parse_tool_input(arguments: Any) -> dict[str, Any]:

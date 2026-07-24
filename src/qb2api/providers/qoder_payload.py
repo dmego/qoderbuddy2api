@@ -8,7 +8,7 @@ import re
 import uuid
 from typing import Any
 
-from ..openai import ChatCompletionRequest
+from ..openai import ChatCompletionRequest, ChatMessage
 from ..sse import inject_tool_call_index, normalize_tool_call_id
 
 EFFORT_SUFFIX_RE = re.compile(r"^(.*)-effort-(low|medium|high|max)$")
@@ -51,21 +51,7 @@ def qoder_encode(data: bytes) -> str:
 def build_qoder_payload(request: ChatCompletionRequest, model: str) -> dict[str, Any]:
     """Build the Qoder COSY body while preserving OpenAI message roles."""
     upstream_model = qoder_model_key(model)
-    user_text = ""
-    messages: list[dict[str, Any]] = []
-    for message in request.messages:
-        content = _message_text(message.content)
-        entry = _message_entry(message.role, content)
-        if message.role == "user":
-            user_text = content
-            entry["content"] = ""
-            entry["contents"] = [{"type": "text", "text": content}]
-        elif message.role == "assistant" and message.tool_calls:
-            entry["tool_calls"] = message.tool_calls
-        elif message.role == "tool":
-            entry["tool_call_id"] = message.tool_call_id
-        messages.append(entry)
-
+    messages, user_text = _qoder_messages(request)
     request_id = str(uuid.uuid4())
     payload: dict[str, Any] = {
         "request_id": request_id,
@@ -74,10 +60,7 @@ def build_qoder_payload(request: ChatCompletionRequest, model: str) -> dict[str,
         "session_id": str(uuid.uuid4()),
         "stream": True,
         "model_config": {"key": upstream_model, "source": "system"},
-        "chat_context": {
-            "text": {"text": user_text},
-            "extra": {"originalContent": {"text": user_text}},
-        },
+        "chat_context": _chat_context(user_text),
         "messages": messages,
         "source": 1,
         "version": "3",
@@ -87,6 +70,38 @@ def build_qoder_payload(request: ChatCompletionRequest, model: str) -> dict[str,
         if request.tool_choice:
             payload["tool_choice"] = request.tool_choice
     return payload
+
+
+def _qoder_messages(request: ChatCompletionRequest) -> tuple[list[dict[str, Any]], str]:
+    user_text = ""
+    messages: list[dict[str, Any]] = []
+    for message in request.messages:
+        content = _message_text(message.content)
+        entry, current_user_text = _qoder_message(message, content)
+        messages.append(entry)
+        if current_user_text is not None:
+            user_text = current_user_text
+    return messages, user_text
+
+
+def _qoder_message(message: ChatMessage, content: str) -> tuple[dict[str, Any], str | None]:
+    entry = _message_entry(message.role, content)
+    if message.role == "user":
+        entry["content"] = ""
+        entry["contents"] = [{"type": "text", "text": content}]
+        return entry, content
+    if message.role == "assistant" and message.tool_calls:
+        entry["tool_calls"] = message.tool_calls
+    if message.role == "tool":
+        entry["tool_call_id"] = message.tool_call_id
+    return entry, None
+
+
+def _chat_context(user_text: str) -> dict[str, Any]:
+    return {
+        "text": {"text": user_text},
+        "extra": {"originalContent": {"text": user_text}},
+    }
 
 
 def parse_qoder_sse_data(data: str) -> tuple[dict[str, Any], str | None] | None:

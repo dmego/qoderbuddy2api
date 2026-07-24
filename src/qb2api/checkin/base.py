@@ -66,48 +66,46 @@ def classify_http_error(
     request_id: str | None = None,
 ) -> CheckInResult:
     """Map generic HTTP failures to CheckInOutcome (provider-specific overrides first)."""
-    msg = extract_message(body)
-    code = extract_business_code(body)
-    rid = request_id or extract_request_id(body)
+    outcome, fallback_message = _http_failure(status_code)
+    return _http_error_result(
+        outcome=outcome,
+        fallback_message=fallback_message,
+        provider=provider,
+        account_id=account_id,
+        status_code=status_code,
+        body=body,
+        request_id=request_id,
+    )
 
+
+def _http_failure(status_code: int) -> tuple[CheckInOutcome, str]:
     if status_code in (401, 403):
-        return CheckInResult(
-            outcome=CheckInOutcome.NEEDS_REAUTH,
-            provider=provider,
-            account_id=account_id,
-            http_status=status_code,
-            business_code=code,
-            request_id=rid,
-            message=msg or "authentication failed",
-        )
+        return CheckInOutcome.NEEDS_REAUTH, "authentication failed"
     if status_code == 429:
-        return CheckInResult(
-            outcome=CheckInOutcome.RATE_LIMITED,
-            provider=provider,
-            account_id=account_id,
-            http_status=status_code,
-            business_code=code,
-            request_id=rid,
-            message=msg or "rate limited",
-        )
+        return CheckInOutcome.RATE_LIMITED, "rate limited"
     if status_code >= 500:
-        return CheckInResult(
-            outcome=CheckInOutcome.TRANSIENT_ERROR,
-            provider=provider,
-            account_id=account_id,
-            http_status=status_code,
-            business_code=code,
-            request_id=rid,
-            message=msg or "upstream server error",
-        )
+        return CheckInOutcome.TRANSIENT_ERROR, "upstream server error"
+    return CheckInOutcome.FAILED, f"http {status_code}"
+
+
+def _http_error_result(
+    *,
+    outcome: CheckInOutcome,
+    fallback_message: str,
+    provider: str,
+    account_id: str,
+    status_code: int,
+    body: dict[str, Any] | None,
+    request_id: str | None,
+) -> CheckInResult:
     return CheckInResult(
-        outcome=CheckInOutcome.FAILED,
+        outcome=outcome,
         provider=provider,
         account_id=account_id,
         http_status=status_code,
-        business_code=code,
-        request_id=rid,
-        message=msg or f"http {status_code}",
+        business_code=extract_business_code(body),
+        request_id=request_id or extract_request_id(body),
+        message=extract_message(body) or fallback_message,
     )
 
 

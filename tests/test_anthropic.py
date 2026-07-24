@@ -125,6 +125,47 @@ def test_anthropic_request_converts_system_tools_and_tool_results():
     assert request["max_tokens"] == 128
 
 
+def test_anthropic_request_converts_assistant_tool_use_blocks():
+    from qb2api.anthropic import anthropic_to_openai
+
+    request = anthropic_to_openai(
+        {
+            "model": "codebuddy/deepseek-v4-flash",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "Calling weather."},
+                        {
+                            "type": "tool_use",
+                            "id": "call_weather",
+                            "name": "get_weather",
+                            "input": {"city": "Tokyo"},
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert request["messages"] == [
+        {
+            "role": "assistant",
+            "content": "Calling weather.",
+            "tool_calls": [
+                {
+                    "id": "call_weather",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": '{"city": "Tokyo"}',
+                    },
+                }
+            ],
+        }
+    ]
+
+
 def test_anthropic_response_converts_text_tools_and_usage():
     from qb2api.anthropic import openai_to_anthropic
 
