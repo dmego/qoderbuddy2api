@@ -4,7 +4,7 @@
 - Active plan: `docs/superpowers/plans/2026-07-24-2api-completion-plan.md`
 - Branch: `codex/multi-account-proxy-checkin`
 - Execution: root integrator plus up to three isolated-worktree subagents; one commit per large delivery task
-- Last saved: `2026-07-24 10:00 CST`
+- Last saved: `2026-07-24` Wave 1 review-fix cycle
 
 ## Approved architecture
 
@@ -15,6 +15,17 @@
 - External protocol gates remain `CB-CHECKIN-01`, `QD-CHECKIN-01`, and `AUTH-01`
 
 ## Status
+
+### Active 9-task completion plan
+
+- Integrated and approved: Task 1 Security/Proxy access, Task 3 provider and
+  check-in protocol hardening. Progress: **2/9 delivery tasks integrated**.
+- Task 2 management backend: implementation and review-fix commits complete;
+  final independent review is in progress.
+- Task 4 operations console: second review-fix batch is in progress after the
+  independent review found operation-feedback and filter edge cases.
+- Wave 1 full integration gate remains pending until Tasks 2 and 4 are approved
+  and integrated.
 
 - Expanded unique design baseline: complete and self-reviewed
 - Full implementation plan: complete and self-reviewed
@@ -36,7 +47,7 @@
 - Credentials rotate/revoke atomically with purpose state, invalidate resolver cache, rebuild dynamic pools, and return only metadata
 - Check-in history is now persisted and exposed as bounded secret-free run summaries plus separate attempt detail
 - Vue console uses route-level code splitting and modular ECharts; the primary shell is about 144 KB minified, chart code is lazy
-- No commit or push has been performed
+- No push has been performed; all work remains on local task/integration branches.
 
 ## Verified 2026-07-23
 
@@ -78,19 +89,33 @@
 
 ## Resume checkpoint
 
-1. Execute Wave 1 of the active plan: root Task 1 plus parallel Tasks 2, 3 and 4.
-2. Integrate one task commit at a time and run the Wave 1 full Python/frontend/two-process gate.
-3. Execute Wave 2 Tasks 5, 6 and 7 in isolated worktrees.
-4. Complete Task 8 code-quality/legacy cleanup, then Task 9 browser acceptance and final audit.
-5. Report progress only as integrated task commits out of 9.
+1. Task 1 is implemented, reviewed, approved and integrated.
+2. Task 3 is implemented, review-fixed, independently approved and integrated
+   as `f01555b` plus `339db2b`.
+3. Task 2 is at final independent review; fix the known cross-contract latency
+   field and audit-query aliases before approval if still present.
+4. Task 4 is implementing its second review-fix batch for immutable settings
+   snapshots, audit filtering, terminal operation feedback and mutation
+   concurrency.
+5. Integrate approved Tasks 2 and 4, then run the Wave 1 full
+   Python/frontend/two-process gate.
+6. Execute Wave 2 Tasks 5, 6 and 7 in isolated worktrees, then Tasks 8 and 9.
 
 ## Deliberately deferred at this checkpoint
 
 - No push, branch rewrite, or destructive cleanup has been performed; the current code baseline is committed at `703cdfc`.
-- Remote HTTP behavior is not yet changed; the current implementation still follows the existing secure-cookie policy.
-- The design document still needs its deployment/session wording aligned with the trusted remote-HTTP option.
+- Trusted remote HTTP is explicitly supported only with
+  `QB2API_ADMIN_COOKIE_SECURE=false`; secure-by-default `auto` remains enforced.
 
 ## Commit checkpoints
 
 - `703cdfc feat: add control plane refactor baseline`
-- Next checkpoint: commit the 9-task parallel completion plan before starting Wave 1.
+- `545f44e docs(plan): define parallel completion work`
+- `d68ea72 chore: ignore task worktrees`
+- `59f1a99 feat(security): close admin and proxy access`
+- `6b09701 fix(security): enforce proxy key lifecycle`
+- `13dd5d8 fix(security): surface pending key revocation`
+- Task 1 final review: Approved; no remaining Critical, Important or Minor.
+- `f01555b refactor(checkin): harden provider protocols`
+- `339db2b fix(checkin): close refresh and export races`
+- Task 3 final review: Approved; no remaining Critical or Important.
