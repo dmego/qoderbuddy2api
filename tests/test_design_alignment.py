@@ -17,7 +17,7 @@ def test_env_only_proxy_boots_without_admin_keys(monkeypatch):
     monkeypatch.setenv("QB2API_ADMIN_UI_ENABLED", "false")
     from qb2api.config import Settings
 
-    s = Settings.from_env()
+    s = Settings.from_env(env_file="")
     s.validate_startup()  # must not raise
     assert s.codebuddy_tokens == ["ck_test_token"]
     assert s.admin_key is None

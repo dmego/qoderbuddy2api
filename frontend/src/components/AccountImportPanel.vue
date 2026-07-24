@@ -3,6 +3,7 @@ import { CheckCircle2, KeyRound, Link, LoaderCircle, LogIn, RefreshCcw } from "@
 import { computed, onBeforeUnmount, reactive, ref } from "vue";
 
 import { apiRequest } from "@/api/client";
+import ConfirmDialog from "@/components/ConfirmDialog.vue";
 
 export type AccountReference = { provider: string; account_id: string; label: string };
 
@@ -25,6 +26,7 @@ const pending = ref(false);
 const polling = ref(false);
 const message = ref("");
 const failed = ref(false);
+const confirmCheckinVerification = ref(false);
 const flow = ref<Flow | null>(loadFlow());
 let pollTimer: number | undefined;
 const form = reactive({
@@ -67,6 +69,7 @@ async function submit(): Promise<void> {
   try {
     const result = await apiRequest<ImportResult>(endpoint(), requestOptions());
     clearSecrets();
+    confirmCheckinVerification.value = false;
     setMessage("凭据已验证并保存。", false);
     if (result.account) emit("saved", result.account);
   } catch (error) {
@@ -144,6 +147,14 @@ function requestOptions(): RequestInit {
   return { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
 }
 
+function requestSubmit(): void {
+  if (provider.value === "codebuddy" && purpose.value === "checkin") {
+    confirmCheckinVerification.value = true;
+    return;
+  }
+  void submit();
+}
+
 function schedulePoll(): void {
   window.clearTimeout(pollTimer);
   pollTimer = window.setTimeout(async () => {
@@ -179,12 +190,14 @@ onBeforeUnmount(() => window.clearTimeout(pollTimer));
       <label v-if="provider === 'qoder' && purpose === 'checkin'" class="form-span">Refresh token <span class="required-mark">必填</span><input v-model="form.refreshToken" aria-label="Qoder Refresh token" type="password" autocomplete="new-password" /></label>
     </div>
     <p class="helper-text">原始凭据只用于本次受保护请求；成功后表单立即清空，管理台只显示版本和状态。</p>
+    <p v-if="provider === 'codebuddy' && purpose === 'checkin'" class="form-message">验证会发送一次 WorkBuddy 每日签到请求；未签到时可能立即领取当天积分。</p>
     <div class="form-actions">
       <button v-if="provider === 'codebuddy' && purpose === 'chat'" class="secondary-button" type="button" :disabled="pending" @click="startOAuth"><LogIn :size="16" />浏览器登录</button>
-      <button type="button" :disabled="pending || !canSubmit" @click="submit"><LoaderCircle v-if="pending" class="spin" :size="16" /><Link v-else :size="16" />验证并保存</button>
+      <button type="button" :disabled="pending || !canSubmit" @click="requestSubmit"><LoaderCircle v-if="pending" class="spin" :size="16" /><Link v-else :size="16" />{{ provider === 'codebuddy' && purpose === 'checkin' ? '验证并启用' : '验证并保存' }}</button>
       <button v-if="flow" class="secondary-button" type="button" :disabled="polling" @click="pollOAuth"><RefreshCcw :class="{ spin: polling }" :size="16" />继续 OAuth 登录</button>
     </div>
     <p v-if="flow" class="helper-text">流程将在 {{ new Date(flow.expires_at).toLocaleTimeString() }} 过期；可离开此页后返回继续轮询。</p>
     <p v-if="message" class="form-message" :class="{ 'text-danger': failed }" role="status"><CheckCircle2 v-if="!failed" :size="15" />{{ message }}</p>
+    <ConfirmDialog :open="confirmCheckinVerification" title="验证并启用 WorkBuddy 签到？" description="系统将发送一次 WorkBuddy 每日签到请求；未签到时可能立即领取当天积分。仅在成功或已签到后才会启用定时签到。" confirm-label="确认并验证" :busy="pending" @cancel="confirmCheckinVerification = false" @confirm="submit" />
   </section>
 </template>

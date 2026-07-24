@@ -84,7 +84,7 @@ function saveBody(): Record<string, unknown> {
   return { label: draftLabel.value, enabled: draftEnabled.value, purposes };
 }
 
-function requestAction(kind: DetailAction): void { if (kind === "delete" || (kind === "save" && !draftEnabled.value)) pending.value = kind; else action.mutate(kind); }
+function requestAction(kind: DetailAction): void { if (kind === "delete" || kind === "verify" || (kind === "save" && !draftEnabled.value)) pending.value = kind; else action.mutate(kind); }
 function confirmPending(): void { if (!pending.value) return; const kind = pending.value; pending.value = null; action.mutate(kind); }
 function reauthorize(): void { void router.push({ name: "account-add", query: { provider: provider.value, accountId: accountId.value, label: draftLabel.value, purpose: "chat" } }); }
 function actionLabel(kind: DetailAction): string { return ({ save: "保存账号", refresh: "刷新账号", probe: "探测账号", verify: "验证签到", promote: "提升环境账号", delete: "删除账号" } as Record<DetailAction, string>)[kind]; }
@@ -110,7 +110,7 @@ async function accountCheckinHistory(selectedProvider: string, selectedAccountId
       <section class="overview-grid"><div class="data-panel"><PanelHeader title="最近请求事件" description="仅显示脱敏元数据。" /><div v-if="events.isPending.value" class="loading-row">正在读取请求事件…</div><div v-else-if="!events.data.value?.events.length" class="compact-empty">尚无此账号的请求事件。</div><div v-else class="metric-list"><div v-for="event in events.data.value.events" :key="event.event_id"><strong>{{ event.model_id ?? "未知模型" }}</strong><StatePill :value="event.status" /><span>{{ event.latency_ms ?? "--" }} ms<template v-if="event.error_code"> · {{ event.error_code }}</template></span><small>{{ event.started_at ?? "--" }}</small></div></div></div><div class="data-panel"><PanelHeader title="签到历史" description="最近 20 个签到批次中与此账号匹配的结果。" /><div v-if="checkin.isPending.value" class="loading-row">正在读取签到历史…</div><div v-else-if="!checkin.data.value?.length" class="compact-empty">尚未记录签到结果。</div><div v-else class="metric-list"><div v-for="(item, index) in checkin.data.value" :key="`${item.finished_at}:${index}`"><strong>Check-in</strong><StatePill :value="item.outcome" /><span>{{ item.error_code ?? "已完成" }}</span><small>{{ item.finished_at ?? "--" }}</small></div></div></div></section>
     </template>
     <OperationStatus :operation="lastOperation" />
-    <ConfirmDialog :open="Boolean(pending)" :title="pending === 'delete' ? '删除这个账号？' : '停用这个账号？'" :description="pending === 'delete' ? '账号的持久凭据和用途记录将被删除，操作不可撤销。' : '停用后该账号不会参与新的代理或签到调度。'" :confirm-label="pending === 'delete' ? '确认删除' : '确认停用'" :tone="pending === 'delete' ? 'danger' : 'default'" :verification-text="pending === 'delete' ? 'DELETE' : ''" :busy="action.isPending.value" @cancel="pending = null" @confirm="confirmPending" />
+    <ConfirmDialog :open="Boolean(pending)" :title="pending === 'delete' ? '删除这个账号？' : pending === 'verify' ? '验证并启用签到？' : '停用这个账号？'" :description="pending === 'delete' ? '账号的持久凭据和用途记录将被删除，操作不可撤销。' : pending === 'verify' ? '系统将使用当前账号的签到凭据或已登录 Chat 凭据发送一次每日签到请求；未签到时可能立即领取当天积分。' : '停用后该账号不会参与新的代理或签到调度。'" :confirm-label="pending === 'delete' ? '确认删除' : pending === 'verify' ? '确认并验证' : '确认停用'" :tone="pending === 'delete' ? 'danger' : 'default'" :verification-text="pending === 'delete' ? 'DELETE' : ''" :busy="action.isPending.value" @cancel="pending = null" @confirm="confirmPending" />
     <NotificationRegion :notifications="notifications" @dismiss="dismiss" />
   </section>
 </template>

@@ -69,7 +69,7 @@ class CheckinExecutor:
         mode = credential.mode
         result = await self._workbuddy.checkin(
             account_id=account_id,
-            auth_mode=mode,
+            auth_mode="bearer" if mode == "inherit_chat" else mode,
             access_token=(
                 credential.payload.get("access_token")
                 or credential.payload.get("token")

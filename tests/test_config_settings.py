@@ -24,13 +24,18 @@ def _clear_relevant_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(key, raising=False)
 
 
+def _settings_from_test_env() -> Settings:
+    """Bind only monkeypatched process values, never this checkout's real .env."""
+    return Settings.from_env(env_file="")
+
+
 def test_proxy_key_prefers_new_env(monkeypatch: pytest.MonkeyPatch):
     _clear_relevant_env(monkeypatch)
     monkeypatch.setenv("QB2API_PROXY_API_KEY", "proxy-new")
     monkeypatch.setenv("QB2API_API_KEY", "proxy-legacy")
     monkeypatch.setenv("QB2API_ADMIN_UI_ENABLED", "false")
 
-    settings = Settings.from_env()
+    settings = _settings_from_test_env()
     assert settings.proxy_api_key == "proxy-new"
     assert settings.api_key == "proxy-new"
 
@@ -40,7 +45,7 @@ def test_proxy_key_falls_back_to_legacy_alias(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("QB2API_API_KEY", "legacy-only")
     monkeypatch.setenv("QB2API_ADMIN_UI_ENABLED", "false")
 
-    settings = Settings.from_env()
+    settings = _settings_from_test_env()
     assert settings.proxy_api_key == "legacy-only"
     assert settings.api_key == "legacy-only"
 
@@ -48,7 +53,7 @@ def test_proxy_key_falls_back_to_legacy_alias(monkeypatch: pytest.MonkeyPatch):
 def test_legacy_api_key_property_maps_to_proxy(monkeypatch: pytest.MonkeyPatch):
     _clear_relevant_env(monkeypatch)
     monkeypatch.setenv("QB2API_ADMIN_UI_ENABLED", "false")
-    settings = Settings.from_env()
+    settings = _settings_from_test_env()
     assert settings.api_key is None
 
     constructed = Settings(proxy_api_key="p1", admin_ui_enabled=False)
@@ -59,13 +64,13 @@ def test_legacy_api_key_property_maps_to_proxy(monkeypatch: pytest.MonkeyPatch):
 def test_checkin_defaults_off_unless_provider_flags(monkeypatch: pytest.MonkeyPatch):
     _clear_relevant_env(monkeypatch)
     monkeypatch.setenv("QB2API_ADMIN_UI_ENABLED", "false")
-    settings = Settings.from_env()
+    settings = _settings_from_test_env()
     assert settings.checkin_enabled is False
     assert settings.codebuddy_checkin_enabled is False
     assert settings.qoder_checkin_enabled is False
 
     monkeypatch.setenv("CODEBUDDY_CHECKIN_ENABLED", "true")
-    settings = Settings.from_env()
+    settings = _settings_from_test_env()
     assert settings.codebuddy_checkin_enabled is True
     assert settings.checkin_enabled is True
 
@@ -125,7 +130,7 @@ def test_validate_ok_when_keys_differ_and_admin_configured():
 def test_design_checkin_path_defaults(monkeypatch: pytest.MonkeyPatch):
     _clear_relevant_env(monkeypatch)
     monkeypatch.setenv("QB2API_ADMIN_UI_ENABLED", "false")
-    settings = Settings.from_env()
+    settings = _settings_from_test_env()
     assert settings.codebuddy_checkin_base == "https://www.workbuddy.cn"
     assert settings.codebuddy_checkin_status_path == "/billing/meter/checkin-status"
     assert settings.codebuddy_checkin_status_method == ""

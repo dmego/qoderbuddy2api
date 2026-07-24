@@ -149,15 +149,18 @@ describe("AccountImportPanel", () => {
     await wrapper.get('input[aria-label="账号 ID"]').setValue("cb-main");
     await wrapper.get('select[aria-label="Check-in 认证模式"]').setValue("cookie");
     await wrapper.get('input[aria-label="WorkBuddy Cookie"]').setValue("session=secret");
-    const submit = wrapper.findAll("button").find((button) => button.text().includes("验证并保存"));
+    const submit = wrapper.findAll("button").find((button) => button.text().includes("验证并启用"));
     await submit?.trigger("click");
+    document.querySelector<HTMLButtonElement>(".dialog-actions button:not(.secondary-button)")?.click();
     await flushPromises();
 
     expect(calls[0].url).toBe("/api/admin/auth/codebuddy/checkin");
     expect(JSON.parse(String(calls[0].init?.body))).toMatchObject({ account_id: "cb-main", mode: "cookie", cookie: "session=secret" });
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
     expect(wrapper.text()).not.toContain("session=secret");
     expect(wrapper.text()).toContain("凭据已验证并保存");
   });
+
 });
 
 function response(body: unknown, status = 200): Response {

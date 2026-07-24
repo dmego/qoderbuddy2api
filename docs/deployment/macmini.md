@@ -169,6 +169,33 @@ WorkBuddy 凭据通过 `/admin/accounts/add` 的 CodeBuddy / WorkBuddy Check-in 
 `.env`、URL、浏览器存储或通用 credential API，也不要从浏览器 profile 或历史请求中批量
 复制无关 Cookie。
 
+### CodeBuddy OAuth 到 WorkBuddy 签到
+
+对已经通过控制台完成 CodeBuddy OAuth 的持久账号，不需要把 OAuth access token 复制回
+浏览器或再写一份 check-in 凭据。进入该账号详情页，点击 **验证签到** 并在确认框中确认。
+服务端会在进程内复用加密的 chat credential，以 Bearer 模式发送一次 WorkBuddy
+`daily-checkin` 请求。只有结果为成功或“今天已签到”时，才把该账号的 check-in purpose
+标记为 `active + verified`；不会新建重复 Secret，也不会把 Token 返回给浏览器。
+
+这个动作可能立即领取当天积分，不能把它当作无副作用的连通性探测。确认框出现前不会发送
+请求。若 WorkBuddy 实际要求 Cookie 或额外身份头，则不要尝试让前端读取 `HttpOnly Cookie`；
+改用上面的专用导入表单提交最小、已授权的 Bearer/Cookie 组合。
+
+首次验证成功后，再在 `.env` 显式打开 CodeBuddy Provider 开关并重启 Control Plane：
+
+```ini
+CODEBUDDY_CHECKIN_ENABLED=true
+```
+
+然后在管理台 **设置** 页面启用“自动签到”、选择时区和调度时间。`CHECKIN_ENABLED=true`
+也可在启动前写入 `.env`；Provider 开关属于启动配置，而全局调度开关、时间、时区、补跑和
+jitter 可以在管理台中持久化调整。`CODEBUDDY_CHECKIN_STATUS_METHOD` 保持为空，直到真实
+`CB-CHECKIN-01` Spike 确认该接口的方法和鉴权方式，避免猜测性 preflight 请求。
+
+真实验证后只在 [spike-results.md](../spike/spike-results.md) 记录 provider、账号 ID、HTTP
+状态、业务码、request ID、耗时和已确认的 header 名称；不要记录 Authorization、Cookie、
+refresh token、请求体、原始响应或浏览器导出的 HAR。
+
 验收前完成：
 
 - [ ] `.env`、data、logs 权限限制到运行用户；三类 key 不同。
@@ -177,3 +204,7 @@ WorkBuddy 凭据通过 `/admin/accounts/add` 的 CodeBuddy / WorkBuddy Check-in 
 - [ ] Control health、Worker 模型列表、Control restart、Worker restart 均已确认。
 - [ ] 已运行 fresh/migrated smoke，已完成备份 restore dry-run。
 - [ ] 管理员没有保存 raw key、cookie 或 exporter JSON 的长期副本。
+- [ ] 至少一个已授权的 CodeBuddy 账号已通过“验证签到”确认框；其 check-in purpose 显示
+  `active + verified`，且 chat credential 未被复制到新的 check-in credential 行。
+- [ ] WorkBuddy `daily-checkin` 的真实结果已按 `CB-CHECKIN-01` 脱敏记录；未确认的
+  `checkin-status` method 没有被启用。
