@@ -660,7 +660,9 @@ Admin Key 只从部署 Secret/环境读取，不保存进数据库。服务每�
 
 管理台采用 `Vue 3 + TypeScript + Vite + Pinia + Vue Router + TanStack Vue Query + ECharts + Lucide`。Vite 仅用于构建，生产部署仍由 Control Plane 同源提供静态产物，不增加 Node 常驻进程。匿名访问只加载登录 shell；登录后才请求管理数据。
 
-视觉定位是桌面优先的深色运维工作台，不是极简营销页。左侧固定主导航，中间为高密度工作区，右侧可展开全局运行状态 rail；数据表、趋势图、健康矩阵和详情抽屉是主要信息形态。避免装饰性大卡片、渐变背景、夸张标题、嵌套卡片和纯色单一配色。状态颜色必须同时配合文字/图标，不能只靠颜色传达。
+视觉定位是桌面优先、浅色且高密度的本地基础设施控制台，不是极简营销页，也不复制参考工程的代码、品牌或配色。视觉信息架构参考 Sub2API 的固定侧栏、工作区 Header、筛选表格、详情抽屉与危险操作确认，但实现保留 2api 的单管理员安全边界。左侧固定导航按 `运行`、`账号池`、`代理与模型`、`自动化`、`治理` 五个业务域分组；中间工作区使用紧凑页面标题、状态摘要、筛选工具栏、表格和详情抽屉。主操作使用蓝色，绿色/琥珀色/红色分别表示成功、注意和失败，状态同时配合文字与图标，不能只靠颜色传达。避免渐变背景、装饰性大卡片、夸张标题、嵌套卡片和单一色系。
+
+桌面端侧栏支持折叠并保留 icon tooltip；窄屏改为显式打开/关闭的抽屉和遮罩，不把导航挤进内容区。数据表在窄屏保持可横向滚动，详情、确认和危险动作进入全屏可访问抽屉/对话框。所有图标按钮均有可访问名称，辅助文字、导航分组与状态文字达到 WCAG AA 对比度；Playwright 覆盖桌面和窄屏导航，Lighthouse 在两种设备配置下验证可访问性、最佳实践、SEO 与 agentic browsing。
 
 ```text
 /admin/login
@@ -712,9 +714,9 @@ Admin Key 只从部署 Secret/环境读取，不保存进数据库。服务每�
 
 全局交互规则：
 
-- Header 固定显示 Worker 状态、活动请求、下一次签到和会话剩余时间；状态变化通过 5 秒轮询或 SSE 更新，不要求手动刷新整页。
+- Header 固定显示 Worker 状态、活动请求、指标快照和今日请求；状态变化通过轮询更新，不要求手动刷新整页。
 - start/stop/restart、删除账号、撤销凭据、恢复备份属于危险动作，必须有目标、影响和不可逆性确认；按钮在请求期间锁定并显示真实进度。
-- 列表页提供搜索、Provider/status/purpose 筛选、列显示、分页、空状态、错误状态、骨架屏、批量选择和详情抽屉。表格在窄屏切为重点字段列表，移动端只保留查看、签到、重新授权等必要动作。
+- 列表页提供搜索、Provider/status/purpose 筛选、分页、空状态、错误状态、骨架屏、批量选择和详情抽屉。窄屏数据表使用横向滚动，移动端保留查看、签到、重新授权等必要动作。
 - 任何 mutation 都显示明确的成功/失败反馈并使相关 Query 精确失效；不能乐观伪造 Worker 已启动、设置已生效或凭据已验证。
 - 表单错误与字段关联，异步流程可恢复；OAuth poll、Worker starting/draining、签到批次和备份过程离开页面后仍可从服务端状态恢复。
 - 图表必须有文字摘要、可访问 legend 和无数据状态。数值统一显示采样时间；积分/配额过期标记为 stale，不显示为 0。
@@ -1044,8 +1046,9 @@ METRICS_REFRESH_INTERVAL_SECONDS=900
 USAGE_ROLLUP_INTERVAL_SECONDS=60
 USAGE_DETAIL_RETENTION_DAYS=90
 USAGE_ROLLUP_RETENTION_MONTHS=24
-SERVICE_WORKER_PORT=10001
-SERVICE_WORKER_DRAIN_TIMEOUT_SECONDS=330
+QB2API_WORKER_PORT=10001
+PROVIDER_DRAIN_TIMEOUT_SECONDS=330
+QB2API_WORKER_SHUTDOWN_TIMEOUT_SECONDS=15
 ```
 
 使用 `zoneinfo.ZoneInfo`，不增加 cron 解析依赖。
@@ -1271,7 +1274,8 @@ QB2API_TRUSTED_PROXY_NETWORKS=<optional-CIDR-list>
 QB2API_WORKER_AUTOSTART=true
 QB2API_WORKER_START_TIMEOUT_SECONDS=30
 QB2API_WORKER_HEALTH_INTERVAL_SECONDS=5
-QB2API_WORKER_DRAIN_TIMEOUT_SECONDS=330
+PROVIDER_DRAIN_TIMEOUT_SECONDS=330
+QB2API_WORKER_SHUTDOWN_TIMEOUT_SECONDS=15
 QB2API_WORKER_INTERNAL_TOKEN=<generated-or-secret-file>
 QB2API_RUNTIME_SETTINGS_ENABLED=true
 ```

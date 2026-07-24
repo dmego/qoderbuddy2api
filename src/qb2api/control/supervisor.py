@@ -51,6 +51,7 @@ class ServiceSupervisor:
         self._operation_writer = operation_writer
         self._runtime_reloader = runtime_reloader or self._default_reload
         self._drain_timeout = drain_timeout or float(settings.provider_drain_timeout_seconds)
+        self._shutdown_timeout = float(settings.worker_shutdown_timeout_seconds)
         self._process: Any | None = None
         self._operations = OperationStore()
         self._lock = asyncio.Lock()
@@ -181,7 +182,11 @@ class ServiceSupervisor:
         while self._snapshot.in_flight and time.monotonic() < deadline:
             await asyncio.sleep(0.05)
         self._terminate_verified()
-        stopped = await asyncio.to_thread(wait_process, self._process, deadline)
+        stopped = await asyncio.to_thread(
+            wait_process,
+            self._process,
+            time.monotonic() + self._shutdown_timeout,
+        )
         if not stopped:
             self._kill_verified()
             await asyncio.to_thread(wait_process, self._process, time.monotonic() + 1)

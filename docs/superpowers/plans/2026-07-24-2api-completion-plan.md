@@ -1,6 +1,6 @@
 # 2api Completion Execution Plan
 
-> This plan is the single execution source after baseline commit `703cdfc`. It replaces the execution order in the earlier plans under `docs/superpowers/plans/`.
+> This plan is the single execution source after baseline commit `703cdfc`. Superseded execution plans were removed after Task 9; Git history retains their implementation record.
 
 ## 1. Goal
 
@@ -77,7 +77,7 @@ Known baseline debt:
 - Worker remains loopback-only and never opens SQLite or receives the credential master key.
 - Streaming cannot fail over after the first downstream chunk.
 - New or modified code should stay below 300 lines per file and 50 lines per function; existing violations are removed in Task 8.
-- Frontend remains a high-density dark operations console, not a simplified demo UI.
+- Frontend remains a high-density, light infrastructure console with grouped navigation, responsive drawers and data-dense operational pages; it is not a simplified demo UI.
 - Frontend dependencies use `--registry=https://registry.npmmirror.com`.
 
 ## 4. Parallel waves
@@ -554,6 +554,7 @@ refactor(core): remove legacy and size debt
 - run a real Control Plane and supervised Worker for browser tests;
 - cover login, remote HTTP warning, Proxy Key, service lifecycle, account import/detail, credential rotation, model probe, usage filters/export, check-in, settings, audit and backup;
 - capture desktop and narrow/mobile screenshots;
+- compare the current Vue console against the locally cloned Sub2API information architecture without copying third-party code, brand, assets or color system;
 - check console errors, clipped text, overflow, blank charts, inaccessible icon buttons and keyboard focus;
 - run fresh-data and migrated-data smoke;
 - run the full Python/frontend/static/build gates;

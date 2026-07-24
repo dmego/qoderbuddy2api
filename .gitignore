@@ -20,6 +20,7 @@ creds/
 *.sqlite3
 *.sqlite3-*
 */node_modules/
+frontend/test-results/
 
 # The admin console is built and served as same-origin Control Plane assets.
 !frontend/package-lock.json

@@ -66,6 +66,7 @@ def _server_values(proxy_api_key: str | None) -> dict[str, object]:
         "worker_port": _env_int("QB2API_WORKER_PORT", 10001),
         "worker_start_timeout_seconds": _env_int("QB2API_WORKER_START_TIMEOUT_SECONDS", 30),
         "worker_health_interval_seconds": _env_int("QB2API_WORKER_HEALTH_INTERVAL_SECONDS", 1),
+        "worker_shutdown_timeout_seconds": _env_int("QB2API_WORKER_SHUTDOWN_TIMEOUT_SECONDS", 15),
         "worker_autostart": _env_bool("QB2API_WORKER_AUTOSTART", False),
         "worker_internal_token": os.getenv("QB2API_WORKER_INTERNAL_TOKEN") or None,
         "log_level": os.getenv("QB2API_LOG_LEVEL", "info"),
@@ -162,6 +163,7 @@ class Settings:
     worker_port: int = 10001
     worker_start_timeout_seconds: int = 30
     worker_health_interval_seconds: int = 1
+    worker_shutdown_timeout_seconds: int = 15
     worker_autostart: bool = False
     worker_internal_token: str | None = None
     log_level: str = "info"

@@ -44,6 +44,7 @@ QB2API_CONTROL_PORT=9999
 QB2API_WORKER_HOST=127.0.0.1
 QB2API_WORKER_PORT=10001
 QB2API_WORKER_AUTOSTART=true
+QB2API_WORKER_SHUTDOWN_TIMEOUT_SECONDS=15
 QB2API_ADMIN_UI_ENABLED=true
 QB2API_ADMIN_KEY=<different-admin-key>
 QB2API_PROXY_API_KEY=<different-proxy-key>
@@ -140,7 +141,9 @@ sudo systemctl status qb2api-control
 
 - 用管理台 Service 页管理 Worker 的 start/stop/restart/reload。Worker 异常后先确认
   `FAILED` 状态，再执行 restart；Supervisor 按 owner、PID、启动时间和进程组校验，
-  不应使用按端口 kill 的脚本。
+  不应使用按端口 kill 的脚本。停止时先按 `PROVIDER_DRAIN_TIMEOUT_SECONDS` 排空活动
+  请求和流，再发送已校验的 `SIGTERM`；若进程在
+  `QB2API_WORKER_SHUTDOWN_TIMEOUT_SECONDS` 内仍未退出，才发送已校验的 `SIGKILL`。
 - Control Plane 自身由前台、launchd 或 systemd 管理。重启它时，旧 Worker 会停止，Admin
   session 会失效，均为预期安全语义。
 - Audit/Backup 的 restore dry-run 只校验 checksum、`PRAGMA integrity_check` 和当前

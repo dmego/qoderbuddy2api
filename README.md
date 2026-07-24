@@ -145,12 +145,19 @@ accepts bearer, cookie, or bearer + cookie mode and persists only after the
 server validates success or an already-checked-in result. Never store those
 credentials in `.env`, a URL, browser storage, or a generic endpoint.
 
+The administrative console is a high-density local control plane. Its grouped
+navigation covers runtime, account pool, proxy/models, automation, and
+governance. On a phone the navigation is an explicit drawer; table data remains
+scrollable and dangerous operations retain their confirmation dialogs. The UI
+does not persist an Admin Key or provider credentials in browser storage.
+
 ## Development verification
 
 ```bash
 pytest -q
 ruff check src tests
 python -m compileall -q src/qb2api
+cd frontend && npm run test && npm run typecheck && npm run lint && npm run build && npm run test:e2e
 git diff --check
 ```
 

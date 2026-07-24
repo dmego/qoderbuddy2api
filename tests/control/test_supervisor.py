@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import signal
+import subprocess
+import time
 
 import pytest
 
@@ -44,6 +46,19 @@ class FakeProcess:
     def wait(self, timeout: float | None = None) -> int:
         if self._returncode is None:
             raise TimeoutError
+        return self._returncode
+
+
+class StubbornProcess(FakeProcess):
+    """Models a Worker that ignores graceful termination until it is killed."""
+
+    def terminate(self) -> None:
+        self.terminate_calls += 1
+
+    def wait(self, timeout: float | None = None) -> int:
+        if self._returncode is None:
+            time.sleep(timeout or 0)
+            raise subprocess.TimeoutExpired("worker", timeout)
         return self._returncode
 
 
@@ -109,6 +124,27 @@ async def test_stop_waits_for_in_flight_until_drain_deadline() -> None:
     assert stopped.status == "succeeded"
     assert process.terminate_calls == 1
     assert supervisor.snapshot.in_flight == 1
+
+
+@pytest.mark.asyncio
+async def test_stubborn_worker_uses_short_shutdown_timeout_after_drain() -> None:
+    process = StubbornProcess()
+    supervisor = ServiceSupervisor(
+        Settings(worker_shutdown_timeout_seconds=0.01),
+        process_factory=lambda command, env: process,
+        health_checker=lambda current: asyncio.sleep(0, result=True),
+        signal_sender=send_fake_signal,
+        drain_timeout=10,
+    )
+    await supervisor.start()
+
+    started = time.monotonic()
+    stopped = await supervisor.stop()
+
+    assert time.monotonic() - started < 0.5
+    assert stopped.status == "succeeded"
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
 
 
 @pytest.mark.asyncio
