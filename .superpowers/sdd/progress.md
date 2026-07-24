@@ -4,7 +4,7 @@
 - Active plan: `docs/superpowers/plans/2026-07-24-2api-completion-plan.md`
 - Branch: `codex/multi-account-proxy-checkin`
 - Execution: root integrator plus up to three isolated-worktree subagents; one commit per large delivery task
-- Last saved: `2026-07-24` Task 9 integrated and verified
+- Last saved: `2026-07-24` post-Task 9 OAuth-to-check-in hardening verified
 
 ## Approved architecture
 
@@ -35,6 +35,11 @@
   remaining external protocol gates require explicit authorization to use real
   Provider credentials and perform login/check-in side effects; they are not
   represented as successful until that separate acceptance is run.
+- The existing CodeBuddy account-detail verification path now safely reuses an
+  OAuth/manual Chat credential for WorkBuddy verification as an internal bearer
+  credential. It does not duplicate the secret or expose it to the browser.
+- Every WorkBuddy credential import or verification action requires an explicit
+  console confirmation because a successful request can claim that day's points.
 
 ## Existing implementation evidence
 
@@ -109,11 +114,26 @@
   key. It did not read a real `.env`, decrypt real credentials, or contact an
   upstream Provider.
 
+## Verified 2026-07-24 post-Task 9 hardening
+
+- `rtk env PYTHONPATH=src pytest -q`: 283 passed
+- `rtk ruff check src tests`, `rtk python -m compileall -q src/qb2api`, and
+  `rtk python tools/check_code_limits.py`: passed
+- `rtk npm run test`: 33 frontend unit tests passed; `rtk npm run typecheck`,
+  `rtk npm run lint`, and `rtk npm run build`: passed
+- `rtk npm run test:e2e`: 4 Playwright management-console flows passed
+- Config-default tests bind an empty `env_file`, ensuring a developer's local
+  `.env` cannot pollute an environment-isolation assertion.
+- All WorkBuddy calls in this checkpoint were mocked or isolated. No real
+  `.env` credential, browser session, or upstream Provider was used.
+
 ## Completion checkpoint
 
 1. Tasks 1 through 9 are integrated on `codex/multi-account-proxy-checkin`.
 2. Wave 1, Wave 2, Task 8 and Task 9 gates passed, including the final full
-   Python/frontend/E2E/fresh-install/migrated-install/browser audits.
+   Python/frontend/E2E/fresh-install/migrated-install/browser audits; the
+   post-Task 9 OAuth-to-check-in regression gate adds 283 Python and 33
+   frontend unit tests.
 3. No remote operation has been performed. Real-provider acceptance remains a
    separately authorized activity because it requires real account login and can
    trigger upstream check-in side effects.
@@ -122,8 +142,13 @@
 
 - No push, branch rewrite, or destructive cleanup has been performed. The Task 9
   code baseline is `dec1e62`; its completion record is `1640970`.
+- Post-Task 9 OAuth-to-check-in hardening is `08a1d82`; it remains local and
+  does not represent real-provider protocol acceptance.
 - Trusted remote HTTP is explicitly supported only with
   `QB2API_ADMIN_COOKIE_SECURE=false`; secure-by-default `auto` remains enforced.
+- Real `CB-CHECKIN-01`, `QD-CHECKIN-01`, and `AUTH-01` protocol acceptance is
+  still pending explicit authorization to use an actual account and can cause
+  a real check-in side effect.
 
 ## Commit checkpoints
 
@@ -166,3 +191,7 @@
   passed; Ruff, compileall, repository code limits, typecheck, ESLint,
   production build, fresh/migrated smoke, browser audits, source-map absence
   and diff checks passed.
+- `08a1d82 fix(checkin): verify OAuth chat credentials`
+- Post-Task 9 hardening gate: 283 Python tests, 33 frontend unit tests and 4
+  Playwright tests passed; Ruff, compileall, repository code limits, typecheck,
+  ESLint, production build and diff checks passed.
