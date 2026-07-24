@@ -5,11 +5,9 @@ import { nextTick, onBeforeUnmount, ref, useId, watch } from "vue";
 const props = withDefaults(defineProps<{
   open: boolean;
   title: string;
-  eyebrow?: string;
   subtitle?: string;
   closeLabel?: string;
 }>(), {
-  eyebrow: "Detail",
   subtitle: "",
   closeLabel: "关闭详情",
 });
@@ -57,7 +55,7 @@ function focusableElements(): HTMLElement[] {
     <div v-if="open" class="drawer-backdrop" @mousedown.self="close">
       <section ref="panel" class="detail-drawer data-panel" role="dialog" aria-modal="true" :aria-labelledby="titleId" @keydown.esc="close" @keydown="trapFocus">
         <div class="drawer-heading">
-          <div><p class="eyebrow">{{ eyebrow }}</p><h2 :id="titleId">{{ title }}</h2><p v-if="subtitle" class="mono">{{ subtitle }}</p></div>
+          <div><h2 :id="titleId">{{ title }}</h2><p v-if="subtitle" class="mono">{{ subtitle }}</p></div>
           <button class="icon-button drawer-close" type="button" :aria-label="closeLabel" @click="close"><X :size="16" /></button>
         </div>
         <slot />

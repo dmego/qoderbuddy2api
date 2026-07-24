@@ -98,13 +98,13 @@ describe("ProxyKeysPage", () => {
 
     await flushPromises();
     await wrapper.get("[data-test='revoke-pk-live']").trigger("click");
-    expect(wrapper.text()).toContain("确认撤销 Proxy Key");
+    expect(wrapper.text()).toContain("确认撤销代理密钥");
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     await wrapper.get("[data-test='confirm-destructive']").trigger("click");
     await flushPromises();
     expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(wrapper.text()).toContain("旧 Key 可能仍有效");
-    expect(wrapper.text()).toContain("Worker 未同步");
+    expect(wrapper.text()).toContain("旧密钥可能仍有效");
+    expect(wrapper.text()).toContain("代理进程未同步");
   });
 });

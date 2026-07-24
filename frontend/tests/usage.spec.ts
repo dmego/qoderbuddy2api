@@ -53,7 +53,7 @@ describe("UsagePage", () => {
     });
     await flushPromises();
 
-    expect(wrapper.find("label").text()).toContain("Provider");
+    expect(wrapper.find("label").text()).toContain("服务提供方");
     expect(wrapper.find('[data-testid="usage-event-event-q1"]').exists()).toBe(true);
 
     await wrapper.find('[data-testid="usage-event-event-q1"]').trigger("click");
@@ -63,7 +63,7 @@ describe("UsagePage", () => {
     expect(document.body.textContent).toContain("未提交首块");
     expect(document.body.textContent).not.toContain("must never render");
 
-    await wrapper.find('[aria-label="Provider"]').setValue("qoder");
+    await wrapper.find('[aria-label="服务提供方"]').setValue("qoder");
     await wrapper.find('[aria-label="请求状态"]').setValue("failed");
     await flushPromises();
 

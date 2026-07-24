@@ -179,15 +179,15 @@ onBeforeUnmount(() => window.clearTimeout(pollTimer));
 
 <template>
   <section class="import-panel" aria-label="账号导入">
-    <div class="segmented-control" aria-label="Provider"><button type="button" :class="{ active: provider === 'codebuddy' }" @click="selectProvider('codebuddy')">CodeBuddy</button><button type="button" :class="{ active: provider === 'qoder' }" @click="selectProvider('qoder')">Qoder</button></div>
-    <div class="segmented-control" aria-label="用途"><button type="button" :class="{ active: purpose === 'chat' }" @click="selectPurpose('chat')">Chat</button><button type="button" :class="{ active: purpose === 'checkin' }" @click="selectPurpose('checkin')">Check-in</button></div>
+    <div class="segmented-control" aria-label="服务提供方"><button type="button" :class="{ active: provider === 'codebuddy' }" @click="selectProvider('codebuddy')">CodeBuddy</button><button type="button" :class="{ active: provider === 'qoder' }" @click="selectProvider('qoder')">Qoder</button></div>
+    <div class="segmented-control" aria-label="用途"><button type="button" :class="{ active: purpose === 'chat' }" @click="selectPurpose('chat')">代理请求</button><button type="button" :class="{ active: purpose === 'checkin' }" @click="selectPurpose('checkin')">每日签到</button></div>
     <div class="form-grid">
       <label>显示名称<input v-model="form.label" aria-label="显示名称" autocomplete="off" placeholder="例如：主账号" /></label>
       <label v-if="requiresAccountId">已有账号 ID<span class="required-mark">必填</span><input v-model="form.accountId" aria-label="账号 ID" autocomplete="off" /></label>
-      <label v-if="provider === 'codebuddy' && purpose === 'checkin'">认证模式<select v-model="form.checkinMode" aria-label="Check-in 认证模式"><option value="bearer">Bearer</option><option value="cookie">Cookie</option><option value="bearer_cookie">Bearer + Cookie</option></select></label>
+      <label v-if="provider === 'codebuddy' && purpose === 'checkin'">认证模式<select v-model="form.checkinMode" aria-label="签到认证模式"><option value="bearer">Bearer Token</option><option value="cookie">Cookie</option><option value="bearer_cookie">Bearer Token + Cookie</option></select></label>
       <label v-if="showToken" class="form-span">{{ tokenLabel }}<div class="input-with-icon"><KeyRound :size="16" /><input v-model="form.token" :aria-label="tokenLabel" type="password" autocomplete="new-password" /></div></label>
       <label v-if="showCookie" class="form-span">WorkBuddy Cookie<div class="input-with-icon"><KeyRound :size="16" /><input v-model="form.cookie" aria-label="WorkBuddy Cookie" type="password" autocomplete="new-password" /></div></label>
-      <label v-if="provider === 'qoder' && purpose === 'checkin'" class="form-span">Refresh token <span class="required-mark">必填</span><input v-model="form.refreshToken" aria-label="Qoder Refresh token" type="password" autocomplete="new-password" /></label>
+      <label v-if="provider === 'qoder' && purpose === 'checkin'" class="form-span">Qoder 刷新令牌 <span class="required-mark">必填</span><input v-model="form.refreshToken" aria-label="Qoder 刷新令牌" type="password" autocomplete="new-password" /></label>
     </div>
     <p class="helper-text">原始凭据只用于本次受保护请求；成功后表单立即清空，管理台只显示版本和状态。</p>
     <p v-if="provider === 'codebuddy' && purpose === 'checkin'" class="form-message">验证会发送一次 WorkBuddy 每日签到请求；未签到时可能立即领取当天积分。</p>

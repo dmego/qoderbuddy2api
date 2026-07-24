@@ -26,7 +26,7 @@ describe("operations console workflows", () => {
     await flushPromises();
 
     await buttonWithText(wrapper, "停止").trigger("click");
-    expect(document.body.textContent).toContain("停止 Proxy Worker");
+    expect(document.body.textContent).toContain("停止代理服务");
     await confirmDialog();
 
     expect(calls).toContainEqual(expect.objectContaining({ url: expect.stringContaining("/service/stop"), method: "POST" }));
@@ -115,7 +115,7 @@ describe("operations console workflows", () => {
     const wrapper = mount(SettingsPage, { global: { plugins: [createPinia(), VueQueryPlugin] } });
     await flushPromises();
 
-    await wrapper.get('input[aria-label="Worker 启动超时"]').setValue("45");
+    await wrapper.get('input[aria-label="代理进程启动超时"]').setValue("45");
     await wrapper.get('input[aria-label="账号指标刷新间隔"]').setValue("120");
     await buttonWithText(wrapper, "保存全部").trigger("click");
     await flushPromises();
@@ -156,7 +156,7 @@ describe("operations console workflows", () => {
     const wrapper = mount(SettingsPage, { global: { plugins: [createPinia(), VueQueryPlugin] } });
     await flushPromises();
 
-    await wrapper.get('input[aria-label="Worker 启动超时"]').setValue("45");
+    await wrapper.get('input[aria-label="代理进程启动超时"]').setValue("45");
     await wrapper.get('input[aria-label="账号指标刷新间隔"]').setValue("120");
     await wrapper.get('input[aria-label="签到时间"]').setValue("09:00");
     await buttonWithText(wrapper, "保存全部").trigger("click");
@@ -164,11 +164,11 @@ describe("operations console workflows", () => {
 
     expect(calls.filter((item) => item.method === "PATCH")).toHaveLength(3);
     expect(getCount).toBeGreaterThan(1);
-    expect(wrapper.text()).toContain("Worker 启动超时");
+    expect(wrapper.text()).toContain("代理进程启动超时");
     expect(wrapper.text()).toContain("账号指标刷新间隔");
     expect(wrapper.text()).toContain("签到时间");
     expect(wrapper.text()).toContain(failureCode);
-    expect(wrapper.get<HTMLInputElement>('input[aria-label="Worker 启动超时"]').element.value).toBe("45");
+    expect(wrapper.get<HTMLInputElement>('input[aria-label="代理进程启动超时"]').element.value).toBe("45");
     expect(wrapper.get<HTMLInputElement>('input[aria-label="账号指标刷新间隔"]').element.value).toBe("120");
     expect(wrapper.get<HTMLInputElement>('input[aria-label="签到时间"]').element.value).toBe("09:00");
     expect(wrapper.get('button[aria-label="保存 签到时间"]').attributes("disabled")).toBeUndefined();

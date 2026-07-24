@@ -39,14 +39,14 @@ async function login(): Promise<void> {
 <template>
   <main class="login-page">
     <section class="login-panel" aria-labelledby="login-title">
-      <div class="login-brand"><span>2</span> 2api Control Plane</div>
+      <div class="login-brand"><span>2</span> 2api 管理控制台</div>
       <div class="login-copy">
         <LockKeyhole :size="24" aria-hidden="true" />
         <h1 id="login-title">管理员登录</h1>
-        <p>使用独立的 Admin Key 进入本机代理控制台。</p>
+        <p>使用独立管理员密钥进入本机代理控制台。</p>
       </div>
       <form @submit.prevent="login">
-        <label for="admin-key">Admin Key</label>
+        <label for="admin-key">管理员密钥（Admin Key）</label>
         <div class="input-with-icon">
           <KeyRound :size="17" aria-hidden="true" />
           <input
@@ -73,7 +73,7 @@ async function login(): Promise<void> {
           </p>
         </div>
       </aside>
-      <p class="security-note">Admin Key 只用于建立 HttpOnly 会话，密钥不会写入浏览器存储。</p>
+      <p class="security-note">管理员密钥只用于建立 HttpOnly 会话，密钥不会写入浏览器存储。</p>
     </section>
   </main>
 </template>

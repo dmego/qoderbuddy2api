@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed } from "vue";
 
+import { statusLabel } from "@/utils/presentation";
+
 const props = defineProps<{ value: string | boolean | null | undefined }>();
 const className = computed(() => `state-pill--${String(props.value ?? "unknown").toLowerCase().replaceAll("_", "-")}`);
 </script>
@@ -8,6 +10,6 @@ const className = computed(() => `state-pill--${String(props.value ?? "unknown")
 <template>
   <span class="state-pill" :class="className">
     <span class="state-pill__dot" aria-hidden="true"></span>
-    {{ typeof props.value === "boolean" ? (props.value ? "启用" : "停用") : props.value ?? "未知" }}
+    {{ statusLabel(props.value) }}
   </span>
 </template>

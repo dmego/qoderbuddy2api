@@ -127,6 +127,25 @@
 - All WorkBuddy calls in this checkpoint were mocked or isolated. No real
   `.env` credential, browser session, or upstream Provider was used.
 
+## Verified 2026-07-24 Chinese console visual refinement
+
+- Reworked the Vue console as a Chinese, table-first operations interface:
+  grouped navigation, header actions, filters and data surfaces now use one
+  compact visual system; no Sub2API source, branding, assets or color tokens
+  were copied.
+- Replaced user-facing English navigation, page eyebrows, drawers, filters and
+  status enums with Chinese labels while retaining provider/protocol names such
+  as CodeBuddy, Qoder, Token, Cookie and HTTP where they are technical terms.
+- Added a centralized status-label mapper so upstream values such as
+  `HEALTHY`, `STOPPED`, `needs_reauth` and `scheduled` are not rendered as raw
+  internal enums in the console.
+- `rtk npm run test`: 33 frontend unit tests passed; `rtk npm run typecheck`,
+  `rtk npm run lint` and `rtk npm run build`: passed.
+- `rtk npm run test:e2e`: 4 Playwright flows passed. The narrow-screen flow
+  now asserts the mobile sidebar completes its slide-in transform before it
+  treats the navigation as visible. Desktop and mobile screenshots used the
+  isolated generated control configuration and a test-only administrator key.
+
 ## Completion checkpoint
 
 1. Tasks 1 through 9 are integrated on `codex/multi-account-proxy-checkin`.

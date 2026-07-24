@@ -6,7 +6,7 @@ async function login(page: Page): Promise<void> {
   await page.goto("/admin/login");
   await expect(page.getByRole("heading", { name: "管理员登录" })).toBeVisible();
   await expect(page.getByLabel("远程 HTTP 安全提示")).toContainText("QB2API_ADMIN_COOKIE_SECURE=false");
-  await page.getByLabel("Admin Key").fill(adminKey);
+  await page.getByLabel("管理员密钥（Admin Key）").fill(adminKey);
   await page.getByRole("button", { name: "登录控制台" }).click();
   await expect(page).toHaveURL(/\/admin\/overview$/);
 }
@@ -16,7 +16,7 @@ test.describe.serial("2api Control Plane", () => {
     await login(page);
     await expect(page.getByRole("complementary", { name: "主导航" })).toBeVisible();
     await expect(page.getByRole("link", { name: "代理服务" })).toBeVisible();
-    await expect(page.getByRole("link", { name: "Proxy Keys" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "代理密钥" })).toBeVisible();
     await expect(page.getByRole("link", { name: "审计" })).toBeVisible();
     await expect(page.locator("main")).toContainText("运行总览");
     expect(await page.evaluate(() => ({ ...localStorage, ...sessionStorage }))).toEqual({});
@@ -29,11 +29,11 @@ test.describe.serial("2api Control Plane", () => {
     const serviceStatus = page.locator(".service-status-block");
     const observedState = serviceStatus.locator(":scope > div").nth(1).locator("strong");
     await page.getByRole("button", { name: "启动" }).click();
-    await expect(observedState).toHaveText("HEALTHY");
+    await expect(observedState).toHaveText("运行正常");
     await expect(page.getByRole("button", { name: "停止" })).toBeEnabled();
     await page.getByRole("button", { name: "停止" }).click();
     await page.getByRole("button", { name: "确认停止" }).click();
-    await expect(observedState).toHaveText("STOPPED");
+    await expect(observedState).toHaveText("已停止");
   });
 
   test("主要管理页面可访问且显示安全空状态", async ({ page }) => {
@@ -41,7 +41,7 @@ test.describe.serial("2api Control Plane", () => {
     const pages = [
       ["账号", "账号管理"],
       ["凭据", "凭据管理"],
-      ["Proxy Keys", "Proxy API Keys"],
+      ["代理密钥", "代理密钥"],
       ["模型", "模型管理"],
       ["用量", "用量监控"],
       ["签到", "签到中心"],
@@ -61,6 +61,7 @@ test.describe.serial("2api Control Plane", () => {
     await expect(toggle).toBeVisible();
     await toggle.click();
     await expect(page.getByRole("button", { name: "收起导航" })).toHaveAttribute("aria-expanded", "true");
+    await expect(page.locator(".sidebar")).toHaveCSS("transform", "matrix(1, 0, 0, 1, 0, 0)");
     await expect(page.getByRole("link", { name: "审计" })).toBeVisible();
     await page.getByRole("link", { name: "审计" }).click();
     await expect(page.getByRole("heading", { name: "审计与备份" })).toBeVisible();

@@ -1,4 +1,4 @@
-.data-state { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 46px; padding: 10px 12px; border: 1px solid #bfdbfe; border-radius: 6px; color: #1e40af; background: var(--blue-soft); font-size: 13px; }
+.data-state { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 46px; padding: 10px 12px; border: 1px solid #cbdcf3; border-radius: 7px; color: #28558f; background: var(--blue-soft); font-size: 13px; }
 .data-state--warning { border-color: #fed7aa; color: #92400e; background: var(--amber-soft); }
 .data-state--error, .alert { border: 1px solid #fecdd3; border-radius: 6px; color: #9f1239; background: var(--red-soft); }
 .alert { padding: 12px 14px; font-size: 13px; }
@@ -8,19 +8,19 @@
 .required-mark, .selection-count { color: var(--red); font-size: 11px; font-weight: 700; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; }
 
-.state-pill { display: inline-flex; align-items: center; gap: 5px; width: max-content; min-height: 23px; padding: 3px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: var(--surface-raised); font-size: 10px; font-weight: 700; line-height: 1; white-space: nowrap; }
+.state-pill { display: inline-flex; align-items: center; gap: 5px; width: max-content; min-height: 23px; padding: 3px 7px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); background: var(--surface-raised); font-size: 10px; font-weight: 700; line-height: 1; white-space: nowrap; }
 .state-pill__dot { width: 5px; height: 5px; border-radius: 50%; background: var(--faint); }
 .state-pill--active, .state-pill--enabled, .state-pill--succeeded, .state-pill--healthy, .state-pill--claimed, .state-pill--already-checked-in, .state-pill--verified, .state-pill--valid, .state-pill--fresh, .state-pill--effective, .state-pill--finished { border-color: #a7f3d0; color: #067647; background: var(--green-soft); }
 .state-pill--active .state-pill__dot, .state-pill--enabled .state-pill__dot, .state-pill--succeeded .state-pill__dot, .state-pill--healthy .state-pill__dot, .state-pill--claimed .state-pill__dot, .state-pill--already-checked-in .state-pill__dot, .state-pill--verified .state-pill__dot, .state-pill--valid .state-pill__dot, .state-pill--fresh .state-pill__dot, .state-pill--effective .state-pill__dot, .state-pill--finished .state-pill__dot { background: var(--green); }
-.state-pill--failed, .state-pill--disabled, .state-pill--expired, .state-pill--needs-reauth, .state-pill--unavailable, .state-pill--rejected { border-color: #fecdd3; color: #b4233c; background: var(--red-soft); }
-.state-pill--failed .state-pill__dot, .state-pill--disabled .state-pill__dot, .state-pill--expired .state-pill__dot, .state-pill--needs-reauth .state-pill__dot, .state-pill--unavailable .state-pill__dot, .state-pill--rejected .state-pill__dot { background: var(--red); }
+.state-pill--failed, .state-pill--disabled, .state-pill--expired, .state-pill--needs-reauth, .state-pill--unavailable, .state-pill--rejected, .state-pill--revoked { border-color: #fecdd3; color: #b4233c; background: var(--red-soft); }
+.state-pill--failed .state-pill__dot, .state-pill--disabled .state-pill__dot, .state-pill--expired .state-pill__dot, .state-pill--needs-reauth .state-pill__dot, .state-pill--unavailable .state-pill__dot, .state-pill--rejected .state-pill__dot, .state-pill--revoked .state-pill__dot { background: var(--red); }
 .state-pill--unknown, .state-pill--pending, .state-pill--unconfigured, .state-pill--running, .state-pill--stale, .state-pill--expiring, .state-pill--no-expiry, .state-pill--partial, .state-pill--skipped, .state-pill--action-required { border-color: #fed7aa; color: #9a5b13; background: var(--amber-soft); }
 .state-pill--unknown .state-pill__dot, .state-pill--pending .state-pill__dot, .state-pill--unconfigured .state-pill__dot, .state-pill--running .state-pill__dot, .state-pill--stale .state-pill__dot, .state-pill--expiring .state-pill__dot, .state-pill--no-expiry .state-pill__dot, .state-pill--partial .state-pill__dot, .state-pill--skipped .state-pill__dot, .state-pill--action-required .state-pill__dot { background: var(--amber); }
 
 .table-wrap { overflow: auto; border-block: 1px solid var(--line); }
 table { width: 100%; min-width: 760px; border-collapse: collapse; }
 th, td { padding: 12px 14px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; text-align: left; vertical-align: middle; }
-th { color: #475467; background: var(--surface-raised); font-size: 10px; font-weight: 750; letter-spacing: 0.06em; text-transform: uppercase; }
+th { color: #475467; background: var(--surface-raised); font-size: 11px; font-weight: 700; letter-spacing: 0; text-transform: none; }
 td strong, td small { display: block; }
 td strong { color: var(--text); font-size: 13px; font-weight: 650; }
 td small { margin-top: 3px; color: var(--faint); font-size: 11px; }
@@ -40,25 +40,25 @@ tbody tr:hover td, tr.selected td { background: #f8fafc; }
 .filter-grid--six { grid-template-columns: 2fr repeat(4, minmax(105px, 1fr)) auto; }
 .usage-filter-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 .filter-grid label, .usage-filter-grid label, .form-grid label { display: grid; gap: 6px; color: #475467; font-size: 11px; font-weight: 650; }
-.filter-grid input, .filter-grid select, .usage-filter-grid input, .usage-filter-grid select, .form-grid input, .form-grid select, .setting-control input:not([type="checkbox"]), .dialog-verification input { width: 100%; min-height: 38px; border: 1px solid var(--line-strong); border-radius: 6px; padding: 0 10px; outline: 0; color: var(--text); background: var(--surface); box-shadow: var(--shadow-xs); }
-.filter-grid input:focus, .filter-grid select:focus, .usage-filter-grid input:focus, .usage-filter-grid select:focus, .form-grid input:focus, .form-grid select:focus, .setting-control input:focus, .dialog-verification input:focus { border-color: #93c5fd; box-shadow: 0 0 0 3px rgb(37 99 235 / 0.12); }
+.filter-grid input, .filter-grid select, .usage-filter-grid input, .usage-filter-grid select, .form-grid input, .form-grid select, .setting-control input:not([type="checkbox"]), .dialog-verification input { width: 100%; min-height: 38px; border: 1px solid var(--line-strong); border-radius: 7px; padding: 0 10px; outline: 0; color: var(--text); background: var(--surface); box-shadow: none; }
+.filter-grid input:focus, .filter-grid select:focus, .usage-filter-grid input:focus, .usage-filter-grid select:focus, .form-grid input:focus, .form-grid select:focus, .setting-control input:focus, .dialog-verification input:focus { border-color: #89a9d8; box-shadow: 0 0 0 3px rgb(43 95 173 / 0.12); }
 .filter-actions { display: flex; gap: 8px; min-height: 38px; }
 .filter-actions button { white-space: nowrap; }
 
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .form-span { grid-column: 1 / -1; }
-.input-with-icon { display: flex; align-items: center; gap: 9px; min-height: 40px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--faint); background: var(--surface); box-shadow: var(--shadow-xs); }
-.input-with-icon:focus-within { border-color: #93c5fd; box-shadow: 0 0 0 3px rgb(37 99 235 / 0.12); }
+.input-with-icon { display: flex; align-items: center; gap: 9px; min-height: 40px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 7px; color: var(--faint); background: var(--surface); box-shadow: none; }
+.input-with-icon:focus-within { border-color: #89a9d8; box-shadow: 0 0 0 3px rgb(43 95 173 / 0.12); }
 .input-with-icon input { width: 100%; border: 0; outline: 0; color: var(--text); background: transparent; }
-.import-panel { display: grid; gap: 16px; padding: 20px; border: 1px solid #bfdbfe; border-radius: 7px; background: #fbfdff; box-shadow: var(--shadow-xs); }
-.segmented-control { display: inline-flex; width: max-content; max-width: 100%; padding: 3px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-muted); }
+.import-panel { display: grid; gap: 16px; padding: 18px; border: 1px solid #cbdcf3; border-radius: 8px; background: #fbfdff; box-shadow: none; }
+.segmented-control { display: inline-flex; width: max-content; max-width: 100%; padding: 3px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-muted); }
 .segmented-control button { min-height: 31px; padding: 0 12px; border: 0; border-radius: 4px; color: var(--muted); background: transparent; font-size: 12px; }
 .segmented-control button.active { color: #1e3a8a; background: var(--surface); box-shadow: var(--shadow-xs); font-weight: 700; }
 .form-message { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--green); font-size: 12px; }
 .form-error { margin: 2px 0 0; color: var(--red); font-size: 12px; }
-.security-banner { display: flex; align-items: flex-start; gap: 12px; padding: 13px 15px; border: 1px solid #bfdbfe; border-radius: 7px; color: #1d4ed8; background: var(--blue-soft); }
+.security-banner { display: flex; align-items: flex-start; gap: 12px; padding: 13px 15px; border: 1px solid #cbdcf3; border-radius: 7px; color: #28558f; background: var(--blue-soft); }
 .security-banner div { display: grid; gap: 4px; }
-.security-banner strong { color: #1e3a8a; font-size: 13px; }
+.security-banner strong { color: #284a79; font-size: 13px; }
 .security-banner span { color: #475467; font-size: 12px; line-height: 1.5; }
 .security-banner.compact { align-items: center; padding: 9px 12px; }
 
@@ -83,7 +83,7 @@ tbody tr:hover td, tr.selected td { background: #f8fafc; }
 .detail-drawer { width: min(500px, calc(100vw - 32px)); height: 100%; max-height: 100vh; overflow: auto; border-radius: 0; box-shadow: var(--shadow-lg); }
 .drawer-heading { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
 .drawer-heading h2 { font-size: 19px; }
-.drawer-heading p:not(.eyebrow) { color: var(--muted); font-size: 12px; }
+.drawer-heading p { color: var(--muted); font-size: 12px; }
 .drawer-close { flex: 0 0 auto; }
 .dialog-backdrop, .confirm-backdrop { z-index: 1000; display: grid; place-items: center; padding: 18px; }
 .confirm-dialog, .confirm-card { width: min(480px, 100%); padding: 20px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow-lg); }

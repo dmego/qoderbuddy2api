@@ -12,6 +12,7 @@ import PanelHeader from "@/components/PanelHeader.vue";
 import StatePill from "@/components/StatePill.vue";
 import { appendQuery, useCursorPager } from "@/composables/useCursorPager";
 import { useNotifications } from "@/composables/useNotifications";
+import { statusLabel } from "@/utils/presentation";
 
 type ServiceState = {
   service: string; desired_state: string; observed_state: string; in_flight: number;
@@ -80,21 +81,21 @@ function displayTime(value?: string | number): string { if (!value) return "--";
 <template>
   <section class="page-content">
     <header class="page-header">
-      <div><p class="eyebrow">Process control</p><h1>代理服务</h1><p>管理 Proxy Worker 生命周期，并核对持久化事件、排空进度与错误边界。</p></div>
+      <div><h1>代理服务</h1><p>管理代理进程生命周期，并核对持久化事件、排空进度与错误边界。</p></div>
       <button class="secondary-button" type="button" :disabled="service.isFetching.value" @click="service.refetch()"><RefreshCcw :class="{ spin: service.isFetching.value }" :size="16" />刷新状态</button>
     </header>
 
     <div v-if="service.isError.value" class="data-state data-state--error" role="alert">无法读取服务状态：{{ service.error.value }}<button class="secondary-button compact-button" type="button" @click="service.refetch()">重试</button></div>
     <div class="service-layout">
       <section class="data-panel service-console">
-        <PanelHeader title="Worker 生命周期" description="Control Plane 独立存活；停止操作会先观察活动请求排空。"><StatePill :value="service.data.value?.observed_state" /></PanelHeader>
+        <PanelHeader title="代理进程生命周期" description="管理控制台独立存活；停止前会先观察活动请求排空。"><StatePill :value="service.data.value?.observed_state" /></PanelHeader>
         <div class="service-status-block" :class="{ 'skeleton-block': service.isPending.value }">
-          <div><span>期望状态</span><strong>{{ service.data.value?.desired_state ?? "--" }}</strong></div>
-          <div><span>观测状态</span><strong>{{ service.data.value?.observed_state ?? "加载中" }}</strong></div>
+          <div><span>期望状态</span><strong>{{ statusLabel(service.data.value?.desired_state) }}</strong></div>
+          <div><span>观测状态</span><strong>{{ statusLabel(service.data.value?.observed_state) }}</strong></div>
           <div><span>活动请求</span><strong>{{ service.data.value?.in_flight ?? "--" }}</strong><small>{{ isDraining ? "正在排空" : "实时采样" }}</small></div>
-          <div><span>Runtime 版本</span><strong>{{ service.data.value?.runtime_snapshot_version ?? "--" }}</strong></div>
+          <div><span>运行快照版本</span><strong>{{ service.data.value?.runtime_snapshot_version ?? "--" }}</strong></div>
         </div>
-        <div v-if="isDraining" class="data-state data-state--warning"><Activity :size="17" />Worker 正在排空 {{ service.data.value?.in_flight }} 个活动请求，请勿重复停止。</div>
+        <div v-if="isDraining" class="data-state data-state--warning"><Activity :size="17" />代理进程正在排空 {{ service.data.value?.in_flight }} 个活动请求，请勿重复停止。</div>
         <div class="command-bar" aria-label="服务操作">
           <button type="button" :disabled="action.isPending.value || isRunning" @click="requestAction('start')"><Play :size="16" />启动</button>
           <button class="danger-button" type="button" :disabled="action.isPending.value || !isRunning" @click="requestAction('stop')"><Square :size="15" />停止</button>
@@ -105,7 +106,7 @@ function displayTime(value?: string | number): string { if (!value) return "--";
       </section>
 
       <aside class="data-panel diagnostic-panel">
-        <PanelHeader title="进程诊断" description="仅显示经过身份校验的 Worker 元数据。" />
+        <PanelHeader title="进程诊断" description="仅显示经过身份校验的代理进程元数据。" />
         <dl class="detail-list">
           <div><dt>PID / Owner</dt><dd>{{ service.data.value?.identity?.pid ?? "--" }} · {{ service.data.value?.identity?.owner_instance_id ?? "未分配" }}</dd></div>
           <div><dt>启动时间</dt><dd>{{ displayTime(service.data.value?.started_at ?? service.data.value?.identity?.process_start_time) }}</dd></div>
@@ -123,16 +124,16 @@ function displayTime(value?: string | number): string { if (!value) return "--";
     </section>
 
     <section class="data-panel">
-      <PanelHeader title="持久化事件" :description="`第 ${page} 页 · Worker 重启后仍可追溯`">
+      <PanelHeader title="持久化事件" :description="`第 ${page} 页 · 代理进程重启后仍可追溯`">
         <div class="toolbar"><select v-model="eventType" aria-label="筛选事件类型" @change="reset"><option value="">全部事件</option><option value="state">状态快照</option><option value="operation">管理操作</option></select><select v-model="eventStatus" aria-label="筛选事件状态" @change="reset"><option value="">全部状态</option><option value="succeeded">成功</option><option value="failed">失败</option><option value="running">运行中</option></select><button class="secondary-button compact-button" type="button" @click="resetEventFilters">清除</button></div>
       </PanelHeader>
       <PaginatedTable aria-label="服务持久化事件" :loading="events.isPending.value" :error="events.isError.value ? `事件读取失败：${events.error.value}` : ''" :empty="!(events.data.value?.events.length)" empty-title="暂无服务事件" empty-description="执行生命周期操作后，事件会持久化到这里。" :stale="events.isStale.value" :page="page" :can-previous="canPrevious.length > 0" :can-next="Boolean(events.data.value?.next_cursor)" @retry="events.refetch()" @previous="previous" @next="next(events.data.value?.next_cursor)">
         <template #header><tr><th>时间</th><th>事件 / 操作</th><th>状态迁移</th><th>活动请求</th><th>结果</th><th>错误</th></tr></template>
-        <tr v-for="event in events.data.value?.events ?? []" :key="event.event_id"><td><strong>{{ displayTime(event.created_at) }}</strong><small class="mono">{{ event.event_id }}</small></td><td>{{ event.event_type ?? "service" }}<small>{{ event.action ?? event.operation_id ?? "--" }}</small></td><td>{{ event.desired_state ?? "--" }} / {{ event.observed_state ?? "--" }}</td><td>{{ event.in_flight ?? "--" }}</td><td><StatePill :value="event.status" /></td><td :class="{ 'text-danger': event.error_code }">{{ event.error_code ?? "--" }}</td></tr>
+        <tr v-for="event in events.data.value?.events ?? []" :key="event.event_id"><td><strong>{{ displayTime(event.created_at) }}</strong><small class="mono">{{ event.event_id }}</small></td><td>{{ event.event_type ?? "服务" }}<small>{{ event.action ?? event.operation_id ?? "--" }}</small></td><td>{{ statusLabel(event.desired_state) }} / {{ statusLabel(event.observed_state) }}</td><td>{{ event.in_flight ?? "--" }}</td><td><StatePill :value="event.status" /></td><td :class="{ 'text-danger': event.error_code }">{{ event.error_code ?? "--" }}</td></tr>
       </PaginatedTable>
     </section>
 
-    <ConfirmDialog :open="Boolean(confirmAction)" :title="confirmAction === 'stop' ? '停止 Proxy Worker？' : '重启 Proxy Worker？'" :description="confirmAction === 'stop' ? '新的代理请求将不可用；系统会观察活动请求排空后停止。' : '重启会短暂中断新请求，并重新加载当前运行配置。'" :confirm-label="confirmAction === 'stop' ? '确认停止' : '确认重启'" tone="danger" :busy="action.isPending.value" @cancel="confirmAction = null" @confirm="confirmServiceAction" />
+    <ConfirmDialog :open="Boolean(confirmAction)" :title="confirmAction === 'stop' ? '停止代理服务？' : '重启代理服务？'" :description="confirmAction === 'stop' ? '新的代理请求将不可用；系统会观察活动请求排空后停止。' : '重启会短暂中断新请求，并重新加载当前运行配置。'" :confirm-label="confirmAction === 'stop' ? '确认停止' : '确认重启'" tone="danger" :busy="action.isPending.value" @cancel="confirmAction = null" @confirm="confirmServiceAction" />
     <NotificationRegion :notifications="notifications" @dismiss="dismiss" />
   </section>
 </template>

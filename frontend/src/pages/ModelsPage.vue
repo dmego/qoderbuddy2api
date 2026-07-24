@@ -70,7 +70,7 @@ function errorRate(summary?: UsageSummary): string { if (!summary?.request_count
 <template>
   <section class="page-content">
     <header class="page-header">
-      <div><p class="eyebrow">Provider catalogue</p><h1>模型管理</h1><p>控制模型可见性，核对发现来源，并通过固定最小请求验证上游可用性。</p></div>
+      <div><h1>模型管理</h1><p>控制模型可见性，核对发现来源，并通过固定最小请求验证上游可用性。</p></div>
       <div class="header-actions"><button class="secondary-button" type="button" :disabled="models.isFetching.value" @click="models.refetch()"><RefreshCcw :class="{ spin: models.isFetching.value }" :size="16" />读取目录</button><button type="button" :disabled="refresh.isPending.value" @click="refresh.mutate()"><Boxes :size="16" />刷新目录</button></div>
     </header>
 
@@ -78,10 +78,10 @@ function errorRate(summary?: UsageSummary): string { if (!summary?.request_count
       <PanelHeader title="目录筛选" description="筛选条件会随分页请求发送，避免在浏览器加载整个目录。"><Filter :size="17" /></PanelHeader>
       <div class="filter-grid filter-grid--six">
         <label class="filter-search">模型名称或 ID<div class="input-with-icon"><Search :size="15" /><input v-model="draftSearch" placeholder="输入后回车搜索" @keyup.enter="applySearch" /></div></label>
-        <label>Provider<select v-model="provider" @change="reset"><option value="">全部</option><option value="codebuddy">CodeBuddy</option><option value="qoder">Qoder</option></select></label>
+        <label>服务提供方<select v-model="provider" @change="reset"><option value="">全部</option><option value="codebuddy">CodeBuddy</option><option value="qoder">Qoder</option></select></label>
         <label>来源<select v-model="source" @change="reset"><option value="">全部</option><option value="definition">定义文件</option><option value="discovered">上游发现</option></select></label>
         <label>状态<select v-model="enabled" @change="reset"><option value="">全部</option><option value="true">启用</option><option value="false">停用</option></select></label>
-        <label>能力<select v-model="capability" @change="reset"><option value="">全部</option><option value="chat">Chat</option><option value="streaming">Streaming</option><option value="tools">Tools</option></select></label>
+        <label>能力<select v-model="capability" @change="reset"><option value="">全部</option><option value="chat">对话</option><option value="streaming">流式输出</option><option value="tools">工具调用</option></select></label>
         <div class="filter-actions"><button type="button" @click="applySearch"><Search :size="15" />应用</button><button class="secondary-button" type="button" @click="clearFilters"><X :size="15" />清除</button></div>
       </div>
     </section>
@@ -89,14 +89,14 @@ function errorRate(summary?: UsageSummary): string { if (!summary?.request_count
     <section class="data-panel">
       <PanelHeader title="模型目录" :description="`第 ${page} 页 · 所有变更写入审计`"><StatePill :value="models.isFetching.value ? 'running' : 'active'" /></PanelHeader>
       <PaginatedTable aria-label="模型目录" :loading="models.isPending.value" :error="models.isError.value ? `模型目录读取失败：${models.error.value}` : ''" :empty="!(models.data.value?.models.length)" empty-title="没有匹配的模型" empty-description="调整筛选条件，或刷新模型目录。" :stale="models.isStale.value" :page="page" :total="models.data.value?.total" :can-previous="canPrevious.length > 0" :can-next="Boolean(models.data.value?.next_cursor)" @retry="models.refetch()" @previous="previous" @next="next(models.data.value?.next_cursor)">
-        <template #header><tr><th>模型</th><th>Provider</th><th>能力</th><th>来源</th><th>最近发现</th><th>状态</th><th>操作</th></tr></template>
+        <template #header><tr><th>模型</th><th>服务提供方</th><th>能力</th><th>来源</th><th>最近发现</th><th>状态</th><th>操作</th></tr></template>
         <tr v-for="model in models.data.value?.models ?? []" :key="`${model.provider}:${model.model_id}`" :class="{ selected: selected?.model_id === model.model_id && selected?.provider === model.provider }"><td><button class="table-link" type="button" @click="selected = model"><strong>{{ model.display_name || model.model_id }}</strong><small class="mono">{{ model.model_id }}</small></button></td><td><span class="provider-mark" :class="`provider-mark--${model.provider}`">{{ model.provider }}</span></td><td><div class="tag-list"><span v-for="item in model.capabilities" :key="item">{{ item }}</span><span v-if="!model.capabilities.length">未声明</span></div></td><td>{{ model.source }}</td><td>{{ model.last_seen_at ?? "--" }}</td><td><StatePill :value="model.enabled" /></td><td><div class="row-actions"><button class="secondary-button compact-button" type="button" :disabled="probe.isPending.value" @click="probe.mutate(model)"><Activity :size="14" />探测</button><button class="icon-button" type="button" :aria-label="model.enabled ? `停用 ${model.model_id}` : `启用 ${model.model_id}`" :disabled="toggle.isPending.value" @click="requestToggle(model)"><Check :size="16" /></button></div></td></tr>
       </PaginatedTable>
     </section>
 
     <OperationStatus :operation="lastOperation" />
 
-    <AccessibleDrawer :open="Boolean(selected)" :title="selected?.display_name || selected?.model_id || '模型详情'" eyebrow="Model detail" :subtitle="selected ? `${selected.provider} / ${selected.model_id}` : ''" close-label="关闭模型详情" @close="selected = null">
+    <AccessibleDrawer :open="Boolean(selected)" :title="selected?.display_name || selected?.model_id || '模型详情'" :subtitle="selected ? `${selected.provider} / ${selected.model_id}` : ''" close-label="关闭模型详情" @close="selected = null">
       <template v-if="selected">
         <dl class="detail-list"><div><dt>状态</dt><dd><StatePill :value="selected.enabled" /></dd></div><div><dt>来源</dt><dd>{{ selected.source }}</dd></div><div><dt>能力</dt><dd>{{ selected.capabilities.join("、") || "未声明" }}</dd></div><div><dt>最近发现</dt><dd>{{ selected.last_seen_at ?? "--" }}</dd></div></dl>
         <h3>当前筛选用量摘要</h3>

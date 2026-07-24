@@ -1,32 +1,32 @@
 :root {
-  color: #172033;
-  background: #f5f7fa;
-  font-family: Inter, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #182230;
+  background: #f6f8fb;
+  font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --canvas: #f5f7fa;
+  --canvas: #f6f8fb;
   --surface: #ffffff;
-  --surface-raised: #f9fafb;
-  --surface-muted: #f2f4f7;
-  --line: #e2e8f0;
-  --line-strong: #cbd5e1;
-  --text: #172033;
+  --surface-raised: #fafbfd;
+  --surface-muted: #f1f4f8;
+  --line: #e3e8ef;
+  --line-strong: #cbd4df;
+  --text: #182230;
   --muted: #667085;
-  --faint: #667085;
-  --blue: #2563eb;
-  --blue-strong: #1d4ed8;
-  --blue-soft: #eff6ff;
-  --green: #168052;
-  --green-soft: #ecfdf3;
-  --amber: #b45309;
-  --amber-soft: #fffaeb;
-  --red: #c4324b;
+  --faint: #8a94a6;
+  --blue: #2b5fad;
+  --blue-strong: #214d90;
+  --blue-soft: #eef4fc;
+  --green: #177451;
+  --green-soft: #edf8f2;
+  --amber: #a66314;
+  --amber-soft: #fff7e9;
+  --red: #bc3851;
   --red-soft: #fff1f3;
-  --purple: #6d48c7;
-  --purple-soft: #f5f3ff;
-  --shadow-xs: 0 1px 2px rgb(16 24 40 / 0.04);
-  --shadow-sm: 0 1px 3px rgb(16 24 40 / 0.06), 0 1px 2px rgb(16 24 40 / 0.04);
-  --shadow-lg: 0 18px 44px rgb(15 23 42 / 0.12);
+  --purple: #6b57ad;
+  --purple-soft: #f4f1ff;
+  --shadow-xs: 0 1px 2px rgb(16 24 40 / 0.03);
+  --shadow-sm: 0 2px 6px rgb(16 24 40 / 0.05);
+  --shadow-lg: 0 20px 48px rgb(15 23 42 / 0.14);
 }
 
 * { box-sizing: border-box; }
@@ -37,7 +37,7 @@ button { cursor: pointer; touch-action: manipulation; }
 button:disabled { cursor: not-allowed; opacity: 0.55; }
 a { color: inherit; text-decoration: none; }
 button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
-::selection { color: #102a63; background: #dbeafe; }
+::selection { color: #163d73; background: #dbe9fb; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }

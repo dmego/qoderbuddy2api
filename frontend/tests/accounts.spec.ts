@@ -144,10 +144,10 @@ describe("AccountImportPanel", () => {
       return response({ status: "ok", account: { provider: "codebuddy", account_id: "cb-main", label: "主账号" } });
     }));
     const wrapper = mount(AccountImportPanel, { global: { plugins: [createPinia()] } });
-    const checkin = wrapper.findAll("button").find((button) => button.text() === "Check-in");
+    const checkin = wrapper.findAll("button").find((button) => button.text() === "每日签到");
     await checkin?.trigger("click");
     await wrapper.get('input[aria-label="账号 ID"]').setValue("cb-main");
-    await wrapper.get('select[aria-label="Check-in 认证模式"]').setValue("cookie");
+    await wrapper.get('select[aria-label="签到认证模式"]').setValue("cookie");
     await wrapper.get('input[aria-label="WorkBuddy Cookie"]').setValue("session=secret");
     const submit = wrapper.findAll("button").find((button) => button.text().includes("验证并启用"));
     await submit?.trigger("click");

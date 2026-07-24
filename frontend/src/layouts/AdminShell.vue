@@ -25,6 +25,7 @@ import { onBeforeUnmount, onMounted, ref } from "vue";
 
 import { apiRequest } from "@/api/client";
 import { useSessionStore } from "@/stores/session";
+import { statusLabel } from "@/utils/presentation";
 
 const navigationGroups = [
   {
@@ -44,7 +45,7 @@ const navigationGroups = [
   {
     label: "代理与模型",
     items: [
-      { to: "/proxy-keys", label: "Proxy Keys", icon: KeyRound },
+      { to: "/proxy-keys", label: "代理密钥", icon: KeyRound },
       { to: "/models", label: "模型", icon: Boxes },
       { to: "/usage", label: "用量", icon: ChartNoAxesCombined },
     ],
@@ -106,7 +107,7 @@ onBeforeUnmount(() => window.removeEventListener("resize", updateViewport));
         <span class="brand-mark" aria-hidden="true">2</span>
         <span class="brand-lockup__copy">
           <strong>2api</strong>
-          <small>Multi-account gateway</small>
+          <small>多账号代理控制台</small>
         </span>
         <button
           v-if="isMobileViewport"
@@ -168,8 +169,8 @@ onBeforeUnmount(() => window.removeEventListener("resize", updateViewport));
           </button>
           <div class="worker-state" role="status">
             <span class="status-dot" :class="`status-dot--${(service.data.value?.observed_state ?? 'unknown').toLowerCase()}`" aria-hidden="true"></span>
-            <span>Proxy Worker</span>
-            <strong>{{ service.data.value?.observed_state ?? "加载中" }}</strong>
+            <span>代理运行</span>
+            <strong>{{ statusLabel(service.data.value?.observed_state) }}</strong>
           </div>
         </div>
         <div class="topbar-metrics" aria-label="运行摘要">
