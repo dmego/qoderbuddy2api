@@ -3,7 +3,7 @@ import { fileURLToPath, URL } from "node:url";
 import vue from "@vitejs/plugin-vue";
 import { defineConfig } from "vite";
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   base: "/admin/",
   plugins: [vue()],
   resolve: {
@@ -14,7 +14,7 @@ export default defineConfig({
   build: {
     outDir: "../src/qb2api/web/dist",
     emptyOutDir: true,
-    sourcemap: true,
+    sourcemap: mode === "debug",
     rollupOptions: {
       output: {
         entryFileNames: "assets/admin.js",
@@ -26,4 +26,4 @@ export default defineConfig({
       },
     },
   },
-});
+}));

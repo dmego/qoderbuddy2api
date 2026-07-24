@@ -33,8 +33,8 @@ from .service_models import ServiceSnapshot
 from .service_router import router as service_router
 from .supervisor import ServiceSupervisor
 
-_WEB_ROOT = Path(__file__).resolve().parents[1] / "web"
-_WEB_DIR = _WEB_ROOT / "dist" if (_WEB_ROOT / "dist").is_dir() else _WEB_ROOT
+_WEB_DIST_DIR = Path(__file__).resolve().parents[1] / "web" / "dist"
+_WEB_ASSETS_DIR = _WEB_DIST_DIR / "assets"
 
 
 def create_control_app(
@@ -207,17 +207,20 @@ def _install_routes(application: FastAPI) -> None:
 def _shell_response(request: Request) -> FileResponse:
     if not request.app.state.settings.admin_ui_enabled:
         raise HTTPException(status_code=404, detail="admin UI disabled")
-    index = _WEB_DIR / "index.html"
+    index = _WEB_DIST_DIR / "index.html"
     if not index.is_file():
         raise HTTPException(status_code=404, detail="admin UI not packaged")
     return FileResponse(index, media_type="text/html; charset=utf-8")
 
 
 def _install_static(application: FastAPI) -> None:
-    if not _WEB_DIR.is_dir():
+    if not _WEB_ASSETS_DIR.is_dir():
         return
-    asset_dir = _WEB_DIR / "assets" if (_WEB_DIR / "assets").is_dir() else _WEB_DIR
-    application.mount("/admin/assets", StaticFiles(directory=str(asset_dir)), name="control-assets")
+    application.mount(
+        "/admin/assets",
+        StaticFiles(directory=str(_WEB_ASSETS_DIR)),
+        name="control-assets",
+    )
 
 
 async def _auth_middleware(request: Request, call_next):

@@ -25,6 +25,7 @@ def test_disabled_admin_ui_hides_shell_and_assets() -> None:
     assert client.get("/admin").status_code == 404
     assert client.get("/admin/assets/admin.css").status_code == 404
     assert client.get("/admin/assets/admin.js").status_code == 404
+    assert client.get("/admin/assets/admin.js.map").status_code == 404
 
 
 def test_public_shell_loads_but_account_state_remains_private() -> None:
@@ -46,7 +47,21 @@ def test_admin_shell_references_loadable_es_module_assets() -> None:
     assert 'type="module"' in shell
     assert client.get("/admin/assets/admin.css").status_code == 200
     assert client.get("/admin/assets/admin.js").status_code == 200
+    assert client.get("/admin/assets/admin.js.map").status_code == 404
     assert "admin/assets/admin.js" in shell
+
+
+def test_packaged_ui_has_no_legacy_assets_or_production_source_maps() -> None:
+    web_root = Path(__file__).parents[2] / "src" / "qb2api" / "web"
+    assets = web_root / "dist" / "assets"
+
+    assert (web_root / "dist" / "index.html").is_file()
+    assert (assets / "admin.css").is_file()
+    assert (assets / "admin.js").is_file()
+    assert not list(assets.glob("*.map"))
+    assert "sourceMappingURL" not in (assets / "admin.js").read_text()
+    for legacy_name in ("admin.html", "admin.js", "admin.css"):
+        assert not (web_root / legacy_name).exists()
 
 
 def test_admin_modules_do_not_use_inner_html_for_rendering() -> None:
