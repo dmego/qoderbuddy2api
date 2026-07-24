@@ -1,29 +1,71 @@
 <script setup lang="ts">
 import { useMutation, useQuery, useQueryClient } from "@tanstack/vue-query";
-import { Check, CircleHelp, Save, Settings2 } from "@lucide/vue";
-import { computed, reactive, watch } from "vue";
+import { CircleHelp, RefreshCcw, RotateCcw, Save, Settings2 } from "@lucide/vue";
+import { computed, reactive, ref, watch } from "vue";
 
+import { apiRequest } from "@/api/client";
+import ConfirmDialog from "@/components/ConfirmDialog.vue";
+import NotificationRegion from "@/components/NotificationRegion.vue";
+import OperationStatus from "@/components/OperationStatus.vue";
 import PanelHeader from "@/components/PanelHeader.vue";
 import StatePill from "@/components/StatePill.vue";
-import { apiRequest } from "@/api/client";
+import { useNotifications } from "@/composables/useNotifications";
 
-type Setting = { key: string; value: unknown; value_version: number; apply_mode: string; apply_status: string; last_error?: string };
+type Setting = { key: string; value: unknown; value_version: number; source?: string; apply_mode: string; apply_status: string; last_error?: string };
+type Schema = Record<string, { type: "bool" | "int" | "str"; apply_mode: string; default?: unknown }>;
+type Meta = { label: string; description: string; min?: number; max?: number; step?: number; unit?: string };
+
+const metadata: Record<string, Meta> = {
+  "service.worker.autostart": { label: "Worker 自动启动", description: "Control Plane 启动后自动拉起 Proxy Worker。" },
+  "service.worker.start_timeout_seconds": { label: "Worker 启动超时", description: "等待 Worker 完成健康检查的最长时间。", min: 5, max: 300, unit: "秒" },
+  "checkin.enabled": { label: "启用自动签到", description: "按下方时区和时间运行每日签到。" },
+  "checkin.at": { label: "签到时间", description: "调度器使用的本地时间，格式为 HH:mm。" },
+  "checkin.timezone": { label: "签到时区", description: "用于日期边界、已签到判断和下一次运行。" },
+  "monitoring.metrics_interval_seconds": { label: "账号指标刷新间隔", description: "配额、积分与凭据状态采集频率。", min: 30, max: 86400, unit: "秒" },
+  "usage.rollup_interval_seconds": { label: "用量聚合间隔", description: "将请求明细汇总到趋势桶的频率。", min: 10, max: 3600, unit: "秒" },
+  "usage.detail_retention_days": { label: "请求明细保留天数", description: "降低该值会缩短可查询的请求明细窗口。", min: 1, max: 3650, unit: "天" },
+};
+
 const queryClient = useQueryClient();
-const settings = useQuery({ queryKey: ["settings"], queryFn: () => apiRequest<{ settings: Setting[]; schema: Record<string, { type: string; apply_mode: string }> }>("/settings") });
 const draft = reactive<Record<string, unknown>>({});
-const mutation = useMutation({ mutationFn: ({ item, value }: { item: Setting; value: unknown }) => apiRequest(`/settings`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: item.key, value, value_version: item.value_version }) }), onSuccess: () => queryClient.invalidateQueries({ queryKey: ["settings"] }) });
-const labels: Record<string, string> = { "service.worker.autostart": "Worker 自动启动", "service.worker.start_timeout_seconds": "Worker 启动超时", "checkin.enabled": "启用自动签到", "checkin.at": "签到时间", "checkin.timezone": "签到时区", "monitoring.metrics_interval_seconds": "账号指标刷新间隔", "usage.rollup_interval_seconds": "用量聚合间隔", "usage.detail_retention_days": "请求明细保留天数" };
-const groups = computed(() => { const result: Record<string, Setting[]> = {}; for (const item of settings.data.value?.settings ?? []) { const group = item.key.split(".")[0]; (result[group] ??= []).push(item); } return result; });
-watch(() => settings.data.value?.settings, (items) => { for (const item of items ?? []) if (!(item.key in draft)) draft[item.key] = item.value; }, { immediate: true });
-function save(item: Setting): void { mutation.mutate({ item, value: draft[item.key] }); }
-function isBoolean(item: Setting): boolean { return typeof item.value === "boolean"; }
+const pendingItems = ref<Setting[]>([]);
+const lastOperation = ref<Record<string, unknown> | null>(null);
+const { notifications, notify, dismiss } = useNotifications();
+const settings = useQuery({ queryKey: ["settings"], queryFn: () => apiRequest<{ settings: Setting[]; schema: Schema }>("/settings"), staleTime: 60_000 });
+const groups = computed(() => { const result: Record<string, Setting[]> = {}; for (const item of settings.data.value?.settings ?? []) (result[item.key.split(".")[0]] ??= []).push(item); return result; });
+const dirtyItems = computed(() => (settings.data.value?.settings ?? []).filter((item) => draft[item.key] !== item.value));
+const errors = computed(() => Object.fromEntries((settings.data.value?.settings ?? []).map((item) => [item.key, validate(item, draft[item.key])]).filter(([, value]) => value)));
+watch(() => settings.data.value?.settings, (items) => { for (const item of items ?? []) draft[item.key] = item.value; }, { immediate: true });
+
+const mutation = useMutation({
+  mutationFn: async (items: Setting[]) => {
+    const results: Record<string, unknown>[] = [];
+    for (const item of items) results.push(await apiRequest<Record<string, unknown>>("/settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: item.key, value: draft[item.key], value_version: item.value_version }) }));
+    return results;
+  },
+  onSuccess: async (results) => { const failed = results.filter((item) => item.apply_status === "failed").length; lastOperation.value = { action: "应用运行设置", status: failed ? "failed" : "succeeded", total: results.length, failed }; notify(failed ? "部分设置应用失败" : "运行设置已应用", { message: `${results.length} 项设置已写入新版本`, tone: failed ? "warning" : "success" }); await queryClient.invalidateQueries({ queryKey: ["settings"] }); },
+  onError: (error) => notify("设置保存失败", { message: `${error}。请刷新后检查是否发生版本冲突。`, tone: "error", timeout: 0 }),
+});
+
+function schemaType(item: Setting): string { return settings.data.value?.schema[item.key]?.type ?? typeof item.value; }
+function requestSave(items: Setting[]): void { if (!items.length || items.some((item) => errors.value[item.key])) return; const risky = items.some((item) => item.key === "usage.detail_retention_days" && Number(draft[item.key]) < Number(item.value)); if (risky) pendingItems.value = items; else mutation.mutate(items); }
+function confirmSave(): void { const items = pendingItems.value; pendingItems.value = []; mutation.mutate(items); }
+function resetDraft(): void { for (const item of settings.data.value?.settings ?? []) draft[item.key] = item.value; }
+function validate(item: Setting, value: unknown): string { const type = schemaType(item); if (type === "int" && (typeof value !== "number" || !Number.isInteger(value))) return "请输入整数"; const meta = metadata[item.key]; if (type === "int" && meta?.min !== undefined && Number(value) < meta.min) return `不能小于 ${meta.min}`; if (type === "int" && meta?.max !== undefined && Number(value) > meta.max) return `不能大于 ${meta.max}`; if (item.key === "checkin.at" && !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(value))) return "请输入有效时间"; if (type === "str" && !String(value).trim()) return "不能为空"; return ""; }
+function groupLabel(group: string): string { return ({ service: "服务", checkin: "签到", monitoring: "指标", usage: "用量" } as Record<string, string>)[group] ?? group; }
 </script>
 
 <template>
   <section class="page-content">
-    <header class="page-header"><div><p class="eyebrow">Runtime configuration</p><h1>运行设置</h1><p>修改会经过版本校验，并立即应用到调度器；不支持热应用的设置会明确返回错误。</p></div><div class="security-banner compact"><Settings2 :size="18" /><span>设置来源：SQLite runtime_settings</span></div></header>
-    <div v-if="settings.isError.value" class="alert alert--error">设置读取失败：{{ settings.error.value }}</div>
-    <section v-for="(items, group) in groups" :key="group" class="data-panel"><PanelHeader :title="group === 'service' ? '服务' : group === 'checkin' ? '签到' : group === 'monitoring' ? '指标' : '用量'" description="每项保存后会记录版本和审计结果"><template #default><CircleHelp :size="17" /></template></PanelHeader><div class="settings-list"><div v-for="item in items" :key="item.key" class="setting-row"><div class="setting-copy"><strong>{{ labels[item.key] ?? item.key }}</strong><small>{{ item.key }} · {{ item.apply_mode }}</small></div><div class="setting-control"><label v-if="isBoolean(item)" class="switch"><input v-model="draft[item.key]" type="checkbox" /><span></span></label><input v-else v-model="draft[item.key]" :type="item.key.endsWith('.at') ? 'time' : 'number'" :min="item.key.includes('retention') ? 1 : 30" /><StatePill :value="item.apply_status" /><button class="icon-button" type="button" title="保存设置" @click="save(item)"><Save :size="16" /></button></div><p v-if="item.last_error" class="form-error">{{ item.last_error }}</p></div></div></section>
-    <div v-if="mutation.isSuccess.value" class="toast"><Check :size="16" />设置已应用</div><p v-if="mutation.isError.value" class="form-error">设置应用失败：{{ mutation.error.value }}</p>
+    <header class="page-header"><div><p class="eyebrow">Runtime configuration</p><h1>运行设置</h1><p>按 value version 更新 SQLite 运行配置，并明确展示热应用、调度重排与失败状态。</p></div><div class="header-actions"><button class="secondary-button" type="button" :disabled="settings.isFetching.value" @click="settings.refetch()"><RefreshCcw :class="{ spin: settings.isFetching.value }" :size="16" />刷新</button><button class="secondary-button" type="button" :disabled="!dirtyItems.length || mutation.isPending.value" @click="resetDraft"><RotateCcw :size="16" />放弃更改</button><button type="button" :disabled="!dirtyItems.length || Object.keys(errors).length > 0 || mutation.isPending.value" @click="requestSave(dirtyItems)"><Save :size="16" />保存全部（{{ dirtyItems.length }}）</button></div></header>
+    <div class="security-banner compact"><Settings2 :size="18" /><span>来源：SQLite runtime_settings · 版本冲突不会覆盖其他管理员的新值</span></div>
+    <div v-if="settings.isPending.value" class="loading-row">正在读取运行设置…</div><div v-else-if="settings.isError.value" class="data-state data-state--error" role="alert">设置读取失败：{{ settings.error.value }}<button class="secondary-button compact-button" type="button" @click="settings.refetch()">重试</button></div><div v-else-if="!settings.data.value?.settings.length" class="empty-state"><strong>没有可管理的运行设置</strong><span>检查 Control Plane 的设置 schema 是否已加载。</span></div>
+    <div v-if="settings.isStale.value && settings.data.value" class="data-state data-state--warning">当前设置快照可能已过期，保存前建议刷新以减少版本冲突。</div>
+
+    <section v-for="(items, group) in groups" :key="group" class="data-panel"><PanelHeader :title="groupLabel(String(group))" description="每项保存后都会记录 value version、apply mode 与审计结果。"><CircleHelp :size="17" /></PanelHeader><div class="settings-list"><div v-for="item in items" :key="item.key" class="setting-row" :class="{ 'setting-row--dirty': draft[item.key] !== item.value }"><div class="setting-copy"><strong>{{ metadata[item.key]?.label ?? item.key }}</strong><span>{{ metadata[item.key]?.description }}</span><small>{{ item.key }} · v{{ item.value_version }} · {{ item.source ?? "default" }} · {{ item.apply_mode }}</small></div><div class="setting-control"><label v-if="schemaType(item) === 'bool'" class="switch" :aria-label="metadata[item.key]?.label ?? item.key"><input v-model="draft[item.key]" type="checkbox" /><span></span></label><input v-else-if="item.key === 'checkin.at'" v-model="draft[item.key]" :aria-label="metadata[item.key]?.label ?? item.key" type="time" /><select v-else-if="item.key === 'checkin.timezone'" v-model="draft[item.key]" :aria-label="metadata[item.key]?.label ?? item.key"><option value="Asia/Shanghai">Asia/Shanghai</option><option value="UTC">UTC</option><option value="America/Los_Angeles">America/Los_Angeles</option><option value="Europe/London">Europe/London</option></select><div v-else class="input-with-unit"><input v-model.number="draft[item.key]" :aria-label="metadata[item.key]?.label ?? item.key" type="number" :min="metadata[item.key]?.min" :max="metadata[item.key]?.max" :step="metadata[item.key]?.step ?? 1" /><span>{{ metadata[item.key]?.unit }}</span></div><StatePill :value="item.apply_status" /><button class="icon-button" type="button" :aria-label="`保存 ${metadata[item.key]?.label ?? item.key}`" :disabled="draft[item.key] === item.value || Boolean(errors[item.key]) || mutation.isPending.value" @click="requestSave([item])"><Save :size="16" /></button></div><p v-if="errors[item.key]" class="form-error" role="alert">{{ errors[item.key] }}</p><p v-if="item.last_error" class="form-error">最近应用错误：{{ item.last_error }}</p></div></div></section>
+
+    <OperationStatus :operation="lastOperation" />
+    <ConfirmDialog :open="pendingItems.length > 0" title="缩短请求明细保留时间？" description="降低保留天数会使超出新窗口的历史请求明细进入清理范围；聚合统计和审计记录不受影响。" confirm-label="确认保存" tone="danger" :verification-text="'RETENTION'" :busy="mutation.isPending.value" @cancel="pendingItems = []" @confirm="confirmSave" />
+    <NotificationRegion :notifications="notifications" @dismiss="dismiss" />
   </section>
 </template>

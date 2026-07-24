@@ -39,6 +39,7 @@ describe("AccountsPage", () => {
 
     await flushPromises();
     await wrapper.find(".table-link").trigger("click");
+    await flushPromises();
 
     expect(wrapper.text()).toContain("已使用 37%");
     expect(wrapper.text()).toContain("接口协议尚未验证");

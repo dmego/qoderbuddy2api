@@ -1,2 +1,0 @@
-import{D as e,F as t,L as n,M as r,O as i,T as a,Z as o}from"./admin.js";var s={class:`panel-heading`},c={key:0},l={class:`panel-actions`},u=r({__name:`PanelHeader`,props:{title:{},description:{}},setup(r){return(u,d)=>(t(),i(`header`,s,[a(`div`,null,[a(`h2`,null,o(r.title),1),r.description?(t(),i(`p`,c,o(r.description),1)):e(``,!0)]),a(`div`,l,[n(u.$slots,`default`)])]))}});export{u as t};
-//# sourceMappingURL=PanelHeader-B5tUwzea.js.map

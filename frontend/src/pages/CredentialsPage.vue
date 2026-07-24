@@ -1,34 +1,77 @@
 <script setup lang="ts">
 import { useMutation, useQuery, useQueryClient } from "@tanstack/vue-query";
-import { KeyRound, RefreshCcw, RotateCw, ShieldOff } from "@lucide/vue";
-import { reactive, ref } from "vue";
+import { Eye, EyeOff, KeyRound, RefreshCcw, RotateCw, Search, ShieldOff, X } from "@lucide/vue";
+import { computed, reactive, ref, watch } from "vue";
 
+import { apiRequest } from "@/api/client";
+import ConfirmDialog from "@/components/ConfirmDialog.vue";
+import NotificationRegion from "@/components/NotificationRegion.vue";
+import OperationStatus from "@/components/OperationStatus.vue";
+import PaginatedTable from "@/components/PaginatedTable.vue";
 import PanelHeader from "@/components/PanelHeader.vue";
 import StatePill from "@/components/StatePill.vue";
-import { apiRequest } from "@/api/client";
+import { appendQuery } from "@/composables/useCursorPager";
+import { useNotifications } from "@/composables/useNotifications";
 
-type Credential = { provider: string; account_id: string; purpose: string; mode: string; payload_version: number; credential_version: number; expires_at?: string; has_refresh_token: boolean; updated_at: string };
+type Credential = { provider: string; account_id: string; purpose: string; mode: string; payload_version: number; credential_version: number; expires_at?: string; has_refresh_token: boolean; updated_at: string; source?: string };
+
 const queryClient = useQueryClient();
-const filter = ref("all");
+const provider = ref("");
+const purpose = ref("");
+const expiry = ref("");
+const search = ref("");
 const selected = ref<Credential | null>(null);
-const form = reactive({ token: "", refreshToken: "" });
-const credentials = useQuery({ queryKey: ["credentials"], queryFn: () => apiRequest<{ credentials: Credential[] }>("/credentials") });
+const pending = ref<"rotate" | "revoke" | null>(null);
+const showSecrets = ref(false);
+const page = ref(1);
+const pageSize = 15;
+const form = reactive({ token: "", refreshToken: "", expiresAt: "" });
+const lastOperation = ref<Record<string, unknown> | null>(null);
+const { notifications, notify, dismiss } = useNotifications();
+
+const credentials = useQuery({ queryKey: ["credentials", provider], queryFn: () => apiRequest<{ credentials: Credential[] }>(appendQuery("/credentials", { provider: provider.value })), staleTime: 60_000 });
+const filtered = computed(() => (credentials.data.value?.credentials ?? []).filter((item) => {
+  const matchesSearch = `${item.provider} ${item.account_id}`.toLowerCase().includes(search.value.trim().toLowerCase());
+  return matchesSearch && (!purpose.value || item.purpose === purpose.value) && (!expiry.value || expiryState(item) === expiry.value);
+}));
+const visible = computed(() => filtered.value.slice((page.value - 1) * pageSize, page.value * pageSize));
+watch([provider, purpose, expiry, search], () => { page.value = 1; });
+
 const mutation = useMutation({
   mutationFn: async (kind: "rotate" | "revoke") => {
     if (!selected.value) throw new Error("请选择凭据");
-    const base = `/credentials/${selected.value.provider}/${selected.value.account_id}/${selected.value.purpose}`;
-    if (kind === "revoke") return apiRequest(base, { method: "DELETE" });
-    return apiRequest(base, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: form.token, refresh_token: form.refreshToken || undefined }) });
+    const base = `/credentials/${encodeURIComponent(selected.value.provider)}/${encodeURIComponent(selected.value.account_id)}/${encodeURIComponent(selected.value.purpose)}`;
+    if (kind === "revoke") return apiRequest<Record<string, unknown>>(base, { method: "DELETE" });
+    return apiRequest<Record<string, unknown>>(base, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: form.token, refresh_token: form.refreshToken || undefined, expires_at: form.expiresAt || undefined, credential_version: selected.value.credential_version }) });
   },
-  onSuccess: async () => { form.token = ""; form.refreshToken = ""; await queryClient.invalidateQueries({ queryKey: ["credentials"] }); },
+  onSuccess: async (result, kind) => {
+    lastOperation.value = { action: kind === "rotate" ? "轮换凭据" : "撤销凭据", status: "succeeded", account_id: selected.value?.account_id, ...result };
+    notify(kind === "rotate" ? "凭据已轮换" : "凭据已撤销", { message: selected.value ? `${selected.value.provider} / ${selected.value.account_id} / ${selected.value.purpose}` : undefined, tone: kind === "rotate" ? "success" : "warning" });
+    Object.assign(form, { token: "", refreshToken: "", expiresAt: "" }); selected.value = null;
+    await queryClient.invalidateQueries({ queryKey: ["credentials"] });
+  },
+  onError: (error) => notify("凭据操作失败", { message: String(error), tone: "error", timeout: 0 }),
 });
+
+function select(item: Credential): void { selected.value = item; Object.assign(form, { token: "", refreshToken: "", expiresAt: item.expires_at?.slice(0, 16) ?? "" }); }
+function expiryState(item: Credential): string { if (!item.expires_at) return "no_expiry"; const remaining = new Date(item.expires_at).valueOf() - Date.now(); if (remaining <= 0) return "expired"; return remaining < 7 * 86_400_000 ? "expiring" : "valid"; }
+function clearFilters(): void { provider.value = ""; purpose.value = ""; expiry.value = ""; search.value = ""; }
+function confirmMutation(): void { if (pending.value) mutation.mutate(pending.value); pending.value = null; }
 </script>
 
 <template>
   <section class="page-content">
-    <header class="page-header"><div><p class="eyebrow">Secret metadata</p><h1>凭据管理</h1><p>只显示模式、版本、过期时间和刷新能力；密文永远不会回到浏览器。</p></div><button class="secondary-button" type="button" @click="credentials.refetch()"><RefreshCcw :size="16" />刷新元数据</button></header>
-    <div class="security-banner"><KeyRound :size="18" /><div><strong>凭据隔离</strong><span>Proxy、check-in 和 chat 按 purpose 分开；旋转会增加 credential version，不会改变账号 ID。</span></div></div>
-    <section class="data-panel"><PanelHeader title="已保存凭据" description="删除凭据后对应用途会进入 needs_reauth"><template #default><select v-model="filter" aria-label="筛选凭据"><option value="all">全部</option><option value="chat">chat</option><option value="checkin">checkin</option></select></template></PanelHeader><div v-if="credentials.isPending.value" class="loading-row">正在读取凭据元数据…</div><div v-else class="table-wrap"><table><thead><tr><th>账号</th><th>用途</th><th>模式</th><th>版本</th><th>过期时间</th><th>刷新能力</th><th></th></tr></thead><tbody><tr v-for="item in (credentials.data.value?.credentials ?? []).filter((row) => filter === 'all' || row.purpose === filter)" :key="`${item.provider}:${item.account_id}:${item.purpose}`"><td><strong>{{ item.provider }}</strong><small>{{ item.account_id }}</small></td><td><StatePill :value="item.purpose" /></td><td>{{ item.mode }}</td><td class="mono">v{{ item.credential_version }} / p{{ item.payload_version }}</td><td>{{ item.expires_at ?? "不设过期" }}</td><td>{{ item.has_refresh_token ? "可刷新" : "无 refresh" }}</td><td><button class="icon-button" type="button" title="编辑凭据" @click="selected = item"><RotateCw :size="16" /></button></td></tr></tbody></table></div></section>
-    <section v-if="selected" class="data-panel credential-editor"><PanelHeader title="轮换凭据" :description="`${selected.provider} / ${selected.account_id} / ${selected.purpose}`" /><div class="form-grid"><label>新 Token<input v-model="form.token" type="password" autocomplete="new-password" /></label><label>新 Refresh Token（可选）<input v-model="form.refreshToken" type="password" autocomplete="new-password" /></label></div><div class="form-actions"><button type="button" :disabled="!form.token || mutation.isPending.value" @click="mutation.mutate('rotate')"><RotateCw :size="16" />验证并轮换</button><button class="danger-button" type="button" :disabled="mutation.isPending.value" @click="mutation.mutate('revoke')"><ShieldOff :size="16" />撤销用途</button></div><p v-if="mutation.isError.value" class="form-error">{{ mutation.error.value }}</p></section>
+    <header class="page-header"><div><p class="eyebrow">Secret metadata</p><h1>凭据管理</h1><p>只展示版本、模式、过期状态与刷新能力；密文和 fingerprint 永不返回浏览器。</p></div><button class="secondary-button" type="button" :disabled="credentials.isFetching.value" @click="credentials.refetch()"><RefreshCcw :class="{ spin: credentials.isFetching.value }" :size="16" />刷新元数据</button></header>
+    <div class="security-banner"><KeyRound :size="18" /><div><strong>用途隔离与并发保护</strong><span>Chat 与 check-in 独立轮换；提交会携带 credential version，版本冲突时不会覆盖较新的凭据。</span></div></div>
+
+    <section class="data-panel filter-panel"><PanelHeader title="凭据筛选" description="筛选仅作用于安全元数据。"><Search :size="17" /></PanelHeader><div class="filter-grid filter-grid--five"><label class="filter-search">账号<div class="input-with-icon"><Search :size="15" /><input v-model="search" placeholder="Provider 或账号 ID" /></div></label><label>Provider<select v-model="provider"><option value="">全部</option><option value="codebuddy">CodeBuddy</option><option value="qoder">Qoder</option><option value="workbuddy">WorkBuddy</option></select></label><label>用途<select v-model="purpose"><option value="">全部</option><option value="chat">Chat</option><option value="checkin">Check-in</option></select></label><label>到期状态<select v-model="expiry"><option value="">全部</option><option value="expiring">7 天内到期</option><option value="expired">已到期</option><option value="valid">有效</option><option value="no_expiry">无到期时间</option></select></label><div class="filter-actions"><button class="secondary-button" type="button" @click="clearFilters"><X :size="15" />清除</button></div></div></section>
+
+    <section class="data-panel"><PanelHeader title="已保存凭据" :description="`${filtered.length} 条安全元数据 · 第 ${page} 页`" /><PaginatedTable aria-label="凭据元数据" :loading="credentials.isPending.value" :error="credentials.isError.value ? `凭据读取失败：${credentials.error.value}` : ''" :empty="!visible.length" empty-title="没有匹配的凭据" empty-description="调整筛选条件，或先在账号页导入用途凭据。" :stale="credentials.isStale.value" :page="page" :page-size="pageSize" :total="filtered.length" :can-previous="page > 1" :can-next="page * pageSize < filtered.length" @retry="credentials.refetch()" @previous="page -= 1" @next="page += 1"><template #header><tr><th>账号</th><th>用途</th><th>模式</th><th>版本</th><th>过期状态</th><th>刷新能力</th><th>更新时间</th><th>操作</th></tr></template><tr v-for="item in visible" :key="`${item.provider}:${item.account_id}:${item.purpose}`" :class="{ selected: selected === item }"><td><strong>{{ item.provider }}</strong><small>{{ item.account_id }}</small></td><td><StatePill :value="item.purpose" /></td><td>{{ item.mode }}</td><td class="mono">v{{ item.credential_version }} / p{{ item.payload_version }}</td><td><StatePill :value="expiryState(item)" /><small>{{ item.expires_at ?? "不设过期" }}</small></td><td>{{ item.has_refresh_token ? "可刷新" : "无 refresh" }}</td><td>{{ item.updated_at }}</td><td><button class="icon-button" type="button" :aria-label="`编辑 ${item.account_id} ${item.purpose} 凭据`" @click="select(item)"><RotateCw :size="16" /></button></td></tr></PaginatedTable></section>
+
+    <section v-if="selected" class="data-panel credential-editor"><PanelHeader title="轮换凭据" :description="`${selected.provider} / ${selected.account_id} / ${selected.purpose}`"><button class="icon-button" type="button" aria-label="关闭凭据编辑器" @click="selected = null"><X :size="15" /></button></PanelHeader><div class="form-grid"><label>新 Token <span class="required-mark">必填</span><div class="input-with-icon"><KeyRound :size="15" /><input v-model="form.token" :type="showSecrets ? 'text' : 'password'" autocomplete="new-password" /></div></label><label>新 Refresh Token（可选）<input v-model="form.refreshToken" :type="showSecrets ? 'text' : 'password'" autocomplete="new-password" /></label><label>到期时间（可选）<input v-model="form.expiresAt" type="datetime-local" /></label><label class="inline-check"><input v-model="showSecrets" type="checkbox" /><Eye v-if="showSecrets" :size="15" /><EyeOff v-else :size="15" />暂时显示输入内容</label></div><p class="helper-text">提交后用途会进入 unverified / needs_reauth，直到后续验证成功。</p><div class="form-actions"><button type="button" :disabled="!form.token || mutation.isPending.value" @click="pending = 'rotate'"><RotateCw :size="16" />验证版本并轮换</button><button class="danger-button" type="button" :disabled="mutation.isPending.value" @click="pending = 'revoke'"><ShieldOff :size="16" />撤销用途</button></div></section>
+
+    <OperationStatus :operation="lastOperation" />
+    <ConfirmDialog :open="Boolean(pending)" :title="pending === 'revoke' ? '撤销这项凭据？' : '轮换这项凭据？'" :description="pending === 'revoke' ? '撤销后该用途会立即停止参与调度，并进入 needs_reauth。' : '轮换会使旧凭据失效，并要求重新验证用途状态。'" :confirm-label="pending === 'revoke' ? '确认撤销' : '确认轮换'" :tone="pending === 'revoke' ? 'danger' : 'default'" :verification-text="pending === 'revoke' ? 'REVOKE' : ''" :busy="mutation.isPending.value" @cancel="pending = null" @confirm="confirmMutation" />
+    <NotificationRegion :notifications="notifications" @dismiss="dismiss" />
   </section>
 </template>

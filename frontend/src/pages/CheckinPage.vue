@@ -1,54 +1,85 @@
 <script setup lang="ts">
 import { useMutation, useQuery, useQueryClient } from "@tanstack/vue-query";
-import { CalendarCheck, Eye, Play, RefreshCcw, TimerReset } from "@lucide/vue";
-import { computed, reactive, ref } from "vue";
+import { Eye, Filter, Play, RefreshCcw, X } from "@lucide/vue";
+import { computed, reactive, ref, watch } from "vue";
 
+import { apiRequest } from "@/api/client";
+import ConfirmDialog from "@/components/ConfirmDialog.vue";
+import NotificationRegion from "@/components/NotificationRegion.vue";
+import OperationStatus from "@/components/OperationStatus.vue";
+import PaginatedTable from "@/components/PaginatedTable.vue";
 import PanelHeader from "@/components/PanelHeader.vue";
 import StatePill from "@/components/StatePill.vue";
-import { apiRequest } from "@/api/client";
+import { appendQuery, useCursorPager } from "@/composables/useCursorPager";
+import { useNotifications } from "@/composables/useNotifications";
 
-type Account = { provider: string; account_id: string; status: string; verification_status: string };
-type CheckinTarget = Pick<Account, "provider" | "account_id">;
+type Account = { provider: string; account_id: string; label?: string; status: string; verification_status: string };
 type DailyState = { provider: string; account_id: string; terminal_outcome?: string };
 type CheckinStatus = { enabled: boolean; running: boolean; local_date: string; timezone: string; checkin_at: string; next_run_at?: string; eligible_accounts: Account[]; daily_states: DailyState[] };
 type CheckinRun = { run_id: string; started_at: string; finished_at?: string; status: string; trigger: string; attempt_count: number; successful_count: number };
-type CheckinAttempt = { provider: string; account_id: string; outcome?: string; http_status?: number; attempts: number; finished_at?: string };
-type RunDetail = { run: CheckinRun; attempts: CheckinAttempt[] };
+type CheckinAttempt = { provider: string; account_id: string; outcome?: string; http_status?: number; attempts: number; finished_at?: string; error_code?: string };
+type RunPage = { runs: CheckinRun[]; next_cursor?: string | null; total?: number };
 
 const queryClient = useQueryClient();
 const selected = reactive<Record<string, boolean>>({});
-const message = ref("");
+const accountSearch = ref("");
+const accountProvider = ref("");
+const accountStatus = ref("");
+const targetPage = ref(1);
+const targetPageSize = 15;
+const historyStatus = ref("");
+const historyTrigger = ref("");
 const selectedRunId = ref<string | null>(null);
-const status = useQuery({ queryKey: ["checkin-status"], queryFn: () => apiRequest<CheckinStatus>("/checkin/status"), refetchInterval: 10000 });
-const history = useQuery({ queryKey: ["checkin-runs"], queryFn: () => apiRequest<{ runs: CheckinRun[] }>("/checkin/runs?limit=20") });
-const runDetail = useQuery({ queryKey: ["checkin-run", selectedRunId], enabled: computed(() => selectedRunId.value !== null), queryFn: () => apiRequest<RunDetail>(`/checkin/runs/${selectedRunId.value}`) });
+const confirmRun = ref(false);
+const lastOperation = ref<Record<string, unknown> | null>(null);
+const { cursor, page, canPrevious, next, previous, reset } = useCursorPager();
+const { notifications, notify, dismiss } = useNotifications();
+const queryClientRef = queryClient;
+
+const status = useQuery({ queryKey: ["checkin-status"], queryFn: () => apiRequest<CheckinStatus>("/checkin/status"), refetchInterval: 10000, staleTime: 15_000 });
+const history = useQuery({ queryKey: ["checkin-runs", cursor, historyStatus, historyTrigger], queryFn: () => apiRequest<RunPage>(appendQuery("/checkin/runs", { limit: 20, cursor: cursor.value, status: historyStatus.value, trigger: historyTrigger.value })), staleTime: 30_000 });
+const runDetail = useQuery({ queryKey: ["checkin-run", selectedRunId], enabled: computed(() => selectedRunId.value !== null), queryFn: () => apiRequest<{ run: CheckinRun; attempts: CheckinAttempt[] }>(`/checkin/runs/${encodeURIComponent(selectedRunId.value ?? "")}`) });
 const run = useMutation({
-  mutationFn: () => apiRequest<{ run_id: string }>("/checkin/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(targetsBody()) }),
-  onSuccess: async (result) => {
-    message.value = `批次 ${result.run_id} 已完成`;
-    await queryClient.invalidateQueries({ queryKey: ["checkin-status"] });
-    await queryClient.invalidateQueries({ queryKey: ["checkin-runs"] });
-  },
+  mutationFn: () => apiRequest<Record<string, unknown>>("/checkin/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(targetsBody()) }),
+  onSuccess: async (result) => { lastOperation.value = { action: "手动签到", ...result }; notify("签到批次已结束", { message: String(result.run_id ?? "批次结果已持久化"), tone: result.status === "failed" ? "warning" : "success" }); Object.keys(selected).forEach((key) => { selected[key] = false; }); await Promise.all([queryClientRef.invalidateQueries({ queryKey: ["checkin-status"] }), queryClientRef.invalidateQueries({ queryKey: ["checkin-runs"] })]); },
+  onError: (error) => notify("签到批次执行失败", { message: String(error), tone: "error", timeout: 0 }),
 });
 
-function targetsBody(): { targets?: CheckinTarget[] } {
-  const targets = Object.entries(selected)
-    .filter(([, enabled]) => enabled)
-    .map(([key]) => { const [provider, account_id] = key.split(":"); return { provider, account_id }; });
-  return targets.length ? { targets } : {};
-}
+const filteredAccounts = computed(() => (status.data.value?.eligible_accounts ?? []).filter((item) => { const text = `${item.label ?? ""} ${item.account_id}`.toLowerCase(); return text.includes(accountSearch.value.trim().toLowerCase()) && (!accountProvider.value || item.provider === accountProvider.value) && (!accountStatus.value || dailyOutcome(item) === accountStatus.value); }));
+const visibleAccounts = computed(() => filteredAccounts.value.slice((targetPage.value - 1) * targetPageSize, targetPage.value * targetPageSize));
+const selectedTargets = computed(() => (status.data.value?.eligible_accounts ?? []).filter((item) => selected[accountKey(item)]));
+const allVisibleSelected = computed(() => visibleAccounts.value.length > 0 && visibleAccounts.value.every((item) => selected[accountKey(item)]));
+watch([accountSearch, accountProvider, accountStatus], () => { targetPage.value = 1; });
 
+function targetsBody(): { targets: { provider: string; account_id: string }[] } { return { targets: selectedTargets.value.map(({ provider, account_id }) => ({ provider, account_id })) }; }
+function accountKey(account: Account): string { return `${account.provider}:${account.account_id}`; }
 function toggle(key: string): void { selected[key] = !selected[key]; }
-function inspectRun(runId: string): void { selectedRunId.value = runId; }
-function dailyOutcome(account: Account): string { return (status.data.value?.daily_states ?? []).find((item) => item.provider === account.provider && item.account_id === account.account_id)?.terminal_outcome ?? "待执行"; }
+function toggleVisible(): void { const nextValue = !allVisibleSelected.value; visibleAccounts.value.forEach((item) => { selected[accountKey(item)] = nextValue; }); }
+function dailyOutcome(account: Account): string { return (status.data.value?.daily_states ?? []).find((item) => item.provider === account.provider && item.account_id === account.account_id)?.terminal_outcome ?? "pending"; }
+function clearAccountFilters(): void { accountSearch.value = ""; accountProvider.value = ""; accountStatus.value = ""; }
+function confirmExecution(): void { confirmRun.value = false; run.mutate(); }
 </script>
 
 <template>
   <section class="page-content">
-    <header class="page-header"><div><p class="eyebrow">Daily operations</p><h1>签到中心</h1><p>按账号执行 CodeBuddy / WorkBuddy 与 Qoder 签到，10001 已签到响应按业务成功处理。</p></div><div class="header-actions"><button class="secondary-button" type="button" @click="status.refetch()"><RefreshCcw :size="16" />刷新</button><button type="button" :disabled="run.isPending.value || status.data.value?.running" @click="run.mutate()"><Play :size="16" />执行选中账号</button></div></header>
-    <div class="checkin-rail"><div><span>今日日期</span><strong>{{ status.data.value?.local_date ?? "--" }}</strong></div><div><span>调度时间</span><strong>{{ status.data.value?.checkin_at ?? "--" }} · {{ status.data.value?.timezone ?? "--" }}</strong></div><div><span>下一次</span><strong>{{ status.data.value?.next_run_at ?? "未启用" }}</strong></div><div><span>运行状态</span><StatePill :value="status.data.value?.running ? 'running' : status.data.value?.enabled ? 'enabled' : 'disabled'" /></div></div>
-    <section class="data-panel"><PanelHeader title="可签到账号" description="只展示 checkin purpose 已验证并启用的账号"><template #default><TimerReset :size="17" /></template></PanelHeader><div v-if="!(status.data.value?.eligible_accounts?.length)" class="empty-state"><CalendarCheck :size="28" /><strong>暂无可签到账号</strong><span>请先导入签到凭据并完成验证。</span></div><div v-else class="table-wrap"><table><thead><tr><th>执行</th><th>账号</th><th>Provider</th><th>验证</th><th>今日状态</th></tr></thead><tbody><tr v-for="account in status.data.value?.eligible_accounts ?? []" :key="`${account.provider}:${account.account_id}`"><td><input :checked="selected[`${account.provider}:${account.account_id}`]" type="checkbox" @change="toggle(`${account.provider}:${account.account_id}`)" /></td><td class="mono">{{ account.account_id }}</td><td>{{ account.provider }}</td><td><StatePill :value="account.verification_status" /></td><td><StatePill :value="dailyOutcome(account)" /></td></tr></tbody></table></div></section>
-    <section class="data-panel"><PanelHeader title="最近批次" description="持久化记录，Control Plane 重启后仍可查看"><template #default><button class="icon-button" type="button" title="刷新签到历史" @click="history.refetch()"><RefreshCcw :size="15" /></button></template></PanelHeader><div v-if="!(history.data.value?.runs?.length)" class="compact-empty">尚未执行签到批次</div><div v-else class="table-wrap"><table><thead><tr><th>开始时间</th><th>触发方式</th><th>结果</th><th>状态</th><th></th></tr></thead><tbody><tr v-for="item in history.data.value?.runs ?? []" :key="item.run_id"><td><span class="mono">{{ item.run_id }}</span><small>{{ item.started_at }}</small></td><td>{{ item.trigger }}</td><td>{{ item.successful_count }} / {{ item.attempt_count }}</td><td><StatePill :value="item.status" /></td><td><button class="icon-button" type="button" title="查看签到尝试" @click="inspectRun(item.run_id)"><Eye :size="16" /></button></td></tr></tbody></table></div><div v-if="selectedRunId" class="attempt-section"><PanelHeader title="批次明细" :description="selectedRunId" /><div v-if="runDetail.isPending.value" class="loading-row">正在读取已脱敏的尝试记录…</div><div v-else-if="runDetail.isError.value" class="form-error">无法读取批次明细</div><div v-else-if="!runDetail.data.value?.attempts?.length" class="compact-empty">该批次没有账号尝试记录</div><div v-else class="table-wrap"><table><thead><tr><th>账号</th><th>结果</th><th>HTTP</th><th>重试次数</th><th>完成时间</th></tr></thead><tbody><tr v-for="attempt in runDetail.data.value?.attempts ?? []" :key="`${attempt.provider}:${attempt.account_id}`"><td>{{ attempt.provider }}<small>{{ attempt.account_id }}</small></td><td><StatePill :value="attempt.outcome" /></td><td>{{ attempt.http_status ?? "--" }}</td><td>{{ attempt.attempts }}</td><td>{{ attempt.finished_at ?? "--" }}</td></tr></tbody></table></div></div></section>
-    <p v-if="message" class="form-message">{{ message }}</p><p v-if="run.isError.value" class="form-error">{{ run.error.value }}</p>
+    <header class="page-header"><div><p class="eyebrow">Daily operations</p><h1>签到中心</h1><p>按已验证用途执行签到，持久化批次与脱敏尝试记录不受 Control Plane 重启影响。</p></div><div class="header-actions"><button class="secondary-button" type="button" :disabled="status.isFetching.value" @click="status.refetch()"><RefreshCcw :class="{ spin: status.isFetching.value }" :size="16" />刷新</button><button type="button" :disabled="run.isPending.value || status.data.value?.running || !selectedTargets.length" @click="confirmRun = true"><Play :size="16" />执行选中账号（{{ selectedTargets.length }}）</button></div></header>
+
+    <div v-if="status.isError.value" class="data-state data-state--error" role="alert">签到状态读取失败：{{ status.error.value }}<button class="secondary-button compact-button" type="button" @click="status.refetch()">重试</button></div>
+    <div v-else class="checkin-rail" :aria-busy="status.isPending.value"><div><span>今日日期</span><strong>{{ status.data.value?.local_date ?? "--" }}</strong></div><div><span>调度时间</span><strong>{{ status.data.value?.checkin_at ?? "--" }} · {{ status.data.value?.timezone ?? "--" }}</strong></div><div><span>下一次运行</span><strong>{{ status.data.value?.next_run_at ?? "未启用" }}</strong></div><div><span>运行状态</span><StatePill :value="status.data.value?.running ? 'running' : status.data.value?.enabled ? 'enabled' : 'disabled'" /></div></div>
+    <div v-if="status.isStale.value && status.data.value" class="data-state data-state--warning">当前签到状态可能已过期，后台将按 10 秒间隔刷新。</div>
+
+    <section class="data-panel filter-panel">
+      <PanelHeader title="可签到账号" description="只列出 check-in purpose 已验证且启用的账号。"><Filter :size="17" /></PanelHeader><div class="filter-grid filter-grid--four"><label class="filter-search">账号<input v-model="accountSearch" placeholder="名称或账号 ID" /></label><label>Provider<select v-model="accountProvider"><option value="">全部</option><option value="codebuddy">CodeBuddy</option><option value="qoder">Qoder</option><option value="workbuddy">WorkBuddy</option></select></label><label>今日状态<select v-model="accountStatus"><option value="">全部</option><option value="pending">待执行</option><option value="claimed">已签到</option><option value="already_checked_in">已完成</option><option value="failed">失败</option></select></label><div class="filter-actions"><button class="secondary-button" type="button" @click="clearAccountFilters"><X :size="15" />清除</button></div></div>
+      <PaginatedTable aria-label="可签到账号" :loading="status.isPending.value" :empty="!visibleAccounts.length" empty-title="暂无可签到账号" empty-description="请先导入签到凭据并完成验证，或调整筛选条件。" :page="targetPage" :page-size="targetPageSize" :total="filteredAccounts.length" :can-previous="targetPage > 1" :can-next="targetPage * targetPageSize < filteredAccounts.length" @previous="targetPage -= 1" @next="targetPage += 1"><template #header><tr><th><input type="checkbox" aria-label="选择当前页全部账号" :checked="allVisibleSelected" @change="toggleVisible" /></th><th>账号</th><th>Provider</th><th>验证</th><th>今日状态</th></tr></template><tr v-for="account in visibleAccounts" :key="accountKey(account)"><td><input type="checkbox" :aria-label="`选择 ${account.label ?? account.account_id}`" :checked="selected[accountKey(account)]" @change="toggle(accountKey(account))" /></td><td><strong>{{ account.label ?? account.account_id }}</strong><small class="mono">{{ account.account_id }}</small></td><td><span class="provider-mark" :class="`provider-mark--${account.provider}`">{{ account.provider }}</span></td><td><StatePill :value="account.verification_status" /></td><td><StatePill :value="dailyOutcome(account)" /></td></tr></PaginatedTable>
+    </section>
+
+    <OperationStatus :operation="lastOperation" />
+
+    <section class="data-panel"><PanelHeader title="最近批次" :description="`第 ${page} 页 · 持久化运行历史`"><div class="toolbar"><select v-model="historyTrigger" aria-label="筛选触发方式" @change="reset"><option value="">全部触发</option><option value="manual">手动</option><option value="scheduled">调度</option><option value="verify">验证</option></select><select v-model="historyStatus" aria-label="筛选批次状态" @change="reset"><option value="">全部状态</option><option value="finished">已结束</option><option value="running">运行中</option><option value="failed">失败</option></select><button class="icon-button" type="button" aria-label="刷新签到历史" @click="history.refetch()"><RefreshCcw :size="15" /></button></div></PanelHeader><PaginatedTable aria-label="签到运行历史" :loading="history.isPending.value" :error="history.isError.value ? `签到历史读取失败：${history.error.value}` : ''" :empty="!(history.data.value?.runs.length)" empty-title="尚未执行签到批次" empty-description="选择账号并运行后，结果会持久化到这里。" :stale="history.isStale.value" :page="page" :total="history.data.value?.total" :can-previous="canPrevious.length > 0" :can-next="Boolean(history.data.value?.next_cursor)" @retry="history.refetch()" @previous="previous" @next="next(history.data.value?.next_cursor)"><template #header><tr><th>批次 / 开始时间</th><th>触发方式</th><th>成功 / 尝试</th><th>状态</th><th>操作</th></tr></template><tr v-for="item in history.data.value?.runs ?? []" :key="item.run_id"><td><strong class="mono">{{ item.run_id }}</strong><small>{{ item.started_at }}</small></td><td>{{ item.trigger }}</td><td>{{ item.successful_count }} / {{ item.attempt_count }}</td><td><StatePill :value="item.status" /></td><td><button class="icon-button" type="button" :aria-label="`查看批次 ${item.run_id}`" @click="selectedRunId = item.run_id"><Eye :size="16" /></button></td></tr></PaginatedTable></section>
+
+    <aside v-if="selectedRunId" class="detail-drawer data-panel" aria-label="签到批次详情"><div class="drawer-heading"><div><p class="eyebrow">Run detail</p><h2>批次明细</h2><p class="mono">{{ selectedRunId }}</p></div><button class="icon-button" type="button" aria-label="关闭批次详情" @click="selectedRunId = null"><X :size="16" /></button></div><div v-if="runDetail.isPending.value" class="loading-row">正在读取脱敏尝试记录…</div><div v-else-if="runDetail.isError.value" class="data-state data-state--error">批次明细读取失败。<button class="secondary-button compact-button" type="button" @click="runDetail.refetch()">重试</button></div><div v-else-if="!runDetail.data.value?.attempts.length" class="compact-empty">该批次没有账号尝试记录。</div><div v-else class="table-wrap"><table><thead><tr><th>账号</th><th>结果</th><th>HTTP</th><th>尝试</th><th>错误代码</th></tr></thead><tbody><tr v-for="attempt in runDetail.data.value?.attempts ?? []" :key="`${attempt.provider}:${attempt.account_id}`"><td>{{ attempt.provider }}<small>{{ attempt.account_id }}</small></td><td><StatePill :value="attempt.outcome" /></td><td>{{ attempt.http_status ?? "--" }}</td><td>{{ attempt.attempts }}</td><td>{{ attempt.error_code ?? "--" }}</td></tr></tbody></table></div></aside>
+
+    <ConfirmDialog :open="confirmRun" title="执行签到批次？" :description="`将按顺序处理 ${selectedTargets.length} 个账号；单个账号失败不会阻止后续账号。请求会调用已配置的上游签到接口。`" confirm-label="开始执行" :busy="run.isPending.value" @cancel="confirmRun = false" @confirm="confirmExecution" />
+    <NotificationRegion :notifications="notifications" @dismiss="dismiss" />
   </section>
 </template>
