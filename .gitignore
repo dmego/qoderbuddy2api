@@ -12,6 +12,7 @@ logs/
 .ruff_cache/
 nohup.out
 .DS_Store
+.worktrees/
 .claude/
 *.lock
 data/
