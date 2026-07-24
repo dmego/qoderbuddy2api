@@ -4,7 +4,7 @@
 - Active plan: `docs/superpowers/plans/2026-07-24-2api-completion-plan.md`
 - Branch: `codex/multi-account-proxy-checkin`
 - Execution: root integrator plus up to three isolated-worktree subagents; one commit per large delivery task
-- Last saved: `2026-07-24` Wave 1 review-fix cycle
+- Last saved: `2026-07-24` Wave 1 integrated and verified
 
 ## Approved architecture
 
@@ -18,14 +18,17 @@
 
 ### Active 9-task completion plan
 
-- Integrated and approved: Task 1 Security/Proxy access, Task 3 provider and
-  check-in protocol hardening. Progress: **2/9 delivery tasks integrated**.
-- Task 2 management backend: implementation and review-fix commits complete;
-  final independent review is in progress.
-- Task 4 operations console: second review-fix batch is in progress after the
-  independent review found operation-feedback and filter edge cases.
-- Wave 1 full integration gate remains pending until Tasks 2 and 4 are approved
-  and integrated.
+- Integrated: Task 1 Security/Proxy access, Task 2 management backend, Task 3
+  provider/check-in hardening, and Task 4 operations console. Progress:
+  **4/9 delivery tasks integrated**.
+- Wave 1 integration fixes aligned schema visibility, audit/search contracts,
+  service and check-in response shapes, settings/import transaction audit,
+  stable error codes, secret-safe logging, metrics latency fields and final Vue
+  operation feedback.
+- Wave 1 full gate passed: 266 Python tests, 30 frontend tests, Ruff,
+  compileall, typecheck, ESLint, production build and `git diff --check`.
+- Wave 2 Tasks 5, 6 and 7 are active in isolated worktrees. Root will merge the
+  three large task commits, rebuild `dist` once and run one Wave 2 gate.
 
 - Expanded unique design baseline: complete and self-reviewed
 - Full implementation plan: complete and self-reviewed
@@ -89,17 +92,15 @@
 
 ## Resume checkpoint
 
-1. Task 1 is implemented, reviewed, approved and integrated.
-2. Task 3 is implemented, review-fixed, independently approved and integrated
-   as `f01555b` plus `339db2b`.
-3. Task 2 is at final independent review; fix the known cross-contract latency
-   field and audit-query aliases before approval if still present.
-4. Task 4 is implementing its second review-fix batch for immutable settings
-   snapshots, audit filtering, terminal operation feedback and mutation
-   concurrency.
-5. Integrate approved Tasks 2 and 4, then run the Wave 1 full
-   Python/frontend/two-process gate.
-6. Execute Wave 2 Tasks 5, 6 and 7 in isolated worktrees, then Tasks 8 and 9.
+1. Tasks 1 through 4 are integrated on `codex/multi-account-proxy-checkin`.
+2. Wave 1 full Python/frontend/static/build gate passed on commit `c701bd1`.
+3. Task 5 runs in `.worktrees/task-5-accounts`.
+4. Task 6 runs in `.worktrees/task-6-ops`.
+5. Task 7 runs in `.worktrees/task-7-deployment`.
+6. Merge Tasks 5 through 7, resolve shared contracts centrally, rebuild `dist`
+   once and run the Wave 2 gate.
+7. Execute Task 8 as one behavior-preserving cleanup batch, then Task 9 browser
+   acceptance and final completion audit.
 
 ## Deliberately deferred at this checkpoint
 
@@ -119,3 +120,11 @@
 - `f01555b refactor(checkin): harden provider protocols`
 - `339db2b fix(checkin): close refresh and export races`
 - Task 3 final review: Approved; no remaining Critical or Important.
+- `6415805 feat(admin): complete management contracts`
+- `47dd7f4 fix(admin): close management contract gaps`
+- `b7848e0 fix(integration): align management contracts`
+- `57c4a4e feat(console): complete operations workflows`
+- `dd13ab3 fix(console): align operations contracts`
+- `c701bd1 fix(console): harden operations feedback`
+- Wave 1 gate at `c701bd1`: 266 Python tests and 30 frontend tests passed;
+  Ruff, compileall, typecheck, ESLint, production build and diff check passed.
