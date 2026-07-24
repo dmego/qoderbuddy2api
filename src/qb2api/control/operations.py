@@ -33,7 +33,7 @@ class OperationStore:
         operation.finished_at = time.time()
 
     @staticmethod
-    def fail(operation: SupervisorOperation, error: Exception) -> None:
+    def fail(operation: SupervisorOperation, error_code: str) -> None:
         operation.status = "failed"
-        operation.error = str(error)
+        operation.error = error_code
         operation.finished_at = time.time()

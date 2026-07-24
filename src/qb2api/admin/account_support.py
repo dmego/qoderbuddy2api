@@ -51,9 +51,9 @@ async def empty_mutation_body(request: Request, detail: str) -> None:
 async def account_audit(
     state: Any,
     action: str,
+    *,
     provider: str,
     account_id: str,
-    *,
     result: str = "succeeded",
 ) -> None:
     await add_audit(

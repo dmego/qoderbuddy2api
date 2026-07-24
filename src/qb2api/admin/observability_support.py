@@ -8,7 +8,14 @@ from typing import Any
 from fastapi import HTTPException, Request
 
 from .dependencies import admin_state
-from .validation import choice_filter, optional_account_id, provider_filter, text_filter, time_range
+from .validation import (
+    choice_filter,
+    optional_account_id,
+    page_slice,
+    provider_filter,
+    text_filter,
+    time_range,
+)
 
 _AUDIT_CATEGORIES = frozenset(
     {"account", "backup", "checkin", "credential", "metrics", "model", "proxy_key", "service", "settings", "usage"}
@@ -48,8 +55,9 @@ def audit_action_filters(
 ) -> tuple[str | None, str | None]:
     selected_action = text_filter(action, detail="invalid_action")
     selected_category = choice_filter(category, _AUDIT_CATEGORIES, detail="invalid_category")
+    normalized_prefix = action_prefix.rstrip(".") if action_prefix else None
     selected_prefix = text_filter(
-        action_prefix or selected_category,
+        normalized_prefix or selected_category,
         detail="invalid_action_prefix",
     )
     if selected_action and "." not in selected_action:
@@ -60,12 +68,20 @@ def audit_action_filters(
     return selected_action, selected_prefix
 
 
-def page(key: str, values: list[Any], limit: int, offset: int) -> dict[str, Any]:
-    return {
-        key: values[:limit],
-        "limit": limit,
-        "next_cursor": offset + limit if len(values) > limit else None,
-    }
+def audit_search_filter(search: str | None, query: str | None) -> str | None:
+    if search and query and search != query:
+        raise HTTPException(status_code=400, detail="conflicting_search_filter")
+    return text_filter(query or search, detail="invalid_search")
+
+
+def page(
+    key: str,
+    values: list[dict[str, Any]],
+    limit: int,
+    offset: int,
+) -> dict[str, Any]:
+    selected, next_cursor = page_slice(values, offset, limit)
+    return {key: selected, "limit": limit, "next_cursor": next_cursor}
 
 
 def track_task(app: Any, task: asyncio.Task[Any]) -> None:

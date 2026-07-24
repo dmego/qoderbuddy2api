@@ -18,6 +18,7 @@ from qb2api.auth.flows import FlowBusyError
 from qb2api.checkin.models import CheckInOutcome
 
 from .dependencies import admin_state, require_admin
+from .mutation_audit import add_audit, refresh_after_mutation
 from .validation import json_object, label, optional_account_id, required_string
 from .views import account_view_dict, find_account_view
 
@@ -72,7 +73,12 @@ async def codebuddy_oauth_poll(request: Request) -> Any:
             return {"status": "error", "message": result.message or "auth_failed"}
         account_id = await _persist_oauth_result(state, lease.record.label, result)
         consume = True
-        return {"status": "success", "account": await _publish(state, "codebuddy", account_id)}
+        return {
+            "status": "success",
+            "account": await _publish(
+                state, "codebuddy", account_id, mutation_action="account.import"
+            ),
+        }
     finally:
         state.oauth_flows.finish_poll(flow_id, consume=consume)
 
@@ -92,7 +98,12 @@ async def codebuddy_manual(request: Request) -> dict[str, Any]:
         source="manual",
         access_token=access_token,
     )
-    return {"status": "ok", "account": await _publish(state, "codebuddy", account_id)}
+    return {
+        "status": "ok",
+        "account": await _publish(
+            state, "codebuddy", account_id, mutation_action="account.import"
+        ),
+    }
 
 
 @router.post("/auth/qoder/chat")
@@ -112,7 +123,12 @@ async def qoder_chat_import(request: Request) -> dict[str, Any]:
     except LookupError as error:
         raise HTTPException(status_code=404, detail="account_not_found") from error
     state.credential_resolver.invalidate("qoder", account_id, "chat")
-    return {"status": "ok", "account": await _publish(state, "qoder", account_id)}
+    return {
+        "status": "ok",
+        "account": await _publish(
+            state, "qoder", account_id, mutation_action="account.import"
+        ),
+    }
 
 
 @router.post("/auth/qoder/checkin")
@@ -141,7 +157,12 @@ async def qoder_checkin_import(request: Request) -> dict[str, Any]:
         verified_at=datetime.now(UTC).replace(microsecond=0).isoformat(),
     )
     state.credential_resolver.invalidate("qoder", account_id, "checkin")
-    return {"status": "ok", "account": await _publish(state, "qoder", account_id)}
+    return {
+        "status": "ok",
+        "account": await _publish(
+            state, "qoder", account_id, mutation_action="credential.import"
+        ),
+    }
 
 
 async def _persist_oauth_result(state: Any, selected_label: str, result: Any) -> str:
@@ -167,9 +188,32 @@ async def _require_qoder_account(state: Any, account_id: str) -> None:
         raise HTTPException(status_code=404, detail="account_not_found")
 
 
-async def _publish(state: Any, provider: str, account_id: str) -> dict[str, Any]:
-    await state.refresh_provider_pools()
+async def _publish(
+    state: Any,
+    provider: str,
+    account_id: str,
+    *,
+    mutation_action: str,
+) -> dict[str, Any]:
+    resource_id = f"{provider}:{account_id}"
+    await refresh_after_mutation(
+        state,
+        mutation_action=mutation_action,
+        resource_type="account",
+        resource_id=resource_id,
+    )
     view = find_account_view(state, provider, account_id)
     if view is None:
+        await add_audit(
+            state.account_repo,
+            action="provider_pool.refresh",
+            resource_type="account",
+            resource_id=resource_id,
+            result="failed",
+            metadata={
+                "mutation_action": mutation_action,
+                "error_code": "account_publish_failed",
+            },
+        )
         raise HTTPException(status_code=500, detail="account_publish_failed")
     return account_view_dict(view)

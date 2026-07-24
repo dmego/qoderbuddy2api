@@ -58,6 +58,25 @@ class _ManualCheckinService:
         )
 
 
+class _StatusCheckinService:
+    async def status_snapshot(self, **_kwargs):
+        return {
+            "enabled": True,
+            "running": False,
+            "local_date": "2026-07-24",
+            "timezone": "Asia/Shanghai",
+            "checkin_at": "00:10",
+            "eligible_accounts": [],
+            "daily_states": [
+                {
+                    "provider": "qoder",
+                    "account_id": "qd-1",
+                    "terminal_outcome": "CLAIMED",
+                }
+            ],
+        }
+
+
 @pytest.fixture
 async def management_context(tmp_path):
     repository = AccountRepository(str(tmp_path / "management.sqlite3"))
@@ -175,6 +194,17 @@ async def test_manual_checkin_audits_success_failure_and_cancellation(
 
 
 @pytest.mark.asyncio
+async def test_checkin_status_uses_console_outcome_shape(management_context) -> None:
+    app, _repository, _refreshes = management_context
+    app.state.checkin_service = _StatusCheckinService()
+    async with _client(app) as client:
+        response = await client.get("/api/admin/checkin/status", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json()["daily_states"][0]["terminal_outcome"] == "claimed"
+
+
+@pytest.mark.asyncio
 async def test_metrics_detail_and_refresh_operation_are_trackable(management_context) -> None:
     app, repository, _refreshes = management_context
     async with _client(app) as client:
@@ -200,6 +230,7 @@ async def test_metrics_detail_and_refresh_operation_are_trackable(management_con
 @pytest.mark.asyncio
 async def test_metric_refresh_failure_and_cancellation_use_stable_codes(
     management_context,
+    caplog,
 ) -> None:
     _app, repository, _refreshes = management_context
     failed_id = await repository.create_metric_refresh_operation()
@@ -231,6 +262,7 @@ async def test_metric_refresh_failure_and_cancellation_use_stable_codes(
     }
     assert outcomes[failed_id] == "failed"
     assert outcomes[cancelled_id] == "cancelled"
+    assert "upstream-secret-must-not-leak" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -359,6 +391,15 @@ async def test_model_usage_and_audit_query_contracts(management_context) -> None
         resource_id="qoder:qd-1",
         result="succeeded",
     )
+    failed_account_event = await repository.add_audit_event(
+        actor_type="admin",
+        actor_id=None,
+        action="account.update",
+        resource_type="account",
+        resource_id="qoder:qd-1",
+        result="failed",
+        metadata={"error_code": "provider_pool_refresh_failed"},
+    )
     await repository.add_audit_event(
         actor_type="admin",
         actor_id=None,
@@ -391,7 +432,11 @@ async def test_model_usage_and_audit_query_contracts(management_context) -> None
             "/api/admin/usage/export?status=failed", headers=_headers()
         )
         audit = await client.get(
-            "/api/admin/audit?action=account&search=qd-1", headers=_headers()
+            "/api/admin/audit?action=account.delete&query=qd-1", headers=_headers()
+        )
+        prefix_audit = await client.get(
+            "/api/admin/audit?action_prefix=account.&result=failed",
+            headers=_headers(),
         )
         category_audit = await client.get(
             "/api/admin/audit?category=credential", headers=_headers()
@@ -408,16 +453,22 @@ async def test_model_usage_and_audit_query_contracts(management_context) -> None
         "Qwen3.7-Flash"
     ]
     assert summary.json()["summary"]["request_count"] == 3
-    assert summary.json()["summary"]["avg_latency_ms"] == 200
-    assert summary.json()["summary"]["p95_latency_ms"] == 300
+    assert summary.json()["summary"]["latency_avg_ms"] == 200
+    assert summary.json()["summary"]["latency_p95_ms"] == 300
     assert failed_summary.json()["summary"]["request_count"] == 1
-    assert failed_summary.json()["summary"]["avg_latency_ms"] is None
-    assert failed_summary.json()["summary"]["p95_latency_ms"] is None
+    assert failed_summary.json()["summary"]["latency_avg_ms"] is None
+    assert failed_summary.json()["summary"]["latency_p95_ms"] is None
     assert [item["event_id"] for item in events.json()["events"]] == ["evt-failed"]
     assert timeseries.json()["rollups"][0]["request_count"] == 1
     assert "evt-failed" in exported.text
     assert "evt-success" not in exported.text
     assert [item["event_id"] for item in audit.json()["events"]] == [account_event]
+    assert [item["event_id"] for item in prefix_audit.json()["events"]] == [
+        failed_account_event
+    ]
+    assert prefix_audit.json()["events"][0]["error_code"] == (
+        "provider_pool_refresh_failed"
+    )
     assert category_audit.json()["events"][0]["action"] == "credential.rotate"
     assert invalid_status.status_code == 400
     assert invalid_status.json()["detail"] == "invalid_status"

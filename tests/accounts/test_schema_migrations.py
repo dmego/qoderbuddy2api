@@ -7,6 +7,20 @@ import sqlite3
 import pytest
 
 from qb2api.accounts.repository import AccountRepository
+from qb2api.accounts.schema import SCHEMA
+
+
+def test_public_schema_contains_current_management_tables() -> None:
+    connection = sqlite3.connect(":memory:")
+    connection.executescript(SCHEMA)
+    tables = {
+        str(row[0])
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    connection.close()
+    assert {"service_events", "metric_refresh_operations"} <= tables
 
 
 @pytest.mark.asyncio
@@ -62,16 +76,6 @@ async def test_v3_to_v4_adds_management_tables_and_preserves_data(tmp_path):
             'qoder', 'preserved', 'Preserved', 'manual', 1, NULL, NULL,
             '2026-07-23T00:00:00+00:00', '2026-07-23T00:00:00+00:00'
         );
-        CREATE TABLE service_events (
-            cursor INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE,
-            service_name TEXT NOT NULL, event_type TEXT NOT NULL, action TEXT,
-            desired_state TEXT, observed_state TEXT, operation_id TEXT, status TEXT,
-            error_code TEXT, created_at TEXT NOT NULL
-        );
-        INSERT INTO service_events (
-            event_id, service_name, event_type, status, created_at
-        ) VALUES ('event-v3', 'proxy-worker', 'operation', 'succeeded',
-                  '2026-07-23T00:00:00+00:00');
         CREATE TABLE audit_events (
             event_id TEXT PRIMARY KEY, actor_type TEXT NOT NULL, actor_id TEXT,
             action TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT,
@@ -115,8 +119,8 @@ async def test_v3_to_v4_adds_management_tables_and_preserves_data(tmp_path):
     account = await repository.db.execute_fetchall(
         "SELECT label FROM accounts WHERE account_id='preserved'"
     )
-    event = await repository.db.execute_fetchall(
-        "SELECT event_id, status, in_flight FROM service_events WHERE event_id='event-v3'"
+    event_count = await repository.db.execute_fetchall(
+        "SELECT COUNT(*) FROM service_events"
     )
     audit = await repository.db.execute_fetchall(
         "SELECT action, result FROM audit_events WHERE event_id='audit-v3'"
@@ -130,7 +134,7 @@ async def test_v3_to_v4_adds_management_tables_and_preserves_data(tmp_path):
     assert "idx_service_events_cursor" in indexes
     assert "in_flight" in columns
     assert account[0][0] == "Preserved"
-    assert tuple(event[0]) == ("event-v3", "succeeded", None)
+    assert event_count[0][0] == 0
     assert tuple(audit[0]) == ("account.update", "succeeded")
     assert tuple(usage[0]) == ("request-v3", 1, 2)
     assert await repository.schema_version() == "4"

@@ -91,6 +91,14 @@ def test_service_events_are_persisted_secret_safe_and_cursor_paginated(tmp_path)
         assert operations_by_status.json()["events"] == operations.json()["events"]
         assert "error_message" not in operations.text
 
+        states = client.get(
+            "/api/admin/service/events?event_type=state",
+            headers=headers,
+        )
+        assert states.status_code == 200
+        assert states.json()["events"]
+        assert all(event["in_flight"] == 0 for event in states.json()["events"])
+
         invalid_type = client.get(
             "/api/admin/service/events?event_type=lifecycle", headers=headers
         )
@@ -141,6 +149,8 @@ def test_failed_service_operation_is_audited_without_raw_error(tmp_path) -> None
 
     assert response.status_code == 200
     assert response.json()["status"] == "failed"
+    assert response.json()["error_code"] == "service_operation_failed"
+    assert "error" not in response.json()
     assert events.json()["events"][0]["error_code"] == "service_operation_failed"
     assert audit.json()["events"][0]["result"] == "failed"
     assert "worker-secret-must-not-leak" not in response.text + events.text + audit.text

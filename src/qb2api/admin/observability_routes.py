@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, Response
 from .dependencies import admin_state, require_admin
 from .observability_support import (
     audit_action_filters,
+    audit_search_filter,
 )
 from .observability_support import (
     page as _page,
@@ -243,12 +244,14 @@ async def metric_refresh_result(operation_id: str, request: Request) -> dict[str
 @router.get("/audit")
 async def audit_events(
     request: Request,
+    *,
     limit: str | None = None,
     cursor: str | None = None,
     action: str | None = None,
     action_prefix: str | None = None,
     category: str | None = None,
     search: str | None = None,
+    query: str | None = None,
     resource_type: str | None = None,
     result: str | None = None,
     started_after: str | None = None,
@@ -268,7 +271,7 @@ async def audit_events(
         offset=offset,
         action=selected_action,
         action_prefix=selected_prefix,
-        search=text_filter(search, detail="invalid_search"),
+        search=audit_search_filter(search, query),
         resource_type=text_filter(resource_type, detail="invalid_resource_type"),
         result=text_filter(result, detail="invalid_result"),
         started_after=after,

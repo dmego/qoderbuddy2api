@@ -189,9 +189,20 @@ async def probe_account(provider: str, account_id: str, request: Request) -> dic
     try:
         result = await probe_model_for_account(state, provider, account_id)
     except ProbeError as error:
-        await account_audit(state, "account.probe", provider, account_id, result="failed")
+        await account_audit(
+            state,
+            "account.probe",
+            provider=provider,
+            account_id=account_id,
+            result="failed",
+        )
         raise HTTPException(status_code=error.status_code, detail=error.code) from error
-    await account_audit(state, "account.probe", provider, account_id)
+    await account_audit(
+        state,
+        "account.probe",
+        provider=provider,
+        account_id=account_id,
+    )
     return result
 
 
@@ -209,7 +220,12 @@ async def patch_account(provider: str, account_id: str, request: Request) -> dic
     async with state.account_repo.transaction():
         await _update_account(state, account, body)
         await _update_purposes(state, provider, account_id, purposes, body)
-        await account_audit(state, "account.update", provider, account_id)
+        await account_audit(
+            state,
+            "account.update",
+            provider=provider,
+            account_id=account_id,
+        )
     await refresh_after_mutation(
         state, mutation_action="account.update", resource_type="account",
         resource_id=f"{provider}:{account_id}",

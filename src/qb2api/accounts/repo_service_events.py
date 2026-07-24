@@ -22,6 +22,7 @@ class ServiceEventRepositoryMixin:
             event_type="state",
             desired_state=values.get("desired_state"),
             observed_state=values.get("observed_state"),
+            in_flight=values.get("in_flight"),
             error_code="worker_state_error" if values.get("last_error") else None,
         )
 
@@ -161,29 +162,45 @@ class ServiceEventRepositoryMixin:
         try:
             result = await scheduler.refresh_once()
         except asyncio.CancelledError:
-            await self.finish_metric_refresh_operation(
+            await self._finish_metric_refresh(
                 operation_id,
                 status="cancelled",
                 error_code="refresh_cancelled",
             )
-            await self._audit_metric_refresh(operation_id, "cancelled")
             raise
         except Exception:
-            status = "failed"
-            _LOGGER.exception("metrics refresh operation failed", extra={"operation_id": operation_id})
-            await self.finish_metric_refresh_operation(
+            _LOGGER.error(
+                "metrics refresh operation failed",
+                extra={"operation_id": operation_id, "error_code": "metrics_refresh_failed"},
+            )
+            await self._finish_metric_refresh(
                 operation_id,
-                status=status,
+                status="failed",
                 error_code="metrics_refresh_failed",
             )
         else:
-            status = "succeeded"
+            await self._finish_metric_refresh(
+                operation_id,
+                status="succeeded",
+                result=result,
+            )
+
+    async def _finish_metric_refresh(
+        self,
+        operation_id: str,
+        *,
+        status: str,
+        result: dict[str, Any] | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        async with self.transaction():
             await self.finish_metric_refresh_operation(
                 operation_id,
                 status=status,
                 result=result,
+                error_code=error_code,
             )
-        await self._audit_metric_refresh(operation_id, status)
+            await self._audit_metric_refresh(operation_id, status, error_code)
 
     async def recover_metric_refresh_operations(self) -> list[str]:
         async with self.transaction():
@@ -201,7 +218,12 @@ class ServiceEventRepositoryMixin:
                     await self._audit_metric_refresh(operation_id, "cancelled")
         return operation_ids
 
-    async def _audit_metric_refresh(self, operation_id: str, result: str) -> None:
+    async def _audit_metric_refresh(
+        self,
+        operation_id: str,
+        result: str,
+        error_code: str | None = None,
+    ) -> None:
         await self.add_audit_event(
             actor_type="admin",
             actor_id=None,
@@ -209,6 +231,7 @@ class ServiceEventRepositoryMixin:
             resource_type="metrics",
             resource_id=operation_id,
             result=result,
+            metadata={"error_code": error_code} if error_code else None,
         )
 
     async def list_audit_events_page(
@@ -225,7 +248,13 @@ class ServiceEventRepositoryMixin:
         started_before: str | None = None,
     ) -> tuple[list[dict[str, Any]], int | None]:
         clauses, params = _audit_filters(
-            action, action_prefix, search, resource_type, result, started_after, started_before
+            action,
+            action_prefix,
+            search,
+            resource_type=resource_type,
+            result=result,
+            started_after=started_after,
+            started_before=started_before,
         )
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.extend((limit + 1, offset))
@@ -246,6 +275,7 @@ def _audit_filters(
     action: str | None,
     action_prefix: str | None,
     search: str | None,
+    *,
     resource_type: str | None,
     result: str | None,
     started_after: str | None,
@@ -286,4 +316,13 @@ def _audit_row(row: Any) -> dict[str, Any]:
         result["metadata"] = json.loads(result.pop("metadata_json"))
     except (TypeError, json.JSONDecodeError):
         result["metadata"] = {}
+    error_code = result["metadata"].get("error_code")
+    if _safe_error_code(error_code):
+        result["error_code"] = error_code
     return result
+
+
+def _safe_error_code(value: Any) -> bool:
+    if not isinstance(value, str) or not 1 <= len(value) <= 64:
+        return False
+    return all(char.islower() or char.isdigit() or char in "._-" for char in value)

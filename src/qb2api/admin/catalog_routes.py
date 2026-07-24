@@ -37,6 +37,7 @@ class ProbeError(Exception):
 @router.get("")
 async def list_models(
     request: Request,
+    *,
     provider: str | None = None,
     enabled: str | None = None,
     source: str | None = None,

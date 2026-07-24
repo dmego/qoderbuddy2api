@@ -206,7 +206,7 @@ class ServiceSupervisor:
         await self._persist_operation(operation)
 
     async def _reject_operation(self, operation: SupervisorOperation, error: Exception) -> None:
-        self._operations.fail(operation, RuntimeError(type(error).__name__))
+        self._operations.fail(operation, "service_operation_failed")
         await self._persist()
         await self._persist_operation(operation)
 

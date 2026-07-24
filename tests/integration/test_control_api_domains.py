@@ -74,3 +74,45 @@ def test_settings_models_usage_metrics_and_audit_are_secret_safe(tmp_path) -> No
         )
         assert dry_run.status_code == 200
         assert dry_run.json()["next_step"] == "offline_restore_required"
+
+
+def test_setting_apply_failure_is_persisted_and_audited(tmp_path, monkeypatch) -> None:
+    settings = Settings(
+        admin_key="admin-secret",
+        credential_key=Fernet.generate_key().decode(),
+        data_dir=str(tmp_path),
+    )
+    headers = {"Authorization": "Bearer admin-secret"}
+    with TestClient(create_control_app(lambda: settings)) as client:
+
+        async def fail_apply(_key, _value):
+            raise RuntimeError("runtime-secret-must-not-leak")
+
+        monkeypatch.setattr(client.app.state.runtime, "apply_setting", fail_apply)
+        response = client.patch(
+            "/api/admin/settings",
+            headers=headers,
+            json={
+                "key": "service.worker.autostart",
+                "value": True,
+                "value_version": 0,
+            },
+        )
+        stored = client.get("/api/admin/settings", headers=headers)
+        audit = client.get(
+            "/api/admin/audit?action=settings.update&result=failed",
+            headers=headers,
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "setting_apply_failed"
+    item = next(
+        value
+        for value in stored.json()["settings"]
+        if value["key"] == "service.worker.autostart"
+    )
+    assert item["value"] is True
+    assert item["apply_status"] == "failed"
+    assert item["last_error"] == "setting_apply_failed"
+    assert audit.json()["events"][0]["error_code"] == "setting_apply_failed"
+    assert "runtime-secret-must-not-leak" not in response.text + audit.text

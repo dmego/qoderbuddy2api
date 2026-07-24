@@ -2,14 +2,44 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 from cryptography.fernet import Fernet
 
-from qb2api.accounts.imports import persist_qoder_checkin
+from qb2api.accounts.imports import persist_codebuddy_account, persist_qoder_checkin
 from qb2api.accounts.promote import promote_env_account
 from qb2api.accounts.registry import AccountRegistry
 from qb2api.accounts.repository import AccountRepository
 from qb2api.accounts.vault import CredentialVault
+
+
+@pytest.mark.asyncio
+async def test_import_rolls_back_when_primary_audit_fails(tmp_path) -> None:
+    repository = AccountRepository(str(tmp_path / "accounts.sqlite3"))
+    await repository.connect()
+    await repository.migrate()
+    vault = CredentialVault(Fernet.generate_key().decode())
+    await repository.db.execute(
+        """CREATE TRIGGER reject_import_audit BEFORE INSERT ON audit_events
+        WHEN NEW.action='account.import'
+        BEGIN SELECT RAISE(ABORT, 'audit rejected'); END"""
+    )
+    await repository.db.commit()
+
+    try:
+        with pytest.raises(sqlite3.IntegrityError, match="audit rejected"):
+            await persist_codebuddy_account(
+                repository,
+                vault,
+                label="atomic",
+                source="manual",
+                access_token="secret-token",
+            )
+        assert await repository.list_accounts() == []
+        assert await repository.list_credential_metadata() == []
+    finally:
+        await repository.close()
 
 
 @pytest.mark.asyncio

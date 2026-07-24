@@ -37,6 +37,7 @@ async def get_operation(operation_id: str, request: Request) -> dict[str, Any]:
 @router.get("/events")
 async def get_service_events(
     request: Request,
+    *,
     cursor: str | None = None,
     limit: str | None = None,
     event_type: str | None = None,
@@ -94,7 +95,7 @@ def _operation_view(operation: SupervisorOperation) -> dict[str, Any]:
         "operation_id": operation.operation_id,
         "action": operation.action,
         "status": operation.status,
-        "error": operation.error,
+        "error_code": operation.error,
         "in_flight": operation.in_flight,
         "created_at": operation.created_at,
         "finished_at": operation.finished_at,

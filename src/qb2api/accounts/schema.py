@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from .account_queries import INSERT_CREDENTIAL, UPDATE_CREDENTIAL, UPSERT_ACCOUNT, UPSERT_PURPOSE
+from .schema_management import MANAGEMENT_SCHEMA_V4
 
 __all__ = [
     "INSERT_CREDENTIAL",
@@ -20,7 +21,7 @@ def now_iso() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
-SCHEMA = """
+BASE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts (
     provider TEXT NOT NULL,
     account_id TEXT NOT NULL,
@@ -275,3 +276,5 @@ CREATE TABLE IF NOT EXISTS backup_runs (
     error_message TEXT
 );
 """
+
+SCHEMA = BASE_SCHEMA + MANAGEMENT_SCHEMA_V4

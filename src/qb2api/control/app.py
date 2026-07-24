@@ -148,6 +148,7 @@ def _snapshot_values(snapshot: ServiceSnapshot) -> dict[str, Any]:
         "last_health_at": _iso(snapshot.last_health_at),
         "last_exit_code": snapshot.last_exit_code,
         "last_error": snapshot.last_error,
+        "in_flight": snapshot.in_flight,
     }
 
 

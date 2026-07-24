@@ -142,6 +142,12 @@ async def test_codebuddy_manual_import_does_not_enable_unverified_checkin(
     assert checkin["enabled"] is False
     assert checkin["verification_status"] == "unverified"
     assert await repository.get_credential("codebuddy", account_id, "checkin") is None
+    audit_actions = {
+        item["action"]
+        for item in await repository.list_audit_events()
+        if item["resource_id"] and account_id in item["resource_id"]
+    }
+    assert {"account.import", "credential.import"} <= audit_actions
 
 
 @pytest.mark.asyncio
@@ -270,6 +276,10 @@ async def test_checkin_run_history_is_paginated_and_secret_safe(admin_context) -
         invalid_cursor = await client.get(
             "/api/admin/checkin/runs?cursor=not-a-cursor", headers=_headers()
         )
+        detail = await client.get(
+            f"/api/admin/checkin/runs/{response.json()['runs'][0]['run_id']}",
+            headers=_headers(),
+        )
 
     assert response.status_code == 200
     history = response.json()
@@ -285,6 +295,10 @@ async def test_checkin_run_history_is_paginated_and_secret_safe(admin_context) -
     assert invalid_cursor.status_code == 400
     assert invalid_cursor.json()["detail"] == "invalid_cursor"
     assert "upstream-secret-must-not-appear" not in response.text
+    assert detail.status_code == 200
+    assert detail.json()["attempts"][0]["outcome"] == "claimed"
+    assert detail.json()["attempts"][0]["error_code"] == "checkin_failed"
+    assert "upstream-secret-must-not-appear" not in detail.text
 
 
 async def _post_qoder_checkin(app: FastAPI, account_id: str) -> httpx.Response:

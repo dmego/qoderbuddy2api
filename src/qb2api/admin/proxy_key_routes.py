@@ -175,7 +175,11 @@ async def _publish_runtime(
     try:
         await state.refresh_provider_pools()
     except Exception:
-        logger.exception("%s runtime apply failed for key_id=%s", action, key_id)
+        logger.error(
+            "%s runtime apply failed for key_id=%s error_code=runtime_reload_failed",
+            action,
+            key_id,
+        )
         return {"status": "failed", "error_code": "runtime_reload_failed"}
     return {"status": "succeeded"}
 
@@ -198,6 +202,10 @@ async def _record_audit(
             metadata={"runtime_apply": runtime_status},
         )
     except Exception:
-        logger.exception("%s audit write failed for key_id=%s", action, key_id)
+        logger.error(
+            "%s audit write failed for key_id=%s error_code=audit_write_failed",
+            action,
+            key_id,
+        )
         return {"status": "failed", "error_code": "audit_write_failed"}
     return {"status": "succeeded"}

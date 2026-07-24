@@ -41,6 +41,8 @@ async def persist_codebuddy_account(
             has_refresh_token=bool(refresh_token),
             expires_at=expires_at,
         )
+        await _audit_account_import(repo, "codebuddy", account_id)
+        await _audit_credential_import(repo, "codebuddy", account_id, purpose="chat")
     return account_id
 
 
@@ -77,6 +79,8 @@ async def persist_qoder_chat(
             mode="pat",
             encrypted_payload=encrypted,
         )
+        await _audit_account_import(repo, "qoder", durable_id)
+        await _audit_credential_import(repo, "qoder", durable_id, purpose="chat")
     return durable_id
 
 
@@ -105,7 +109,7 @@ async def persist_qoder_checkin(
             capabilities=["checkin.qoder"],
             verified_at=verified_at,
         )
-        return await repo.upsert_credential(
+        version = await repo.upsert_credential(
             provider="qoder",
             account_id=account_id,
             purpose="checkin",
@@ -113,6 +117,8 @@ async def persist_qoder_checkin(
             encrypted_payload=encrypted,
             has_refresh_token=True,
         )
+        await _audit_credential_import(repo, "qoder", account_id, purpose="checkin")
+        return version
 
 
 async def _qoder_account(
@@ -184,3 +190,35 @@ async def _write_qoder_unconfigured_checkin(
 
 def _mask(secret: str) -> str:
     return f"{secret[:3]}***{secret[-2:]}" if len(secret) > 8 else "***"
+
+
+async def _audit_account_import(
+    repo: AccountRepository,
+    provider: str,
+    account_id: str,
+) -> None:
+    await repo.add_audit_event(
+        actor_type="admin",
+        actor_id=None,
+        action="account.import",
+        resource_type="account",
+        resource_id=f"{provider}:{account_id}",
+        result="succeeded",
+    )
+
+
+async def _audit_credential_import(
+    repo: AccountRepository,
+    provider: str,
+    account_id: str,
+    *,
+    purpose: str,
+) -> None:
+    await repo.add_audit_event(
+        actor_type="admin",
+        actor_id=None,
+        action="credential.import",
+        resource_type="credential",
+        resource_id=f"{provider}:{account_id}:{purpose}",
+        result="succeeded",
+    )

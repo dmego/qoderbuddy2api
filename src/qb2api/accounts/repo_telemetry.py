@@ -162,10 +162,10 @@ class TelemetryRepositoryMixin:
             "error_count": int(row[4]),
             "token_event_count": int(row[5]),
             "missing_token_count": int(row[6]),
-            "avg_latency_ms": (
+            "latency_avg_ms": (
                 sum(latencies) / len(latencies) if latencies else None
             ),
-            "p95_latency_ms": percentile(latencies, 0.95),
+            "latency_p95_ms": percentile(latencies, 0.95),
         }
 
     async def upsert_usage_rollup(self, values: dict[str, Any]) -> None:

@@ -23,7 +23,11 @@ router = APIRouter()
 async def checkin_status(request: Request) -> dict[str, Any]:
     await require_admin(request)
     state = admin_state(request)
-    return await state.checkin_service.status_snapshot(next_run_at=_next_run(state))
+    snapshot = await state.checkin_service.status_snapshot(next_run_at=_next_run(state))
+    snapshot["daily_states"] = [
+        _daily_state_view(item) for item in snapshot.get("daily_states", [])
+    ]
+    return snapshot
 
 
 @router.post("/checkin/run")
@@ -59,6 +63,7 @@ async def checkin_run(request: Request) -> Any:
 @router.get("/checkin/runs")
 async def checkin_runs(
     request: Request,
+    *,
     limit: str | None = None,
     cursor: str | None = None,
     status: str | None = None,
@@ -94,8 +99,36 @@ async def checkin_run_detail(run_id: str, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="run_not_found")
     return {
         "run": run,
-        "attempts": await repository.list_checkin_attempts(run_id),
+        "attempts": [
+            _attempt_view(item)
+            for item in await repository.list_checkin_attempts(run_id)
+        ],
     }
+
+
+def _daily_state_view(item: dict[str, Any]) -> dict[str, Any]:
+    result = dict(item)
+    result["terminal_outcome"] = _lower_value(result.get("terminal_outcome"))
+    return result
+
+
+def _attempt_view(item: dict[str, Any]) -> dict[str, Any]:
+    error_code = item.get("business_code")
+    if error_code is None and item.get("redacted_error"):
+        error_code = "checkin_failed"
+    return {
+        "provider": item.get("provider"),
+        "account_id": item.get("account_id"),
+        "outcome": _lower_value(item.get("outcome")),
+        "http_status": item.get("http_status"),
+        "attempts": item.get("attempts", 0),
+        "finished_at": item.get("finished_at"),
+        "error_code": str(error_code) if error_code is not None else None,
+    }
+
+
+def _lower_value(value: Any) -> str | None:
+    return value.lower() if isinstance(value, str) else None
 
 
 def _targets(body: dict[str, Any]) -> list[CheckinTarget] | None:
@@ -117,7 +150,7 @@ def _targets(body: dict[str, Any]) -> list[CheckinTarget] | None:
 
 
 def _next_run(state: Any) -> str | None:
-    scheduler = state.checkin_scheduler
+    scheduler = getattr(state, "checkin_scheduler", None)
     next_run = scheduler.next_run_at if scheduler is not None else None
     return next_run.isoformat() if next_run is not None else None
 
