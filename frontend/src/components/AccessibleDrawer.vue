@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { X } from "@lucide/vue";
-import { nextTick, ref, useId, watch } from "vue";
+import { nextTick, onBeforeUnmount, ref, useId, watch } from "vue";
 
 const props = withDefaults(defineProps<{
   open: boolean;
@@ -23,14 +23,17 @@ watch(() => props.open, async (open) => {
     previousFocus = document.activeElement as HTMLElement | null;
     await nextTick();
     focusableElements()[0]?.focus();
-  } else {
-    previousFocus?.focus();
-    previousFocus = null;
-  }
+  } else restoreFocus();
 }, { immediate: true });
+onBeforeUnmount(restoreFocus);
 
 function close(): void {
   emit("close");
+}
+
+function restoreFocus(): void {
+  if (previousFocus?.isConnected) previousFocus.focus();
+  previousFocus = null;
 }
 
 function trapFocus(event: KeyboardEvent): void {
@@ -55,7 +58,7 @@ function focusableElements(): HTMLElement[] {
       <section ref="panel" class="detail-drawer data-panel" role="dialog" aria-modal="true" :aria-labelledby="titleId" @keydown.esc="close" @keydown="trapFocus">
         <div class="drawer-heading">
           <div><p class="eyebrow">{{ eyebrow }}</p><h2 :id="titleId">{{ title }}</h2><p v-if="subtitle" class="mono">{{ subtitle }}</p></div>
-          <button class="icon-button" type="button" :aria-label="closeLabel" @click="close"><X :size="16" /></button>
+          <button class="icon-button drawer-close" type="button" :aria-label="closeLabel" @click="close"><X :size="16" /></button>
         </div>
         <slot />
       </section>

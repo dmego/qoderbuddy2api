@@ -92,10 +92,45 @@ describe("operations console workflows", () => {
     expect(confirm?.disabled).toBe(true);
     const verification = document.querySelector<HTMLInputElement>(".dialog-verification input");
     verification!.value = "RETENTION"; verification!.dispatchEvent(new Event("input", { bubbles: true })); await flushPromises();
+    await wrapper.get('input[aria-label="请求明细保留天数"]').setValue("15");
     await confirmDialog();
 
     const patch = calls.find((item) => item.method === "PATCH");
     expect(JSON.parse(patch?.body ?? "{}")).toMatchObject({ key: "usage.detail_retention_days", value: 30, value_version: 2 });
+    wrapper.unmount();
+  });
+
+  it("uses immutable setting snapshots across delayed sequential patches", async () => {
+    const bodies: Array<{ key: string; value: unknown; value_version: number }> = [];
+    let releaseFirst!: () => void;
+    const firstPatch = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (method === "GET") return response(settingsPayload);
+      const body = JSON.parse(String(init?.body)) as { key: string; value: unknown; value_version: number };
+      bodies.push(body);
+      if (bodies.length === 1) await firstPatch;
+      return response({ ...body, value_version: body.value_version + 1, apply_mode: "immediate", apply_status: "effective" });
+    }));
+    const wrapper = mount(SettingsPage, { global: { plugins: [createPinia(), VueQueryPlugin] } });
+    await flushPromises();
+
+    await wrapper.get('input[aria-label="Worker 启动超时"]').setValue("45");
+    await wrapper.get('input[aria-label="账号指标刷新间隔"]').setValue("120");
+    await buttonWithText(wrapper, "保存全部").trigger("click");
+    await flushPromises();
+
+    const secondInput = wrapper.get<HTMLInputElement>('input[aria-label="账号指标刷新间隔"]');
+    expect(secondInput.attributes("disabled")).toBeDefined();
+    secondInput.element.value = "240";
+    secondInput.element.dispatchEvent(new Event("input", { bubbles: true }));
+    releaseFirst();
+    await flushPromises();
+
+    expect(bodies.map((item) => [item.key, item.value])).toEqual([
+      ["service.worker.start_timeout_seconds", 45],
+      ["monitoring.metrics_interval_seconds", 120],
+    ]);
     wrapper.unmount();
   });
 
@@ -105,11 +140,17 @@ describe("operations console workflows", () => {
   ])("persists two setting successes and one %i failure before refetching", async (failureStatus, failureCode) => {
     const calls: Array<{ url: string; method: string; body?: string }> = [];
     let getCount = 0;
+    const serverValues: Record<string, unknown> = {
+      "service.worker.start_timeout_seconds": 30,
+      "monitoring.metrics_interval_seconds": 60,
+      "checkin.at": "08:00",
+    };
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input); const method = init?.method ?? "GET"; calls.push({ url, method, body: init?.body as string | undefined });
-      if (method === "GET") { getCount += 1; return response(settingsPayload); }
+      if (method === "GET") { getCount += 1; return response({ ...settingsPayload, settings: settingsPayload.settings.map((item) => ({ ...item, value: serverValues[item.key] })) }); }
       const body = JSON.parse(String(init?.body)) as { key: string; value: unknown; value_version: number };
       if (body.key === "checkin.at") return response({ detail: failureCode }, failureStatus);
+      serverValues[body.key] = body.value;
       return response({ ...body, value_version: body.value_version + 1, apply_mode: "immediate", apply_status: "effective" });
     }));
     const wrapper = mount(SettingsPage, { global: { plugins: [createPinia(), VueQueryPlugin] } });
@@ -127,6 +168,10 @@ describe("operations console workflows", () => {
     expect(wrapper.text()).toContain("账号指标刷新间隔");
     expect(wrapper.text()).toContain("签到时间");
     expect(wrapper.text()).toContain(failureCode);
+    expect(wrapper.get<HTMLInputElement>('input[aria-label="Worker 启动超时"]').element.value).toBe("45");
+    expect(wrapper.get<HTMLInputElement>('input[aria-label="账号指标刷新间隔"]').element.value).toBe("120");
+    expect(wrapper.get<HTMLInputElement>('input[aria-label="签到时间"]').element.value).toBe("09:00");
+    expect(wrapper.get('button[aria-label="保存 签到时间"]').attributes("disabled")).toBeUndefined();
     wrapper.unmount();
   });
 

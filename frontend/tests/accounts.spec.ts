@@ -93,6 +93,41 @@ describe("AccountsPage", () => {
     expect(wrapper.text()).toContain("1 跳过");
     expect(calls.some((item) => item.method === "PATCH" && item.url.includes("qd-env"))).toBe(false);
   });
+
+  it("serializes all single and batch mutations while one account request is pending", async () => {
+    let releaseMutation!: () => void;
+    const blocked = new Promise<void>((resolve) => { releaseMutation = resolve; });
+    const mutations: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input); const method = init?.method ?? "GET";
+      if (url.includes("/metrics/accounts")) return response({ snapshots: [] });
+      if (method !== "GET") { mutations.push(url); await blocked; return response({ status: "succeeded" }); }
+      return response({ accounts: [account], next_cursor: null });
+    }));
+    const wrapper = mount(AccountsPage, { global: { plugins: [createPinia(), VueQueryPlugin] } });
+    await flushPromises();
+
+    await wrapper.get('input[aria-label="选择 研发账号"]').setValue(true);
+    await wrapper.get('button[aria-label="刷新 研发账号"]').trigger("click");
+    await flushPromises();
+
+    for (const label of ["刷新 研发账号", "探测 研发账号", "停用 研发账号", "删除 研发账号"]) {
+      expect(wrapper.get(`button[aria-label="${label}"]`).attributes("disabled")).toBeDefined();
+    }
+    for (const text of ["批量刷新", "批量探测", "批量停用"]) {
+      expect(wrapper.findAll("button").find((button) => button.text().includes(text))?.attributes("disabled")).toBeDefined();
+    }
+
+    await wrapper.get('button[aria-label="探测 研发账号"]').trigger("click");
+    await wrapper.findAll("button").find((button) => button.text().includes("批量探测"))?.trigger("click");
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
+    expect(mutations).toEqual(["/api/admin/accounts/qoder/qd-demo/refresh"]);
+
+    releaseMutation();
+    await flushPromises();
+    expect(mutations).toHaveLength(1);
+    wrapper.unmount();
+  });
 });
 
 function response(body: unknown, status = 200): Response {

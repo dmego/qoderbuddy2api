@@ -14,7 +14,8 @@ import { useNotifications } from "@/composables/useNotifications";
 type Setting = { key: string; value: unknown; value_version: number; source?: string; apply_mode: string; apply_status: string; last_error?: string };
 type Schema = Record<string, { type: "bool" | "int" | "str"; apply_mode: string; default?: unknown }>;
 type Meta = { label: string; description: string; min?: number; max?: number; step?: number; unit?: string };
-type SettingOutcome = { key: string; label: string; status: "succeeded" | "failed"; error?: string; value_version?: number };
+type SettingSnapshot = Readonly<{ setting: Setting; value: unknown; version: number }>;
+type SettingOutcome = { key: string; label: string; status: "succeeded" | "failed"; error?: string; value?: unknown; value_version?: number };
 
 const metadata: Record<string, Meta> = {
   "service.worker.autostart": { label: "Worker 自动启动", description: "Control Plane 启动后自动拉起 Proxy Worker。" },
@@ -29,7 +30,7 @@ const metadata: Record<string, Meta> = {
 
 const queryClient = useQueryClient();
 const draft = reactive<Record<string, unknown>>({});
-const pendingItems = ref<Setting[]>([]);
+const pendingItems = ref<SettingSnapshot[]>([]);
 const lastOperation = ref<Record<string, unknown> | null>(null);
 const { notifications, notify, dismiss } = useNotifications();
 const settings = useQuery({ queryKey: ["settings"], queryFn: () => apiRequest<{ settings: Setting[]; schema: Schema }>("/settings"), staleTime: 60_000 });
@@ -39,7 +40,7 @@ const errors = computed(() => Object.fromEntries((settings.data.value?.settings 
 watch(() => settings.data.value?.settings, (items) => { for (const item of items ?? []) draft[item.key] = item.value; }, { immediate: true });
 
 const mutation = useMutation({
-  mutationFn: async (items: Setting[]) => {
+  mutationFn: async (items: SettingSnapshot[]) => {
     const results: SettingOutcome[] = [];
     for (const item of items) results.push(await saveSetting(item));
     return results;
@@ -51,21 +52,24 @@ const mutation = useMutation({
     lastOperation.value = { action: "应用运行设置", status, total: results.length, succeeded, failed, items: results };
     notify(failed ? "部分设置应用失败" : "运行设置已应用", { message: `${succeeded} 成功 · ${failed} 失败`, tone: failed ? "warning" : "success", timeout: failed ? 0 : 5000 });
     await queryClient.invalidateQueries({ queryKey: ["settings"] });
+    for (const item of results) if (item.status === "failed") draft[item.key] = item.value;
   },
 });
 
 function schemaType(item: Setting): string { return settings.data.value?.schema[item.key]?.type ?? typeof item.value; }
-async function saveSetting(item: Setting): Promise<SettingOutcome> {
-  const label = metadata[item.key]?.label ?? item.key;
+async function saveSetting(snapshot: SettingSnapshot): Promise<SettingOutcome> {
+  const { setting, value, version } = snapshot;
+  const label = metadata[setting.key]?.label ?? setting.key;
   try {
-    const result = await apiRequest<Record<string, unknown>>("/settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: item.key, value: draft[item.key], value_version: item.value_version }) });
-    return { key: item.key, label, status: "succeeded", value_version: Number(result.value_version) };
+    const result = await apiRequest<Record<string, unknown>>("/settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: setting.key, value, value_version: version }) });
+    return { key: setting.key, label, status: "succeeded", value, value_version: Number(result.value_version) };
   } catch (error) {
-    return { key: item.key, label, status: "failed", error: error instanceof Error ? error.message : String(error) };
+    return { key: setting.key, label, status: "failed", value, error: error instanceof Error ? error.message : String(error) };
   }
 }
-function requestSave(items: Setting[]): void { if (!items.length || items.some((item) => errors.value[item.key])) return; const risky = items.some((item) => item.key === "usage.detail_retention_days" && Number(draft[item.key]) < Number(item.value)); if (risky) pendingItems.value = items; else mutation.mutate(items); }
+function requestSave(items: Setting[]): void { if (!items.length || items.some((item) => errors.value[item.key])) return; const snapshots = items.map(settingSnapshot); const risky = snapshots.some(({ setting, value }) => setting.key === "usage.detail_retention_days" && Number(value) < Number(setting.value)); if (risky) pendingItems.value = snapshots; else mutation.mutate(snapshots); }
 function confirmSave(): void { const items = pendingItems.value; pendingItems.value = []; mutation.mutate(items); }
+function settingSnapshot(setting: Setting): SettingSnapshot { return Object.freeze({ setting, value: draft[setting.key], version: setting.value_version }); }
 function resetDraft(): void { for (const item of settings.data.value?.settings ?? []) draft[item.key] = item.value; }
 function validate(item: Setting, value: unknown): string { const type = schemaType(item); if (type === "int" && (typeof value !== "number" || !Number.isInteger(value))) return "请输入整数"; const meta = metadata[item.key]; if (type === "int" && meta?.min !== undefined && Number(value) < meta.min) return `不能小于 ${meta.min}`; if (type === "int" && meta?.max !== undefined && Number(value) > meta.max) return `不能大于 ${meta.max}`; if (item.key === "checkin.at" && !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(value))) return "请输入有效时间"; if (type === "str" && !String(value).trim()) return "不能为空"; return ""; }
 function groupLabel(group: string): string { return ({ service: "服务", checkin: "签到", monitoring: "指标", usage: "用量" } as Record<string, string>)[group] ?? group; }
@@ -78,7 +82,7 @@ function groupLabel(group: string): string { return ({ service: "服务", checki
     <div v-if="settings.isPending.value" class="loading-row">正在读取运行设置…</div><div v-else-if="settings.isError.value" class="data-state data-state--error" role="alert">设置读取失败：{{ settings.error.value }}<button class="secondary-button compact-button" type="button" @click="settings.refetch()">重试</button></div><div v-else-if="!settings.data.value?.settings.length" class="empty-state"><strong>没有可管理的运行设置</strong><span>检查 Control Plane 的设置 schema 是否已加载。</span></div>
     <div v-if="settings.isStale.value && settings.data.value" class="data-state data-state--warning">当前设置快照可能已过期，保存前建议刷新以减少版本冲突。</div>
 
-    <section v-for="(items, group) in groups" :key="group" class="data-panel"><PanelHeader :title="groupLabel(String(group))" description="每项保存后都会记录 value version、apply mode 与审计结果。"><CircleHelp :size="17" /></PanelHeader><div class="settings-list"><div v-for="item in items" :key="item.key" class="setting-row" :class="{ 'setting-row--dirty': draft[item.key] !== item.value }"><div class="setting-copy"><strong>{{ metadata[item.key]?.label ?? item.key }}</strong><span>{{ metadata[item.key]?.description }}</span><small>{{ item.key }} · v{{ item.value_version }} · {{ item.source ?? "default" }} · {{ item.apply_mode }}</small></div><div class="setting-control"><label v-if="schemaType(item) === 'bool'" class="switch" :aria-label="metadata[item.key]?.label ?? item.key"><input v-model="draft[item.key]" type="checkbox" /><span></span></label><input v-else-if="item.key === 'checkin.at'" v-model="draft[item.key]" :aria-label="metadata[item.key]?.label ?? item.key" type="time" /><select v-else-if="item.key === 'checkin.timezone'" v-model="draft[item.key]" :aria-label="metadata[item.key]?.label ?? item.key"><option value="Asia/Shanghai">Asia/Shanghai</option><option value="UTC">UTC</option><option value="America/Los_Angeles">America/Los_Angeles</option><option value="Europe/London">Europe/London</option></select><div v-else class="input-with-unit"><input v-model.number="draft[item.key]" :aria-label="metadata[item.key]?.label ?? item.key" type="number" :min="metadata[item.key]?.min" :max="metadata[item.key]?.max" :step="metadata[item.key]?.step ?? 1" /><span>{{ metadata[item.key]?.unit }}</span></div><StatePill :value="item.apply_status" /><button class="icon-button" type="button" :aria-label="`保存 ${metadata[item.key]?.label ?? item.key}`" :disabled="draft[item.key] === item.value || Boolean(errors[item.key]) || mutation.isPending.value" @click="requestSave([item])"><Save :size="16" /></button></div><p v-if="errors[item.key]" class="form-error" role="alert">{{ errors[item.key] }}</p><p v-if="item.last_error" class="form-error">最近应用错误：{{ item.last_error }}</p></div></div></section>
+    <section v-for="(items, group) in groups" :key="group" class="data-panel"><PanelHeader :title="groupLabel(String(group))" description="每项保存后都会记录 value version、apply mode 与审计结果。"><CircleHelp :size="17" /></PanelHeader><div class="settings-list"><div v-for="item in items" :key="item.key" class="setting-row" :class="{ 'setting-row--dirty': draft[item.key] !== item.value }"><div class="setting-copy"><strong>{{ metadata[item.key]?.label ?? item.key }}</strong><span>{{ metadata[item.key]?.description }}</span><small>{{ item.key }} · v{{ item.value_version }} · {{ item.source ?? "default" }} · {{ item.apply_mode }}</small></div><div class="setting-control"><label v-if="schemaType(item) === 'bool'" class="switch" :aria-label="metadata[item.key]?.label ?? item.key"><input v-model="draft[item.key]" type="checkbox" :disabled="mutation.isPending.value" /><span></span></label><input v-else-if="item.key === 'checkin.at'" v-model="draft[item.key]" :aria-label="metadata[item.key]?.label ?? item.key" type="time" :disabled="mutation.isPending.value" /><select v-else-if="item.key === 'checkin.timezone'" v-model="draft[item.key]" :aria-label="metadata[item.key]?.label ?? item.key" :disabled="mutation.isPending.value"><option value="Asia/Shanghai">Asia/Shanghai</option><option value="UTC">UTC</option><option value="America/Los_Angeles">America/Los_Angeles</option><option value="Europe/London">Europe/London</option></select><div v-else class="input-with-unit"><input v-model.number="draft[item.key]" :aria-label="metadata[item.key]?.label ?? item.key" type="number" :min="metadata[item.key]?.min" :max="metadata[item.key]?.max" :step="metadata[item.key]?.step ?? 1" :disabled="mutation.isPending.value" /><span>{{ metadata[item.key]?.unit }}</span></div><StatePill :value="item.apply_status" /><button class="icon-button" type="button" :aria-label="`保存 ${metadata[item.key]?.label ?? item.key}`" :disabled="draft[item.key] === item.value || Boolean(errors[item.key]) || mutation.isPending.value" @click="requestSave([item])"><Save :size="16" /></button></div><p v-if="errors[item.key]" class="form-error" role="alert">{{ errors[item.key] }}</p><p v-if="item.last_error" class="form-error">最近应用错误：{{ item.last_error }}</p></div></div></section>
 
     <OperationStatus :operation="lastOperation" />
     <ConfirmDialog :open="pendingItems.length > 0" title="缩短请求明细保留时间？" description="降低保留天数会使超出新窗口的历史请求明细进入清理范围；聚合统计和审计记录不受影响。" confirm-label="确认保存" tone="danger" :verification-text="'RETENTION'" :busy="mutation.isPending.value" @cancel="pendingItems = []" @confirm="confirmSave" />

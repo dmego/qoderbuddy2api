@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import AccountsPage from "@/pages/AccountsPage.vue";
 import AuditPage from "@/pages/AuditPage.vue";
+import AccessibleDrawer from "@/components/AccessibleDrawer.vue";
+import StatePill from "@/components/StatePill.vue";
 import ModelsPage from "@/pages/ModelsPage.vue";
 import ServicePage from "@/pages/ServicePage.vue";
 
@@ -69,6 +71,9 @@ describe("operations API contracts", () => {
     drawerButtons.at(-1)?.focus();
     drawer!.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
     expect(document.activeElement).toBe(close);
+    close?.focus();
+    drawer!.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true }));
+    expect(document.activeElement).toBe(drawerButtons.at(-1));
     drawer!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await flushPromises();
     expect(document.activeElement).toBe(trigger.element);
@@ -106,6 +111,18 @@ describe("operations API contracts", () => {
     wrapper.unmount();
   });
 
+  it("restores external focus when an open drawer unmounts", async () => {
+    const trigger = document.createElement("button");
+    document.body.append(trigger);
+    trigger.focus();
+    const wrapper = mount(AccessibleDrawer, { attachTo: document.body, props: { open: true, title: "详情" } });
+    await flushPromises();
+
+    expect(document.activeElement).not.toBe(trigger);
+    wrapper.unmount();
+    expect(document.activeElement).toBe(trigger);
+  });
+
   it("uses audit query, action prefix, category, and cursor contracts", async () => {
     const calls: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
@@ -116,16 +133,62 @@ describe("operations API contracts", () => {
     const wrapper = mountPage(AuditPage);
     await flushPromises();
 
-    await wrapper.get('input[aria-label="审计搜索"]').setValue("qd-1");
-    await wrapper.get('input[aria-label="动作前缀"]').setValue("account.");
-    await wrapper.get('select[aria-label="审计类别"]').setValue("account");
-    await flushPromises();
-
-    expect(calls).toContain("/api/admin/audit?limit=25&query=qd-1&action_prefix=account.&category=account");
     await buttonWithText(wrapper, "下一页").trigger("click");
     await flushPromises();
-    expect(calls).toContain("/api/admin/audit?limit=25&cursor=audit-next&query=qd-1&action_prefix=account.&category=account");
+    expect(calls).toContain("/api/admin/audit?limit=25&cursor=audit-next");
+    await wrapper.get('input[aria-label="审计搜索"]').setValue("qd-1");
+    await wrapper.get('input[aria-label="动作前缀"]').setValue("account");
+    await wrapper.get('select[aria-label="审计类别"]').setValue("account");
+    const apply = wrapper.findAll("button").find((button) => button.text().includes("应用"));
+    expect(apply?.exists()).toBe(true);
+    await apply!.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get('input[aria-label="动作前缀"]').attributes("placeholder")).toBe("例如 account");
+    for (const value of ["checkin", "metrics", "model", "proxy_key", "usage"]) expect(wrapper.find(`select[aria-label="审计类别"] option[value="${value}"]`).exists()).toBe(true);
+    for (const value of ["checkin", "metrics", "model", "proxy_key", "usage"]) expect(wrapper.find(`select[aria-label="审计资源"] option[value="${value}"]`).exists()).toBe(true);
+    for (const value of ["running", "cancelled"]) expect(wrapper.find(`select[aria-label="审计结果"] option[value="${value}"]`).exists()).toBe(true);
+    expect(calls).toContain("/api/admin/audit?limit=25&search=qd-1&action_prefix=account&category=account");
+    await buttonWithText(wrapper, "下一页").trigger("click");
+    await flushPromises();
+    expect(calls).toContain("/api/admin/audit?limit=25&cursor=audit-next&search=qd-1&action_prefix=account&category=account");
     wrapper.unmount();
+  });
+
+  it.each([
+    ["failed", "notification--error", "服务操作失败"],
+    ["cancelled", "notification--warning", "服务操作已取消"],
+  ])("uses the polled %s terminal status for service feedback", async (status, toneClass, title) => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input); const method = init?.method ?? "GET";
+      if (url.includes("/service/events")) return response({ events: [], next_cursor: null });
+      if (url.includes("/service/operations/operation-1")) return response({ operation_id: "operation-1", action: "reload", status, error: `${status}_reason` });
+      if (method === "POST" && url.endsWith("/service/reload")) return response({ operation_id: "operation-1", action: "reload", status: "running" });
+      return response({ service: "proxy-worker", desired_state: "RUNNING", observed_state: "HEALTHY", in_flight: 0 });
+    }));
+    const wrapper = mountPage(ServicePage);
+    await flushPromises();
+
+    await buttonWithText(wrapper, "重载配置").trigger("click");
+    await flushPromises();
+
+    const notification = wrapper.find(`.${toneClass}`);
+    expect(notification.exists()).toBe(true);
+    expect(notification.text()).toContain(title);
+    expect(notification.text()).toContain(`${status}_reason`);
+    expect(wrapper.text()).not.toContain("服务操作已完成");
+    wrapper.unmount();
+  });
+
+  it("emits stable hooks for action-required state and the drawer close target", async () => {
+    const state = mount(StatePill, { props: { value: "action_required" } });
+    const drawer = mount(AccessibleDrawer, { attachTo: document.body, props: { open: true, title: "详情" } });
+    await flushPromises();
+
+    expect(state.classes()).toContain("state-pill--action-required");
+    expect(document.querySelector(".drawer-close")?.getAttribute("aria-label")).toBe("关闭详情");
+    state.unmount();
+    drawer.unmount();
   });
 });
 

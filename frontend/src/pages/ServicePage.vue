@@ -51,7 +51,7 @@ const action = useMutation({
   onSuccess: async (result) => {
     activeOperation.value = result;
     recent.value = [result, ...recent.value].slice(0, 6);
-    notify("服务操作已完成", { message: String(result.action ?? "状态已更新"), tone: "success" });
+    notifyTerminal(result);
     await Promise.all([queryClient.invalidateQueries({ queryKey: ["service"] }), queryClient.invalidateQueries({ queryKey: ["service-events"] })]);
   },
   onError: (error) => notify("服务操作失败", { message: String(error), tone: "error", timeout: 0 }),
@@ -65,6 +65,13 @@ function requestAction(name: "start" | "stop" | "restart" | "reload"): void {
   else action.mutate(name);
 }
 function confirmServiceAction(): void { if (confirmAction.value) action.mutate(confirmAction.value); confirmAction.value = null; }
+function notifyTerminal(result: Record<string, unknown>): void {
+  const status = String(result.status ?? "unknown");
+  const message = String(result.error ?? result.error_code ?? result.action ?? "状态已更新");
+  if (status === "succeeded") notify("服务操作已完成", { message, tone: "success" });
+  else if (status === "failed") notify("服务操作失败", { message, tone: "error", timeout: 0 });
+  else notify(status === "cancelled" ? "服务操作已取消" : "服务操作状态异常", { message, tone: "warning", timeout: 0 });
+}
 function resetEventFilters(): void { eventType.value = ""; eventStatus.value = ""; reset(); }
 function operationKey(actionName: string): string { return `${actionName}-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
 function displayTime(value?: string | number): string { if (!value) return "--"; const date = new Date(typeof value === "number" && value < 10_000_000_000 ? value * 1000 : value); return Number.isNaN(date.valueOf()) ? String(value) : date.toLocaleString(); }

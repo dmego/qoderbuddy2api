@@ -18,6 +18,7 @@ type Summary = { request_count: number; input_tokens: number; output_tokens: num
 type Rollup = { bucket_start: string; bucket_kind: string; request_count: number; input_tokens: number; output_tokens: number; token_event_count: number; missing_token_count: number };
 type UsageEvent = { event_id: string; request_id: string; provider: string; account_id: string | null; model_id: string; protocol: string; status: string; http_status: number | null; input_tokens: number | null; output_tokens: number | null; latency_ms: number | null; stream_committed: boolean | null; started_at: string; finished_at?: string | null; error_code?: string | null };
 type EventPage = { events: UsageEvent[]; next_cursor?: string | null; total?: number };
+type RollupResponse = { status: Record<string, unknown> };
 
 const range = ref("minute");
 const provider = ref("");
@@ -45,8 +46,8 @@ const timeseries = useQuery({ queryKey: ["usage-timeseries", range, filterQuery]
 const events = useQuery({ queryKey: ["usage-events", cursor, filterQuery], queryFn: () => apiRequest<EventPage>(appendQuery(withFilters("/usage/events"), { limit: 25, cursor: cursor.value })), staleTime: 15_000 });
 const detail = useQuery({ queryKey: ["usage-event", selectedEventId], queryFn: () => apiRequest<UsageEvent>(`/usage/events/${encodeURIComponent(selectedEventId.value)}`), enabled: computed(() => Boolean(selectedEventId.value)) });
 const refresh = useMutation({
-  mutationFn: () => apiRequest<Record<string, unknown>>("/usage/rollup", { method: "POST" }),
-  onSuccess: async (result) => { lastOperation.value = { action: "重算用量聚合", status: "succeeded", ...result }; notify("用量聚合已更新", { tone: "success" }); await refreshData(); },
+  mutationFn: () => apiRequest<RollupResponse>("/usage/rollup", { method: "POST" }),
+  onSuccess: async (response) => { const result = asRecord(response.status); lastOperation.value = { action: "重算用量聚合", status: "succeeded", result, items: rollupItems(result) }; notify("用量聚合已更新", { tone: "success" }); await refreshData(); },
   onError: (error) => notify("聚合更新失败", { message: String(error), tone: "error" }),
 });
 const exporter = useMutation({
@@ -63,7 +64,10 @@ function addFilter(params: URLSearchParams, key: string, value: string): void { 
 function withFilters(path: string): string { const separator = path.includes("?") ? "&" : "?"; return filterQuery.value ? `${path}${separator}${filterQuery.value}` : path; }
 function bucketLabel(value: string, kind: string): string { if (kind === "month") return value.slice(0, 7); if (kind === "day") return value.slice(5, 10); return value.slice(11, 16); }
 function tokenLabel(event: UsageEvent): string { return event.input_tokens == null && event.output_tokens == null ? "不可用" : `${event.input_tokens ?? 0} + ${event.output_tokens ?? 0}`; }
+function streamCommittedLabel(value: boolean | null): string { return value === true ? "已提交首块" : value === false ? "未提交首块" : "未知"; }
 function number(value?: number): string { return value === undefined ? "--" : value.toLocaleString(); }
+function asRecord(value: unknown): Record<string, unknown> { return typeof value === "object" && value !== null ? value as Record<string, unknown> : {}; }
+function rollupItems(result: Record<string, unknown>): Record<string, unknown>[] { const labels: Record<string, string> = { groups: "聚合桶", deleted_events: "清理明细" }; return Object.entries(result).map(([key, value]) => ({ key, label: `${labels[key] ?? key} ${String(value)}`, status: "succeeded" })); }
 function resetFilters(): void { provider.value = ""; accountId.value = ""; modelId.value = ""; statusFilter.value = ""; startedAfter.value = ""; startedBefore.value = ""; }
 async function refreshData(): Promise<void> { await Promise.all([summary.refetch(), timeseries.refetch(), events.refetch()]); }
 async function exportCsv(): Promise<void> {
@@ -90,7 +94,7 @@ async function exportCsv(): Promise<void> {
 
     <OperationStatus :operation="lastOperation" />
 
-    <AccessibleDrawer :open="Boolean(selectedEventId)" title="事件详情" eyebrow="Safe event detail" :subtitle="selectedEventId" close-label="关闭事件详情" @close="selectedEventId = ''"><div v-if="detail.isPending.value" class="loading-row">正在读取详情…</div><div v-else-if="detail.isError.value" class="data-state data-state--error">事件详情读取失败。<button class="secondary-button compact-button" type="button" @click="detail.refetch()">重试</button></div><dl v-else-if="detail.data.value" class="detail-list"><div><dt>请求 ID</dt><dd class="mono">{{ detail.data.value.request_id }}</dd></div><div><dt>Provider / 账号</dt><dd>{{ detail.data.value.provider }} / {{ detail.data.value.account_id ?? "--" }}</dd></div><div><dt>模型 / 协议</dt><dd>{{ detail.data.value.model_id }} / {{ detail.data.value.protocol }}</dd></div><div><dt>状态</dt><dd><StatePill :value="detail.data.value.status" /> HTTP {{ detail.data.value.http_status ?? "--" }}</dd></div><div><dt>Token</dt><dd>{{ tokenLabel(detail.data.value) }}</dd></div><div><dt>流式提交</dt><dd>{{ detail.data.value.stream_committed ? "已提交首块" : "未提交首块" }}</dd></div><div><dt>错误代码</dt><dd>{{ detail.data.value.error_code ?? "--" }}</dd></div></dl></AccessibleDrawer>
+    <AccessibleDrawer :open="Boolean(selectedEventId)" title="事件详情" eyebrow="Safe event detail" :subtitle="selectedEventId" close-label="关闭事件详情" @close="selectedEventId = ''"><div v-if="detail.isPending.value" class="loading-row">正在读取详情…</div><div v-else-if="detail.isError.value" class="data-state data-state--error">事件详情读取失败。<button class="secondary-button compact-button" type="button" @click="detail.refetch()">重试</button></div><dl v-else-if="detail.data.value" class="detail-list"><div><dt>请求 ID</dt><dd class="mono">{{ detail.data.value.request_id }}</dd></div><div><dt>Provider / 账号</dt><dd>{{ detail.data.value.provider }} / {{ detail.data.value.account_id ?? "--" }}</dd></div><div><dt>模型 / 协议</dt><dd>{{ detail.data.value.model_id }} / {{ detail.data.value.protocol }}</dd></div><div><dt>状态</dt><dd><StatePill :value="detail.data.value.status" /> HTTP {{ detail.data.value.http_status ?? "--" }}</dd></div><div><dt>Token</dt><dd>{{ tokenLabel(detail.data.value) }}</dd></div><div><dt>流式提交</dt><dd>{{ streamCommittedLabel(detail.data.value.stream_committed) }}</dd></div><div><dt>错误代码</dt><dd>{{ detail.data.value.error_code ?? "--" }}</dd></div></dl></AccessibleDrawer>
     <NotificationRegion :notifications="notifications" @dismiss="dismiss" />
   </section>
 </template>
