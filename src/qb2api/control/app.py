@@ -69,6 +69,28 @@ async def _lifespan(application: FastAPI):
     snapshot_service = RuntimeSnapshotService(runtime)
     application.state.runtime_snapshot_service = snapshot_service
 
+    async def apply_worker_setting(action: str) -> dict[str, Any]:
+        if supervisor.snapshot.desired_state != "RUNNING":
+            return {"status": "effective", "restart_required": False}
+        operation = await getattr(supervisor, action)(
+            idempotency_key=f"runtime-setting-{action}-{snapshot_service.version}"
+        )
+        if operation.status != "succeeded":
+            return {
+                "status": "failed",
+                "operation_id": operation.operation_id,
+                "error_code": operation.error or "service_operation_failed",
+            }
+        return {
+            "status": "effective",
+            "operation_id": operation.operation_id,
+            "restart_required": False,
+        }
+
+    runtime.worker_settings_apply = apply_worker_setting
+    if runtime.backup_service is not None:
+        await runtime.backup_service.recover_interrupted()
+
     async def refresh_runtime() -> None:
         await runtime.refresh_accounts()
         snapshot_service.bump()

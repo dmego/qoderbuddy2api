@@ -47,6 +47,22 @@ async def test_start_is_idempotent_and_stop_clears_task() -> None:
 
 
 @pytest.mark.asyncio
+async def test_invalid_reschedule_keeps_existing_timer_alive() -> None:
+    scheduler = CheckinScheduler(
+        _Service(),
+        Settings(checkin_enabled=True, checkin_catch_up=False, checkin_at="23:59"),
+    )
+    scheduler.start()
+    original = scheduler._task  # noqa: SLF001
+
+    with pytest.raises(ValueError):
+        await scheduler.reconfigure({"checkin_at": "25:00"})
+
+    assert scheduler._task is original  # noqa: SLF001
+    await scheduler.stop()
+
+
+@pytest.mark.asyncio
 async def test_catch_up_runs_once_inside_window(monkeypatch) -> None:
     timezone = "Asia/Shanghai"
     now = datetime.now(ZoneInfo(timezone))

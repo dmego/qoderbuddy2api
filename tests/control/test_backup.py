@@ -43,3 +43,22 @@ async def test_backup_checksum_tamper_is_rejected(tmp_path):
     with pytest.raises(BackupError, match="checksum"):
         await service.validate_restore(result["backup_id"])
     await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_interrupted_backup_is_cancelled_and_audited(tmp_path):
+    repository = AccountRepository(str(tmp_path / "qb2api.sqlite3"))
+    await repository.connect()
+    await repository.migrate()
+    service = BackupService(data_dir=str(tmp_path), repository=repository)
+    await repository.create_backup_run(
+        backup_id="interrupted",
+        path=str(service.backup_dir / "qb2api-interrupted.sqlite3"),
+        schema_version=await repository.schema_version(),
+    )
+
+    assert await service.recover_interrupted() == ["interrupted"]
+    row = await service.get("interrupted")
+    assert row["status"] == "cancelled"
+    assert (await repository.list_audit_events())[0]["action"] == "backup.recover"
+    await repository.close()

@@ -36,6 +36,12 @@ def test_settings_models_usage_metrics_and_audit_are_secret_safe(tmp_path) -> No
         )
         assert invalid.status_code == 400
         assert client.app.state.settings.checkin_at == "01:20"
+        invalid_jitter = client.patch(
+            "/api/admin/settings",
+            headers=headers,
+            json={"key": "checkin.jitter_max_seconds", "value": 1, "value_version": 0},
+        )
+        assert invalid_jitter.status_code == 400
 
         assert client.get("/api/admin/models", headers=headers).json()["models"] == []
         assert client.get("/api/admin/usage/summary", headers=headers).json()["summary"]["request_count"] == 0

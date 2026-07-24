@@ -12,7 +12,7 @@ from qb2api.accounts.repository import AccountRepository
 from qb2api.accounts.resolver import CredentialResolver
 from qb2api.accounts.vault import CredentialVault
 from qb2api.checkin.models import CheckInOutcome, CheckInResult
-from qb2api.checkin.service import CheckinService
+from qb2api.checkin.service import CheckinInProgressError, CheckinService
 from qb2api.config import Settings
 
 
@@ -155,6 +155,32 @@ async def test_cancelled_batch_does_not_leave_running_row(checkin_context) -> No
     assert row is not None
     assert row[0] == "cancelled"
     await service.close()
+
+
+@pytest.mark.asyncio
+async def test_started_batch_returns_durable_operation_and_closes_cleanly(checkin_context) -> None:
+    repository, vault = checkin_context
+    await _seed(repository, vault, "codebuddy", "cb-main")
+    registry = await _registry(repository, vault)
+    workbuddy = _BlockingClient()
+    service = _service(
+        repository, vault, registry,
+        workbuddy=workbuddy,
+        qoder=_SequenceClient("qoder", []),
+        codebuddy_enabled=True, qoder_enabled=False,
+    )
+
+    run_id = await service.start_batch(trigger="manual", skip_already_done=False)
+    await workbuddy.started.wait()
+    assert service.active_run_id == run_id
+
+    with pytest.raises(CheckinInProgressError, match="checkin_run_in_progress"):
+        await service.start_batch(trigger="manual")
+
+    await service.close()
+    run = await repository.get_checkin_run(run_id)
+    assert run is not None
+    assert run["status"] == "cancelled"
 
 
 @pytest.mark.asyncio

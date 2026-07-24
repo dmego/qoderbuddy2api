@@ -67,6 +67,8 @@ class CheckinService:
         )
         self._running = False
         self._last_run: CheckinBatchResult | None = None
+        self._active_context: RunContext | None = None
+        self._active_task: asyncio.Task[CheckinBatchResult] | None = None
 
     @property
     def is_running(self) -> bool:
@@ -75,6 +77,10 @@ class CheckinService:
     @property
     def last_run(self) -> CheckinBatchResult | None:
         return self._last_run
+
+    @property
+    def active_run_id(self) -> str | None:
+        return self._active_context.run_id if self._active_context is not None else None
 
     @property
     def qoder_client(self) -> QoderCheckinClient:
@@ -87,6 +93,10 @@ class CheckinService:
         return (when or self.local_now()).date().isoformat()
 
     async def close(self) -> None:
+        task = self._active_task
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
         await self._executor.close()
 
     async def status_snapshot(self, *, next_run_at: str | None = None) -> dict[str, Any]:
@@ -101,6 +111,7 @@ class CheckinService:
             "checkin_at": self._settings.checkin_at,
             "catch_up": self._settings.checkin_catch_up,
             "next_run_at": next_run_at,
+            "active_run_id": self.active_run_id,
             "eligible_accounts": [
                 {
                     "provider": slot.provider,
@@ -121,6 +132,26 @@ class CheckinService:
         targets: list[CheckinTarget] | None = None,
         skip_already_done: bool = True,
     ) -> CheckinBatchResult:
+        context = await self._claim_run(trigger)
+        return await self._run_context(context, trigger, targets, skip_already_done)
+
+    async def start_batch(
+        self,
+        *,
+        trigger: str = "manual",
+        targets: list[CheckinTarget] | None = None,
+        skip_already_done: bool = True,
+    ) -> str:
+        """Persist a batch before returning so a caller can poll its run ID."""
+        context = await self._claim_run(trigger)
+        task = asyncio.create_task(
+            self._run_context(context, trigger, targets, skip_already_done),
+            name=f"qb2api-checkin-{context.run_id}",
+        )
+        self._active_task = task
+        return context.run_id
+
+    async def _claim_run(self, trigger: str) -> RunContext:
         if self._running:
             raise CheckinInProgressError("checkin_run_in_progress")
         self._running = True
@@ -129,21 +160,35 @@ class CheckinService:
             local_date=self.local_date_str(),
             timezone=self._settings.checkin_timezone,
         )
-        created = False
+        self._active_context = context
         try:
             await self._create_run(context, trigger)
-            created = True
+        except BaseException:
+            self._active_context = None
+            self._running = False
+            raise
+        return context
+
+    async def _run_context(
+        self,
+        context: RunContext,
+        trigger: str,
+        targets: list[CheckinTarget] | None,
+        skip_already_done: bool,
+    ) -> CheckinBatchResult:
+        try:
             await self._execute_targets(context, trigger, targets, skip_already_done)
             return await self._finish(context, "finished")
         except asyncio.CancelledError:
-            if created:
-                await asyncio.shield(self._finish(context, "cancelled"))
+            await asyncio.shield(self._finish(context, "cancelled"))
             raise
         except Exception as error:
-            if created:
-                await self._finish(context, "failed", type(error).__name__)
+            await self._finish(context, "failed", type(error).__name__)
             raise
         finally:
+            self._active_context = None
+            if self._active_task is asyncio.current_task():
+                self._active_task = None
             self._running = False
 
     async def _create_run(self, context: RunContext, trigger: str) -> None:

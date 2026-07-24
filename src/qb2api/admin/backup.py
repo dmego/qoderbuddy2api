@@ -45,6 +45,13 @@ class BackupService:
                     size_bytes=path.stat().st_size,
                     sha256=checksum,
                 )
+            except asyncio.CancelledError:
+                await asyncio.shield(
+                    self.repository.finish_backup_run(
+                        backup_id, status="cancelled", error_message="backup_cancelled"
+                    )
+                )
+                raise
             except Exception as error:
                 await self.repository.finish_backup_run(
                     backup_id,
@@ -59,6 +66,28 @@ class BackupService:
                 "sha256": checksum,
                 "schema_version": validation["schema_version"],
             }
+
+    async def recover_interrupted(self) -> list[str]:
+        """Close incomplete durable records left by a Control Plane restart."""
+        recovered = []
+        for row in await self.repository.list_backup_runs(limit=500):
+            if row.get("status") != "running":
+                continue
+            backup_id = str(row["backup_id"])
+            await self.repository.finish_backup_run(
+                backup_id, status="cancelled", error_message="backup_interrupted"
+            )
+            await self.repository.add_audit_event(
+                actor_type="system",
+                actor_id=None,
+                action="backup.recover",
+                resource_type="backup",
+                resource_id=backup_id,
+                result="cancelled",
+                metadata={"error_code": "backup_interrupted"},
+            )
+            recovered.append(backup_id)
+        return recovered
 
     async def get(self, backup_id: str) -> dict[str, Any]:
         row = await self.repository.get_backup_run(backup_id)

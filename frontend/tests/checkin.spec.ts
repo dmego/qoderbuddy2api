@@ -50,4 +50,44 @@ describe("CheckinPage", () => {
     await flushPromises();
     expect(calls).toContain("/api/admin/checkin/runs?limit=20&cursor=checkin-next&status=finished&trigger=manual");
   });
+
+  it("starts a manual batch with its durable operation ID", async () => {
+    const calls: Array<{ url: string; method: string }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input); const method = init?.method ?? "GET"; calls.push({ url, method });
+      if (method === "POST") return response({ operation_id: "run-manual", run_id: "run-manual", status: "running" }, 202);
+      if (url.includes("/checkin/runs/run-manual")) return response({ run: { run_id: "run-manual", status: "running" }, attempts: [] });
+      if (url.includes("/checkin/runs")) return response({ runs: [], next_cursor: null });
+      return response({
+        enabled: true, running: false, local_date: "2026-07-23", timezone: "Asia/Shanghai",
+        checkin_at: "08:00", eligible_accounts: [{ provider: "codebuddy", account_id: "cb-1", label: "主账号", status: "active", verification_status: "verified" }], daily_states: [],
+      });
+    }));
+    const wrapper = mount(CheckinPage, { global: { plugins: [createPinia(), VueQueryPlugin] } });
+    await flushPromises();
+
+    await wrapper.get('input[aria-label="选择 主账号"]').setValue(true);
+    await buttonWithText(wrapper, "执行选中账号").trigger("click");
+    await confirmDialog();
+
+    expect(calls).toContainEqual(expect.objectContaining({ url: "/api/admin/checkin/run", method: "POST" }));
+    expect(wrapper.text()).toContain("run-manual");
+    wrapper.unmount();
+  });
 });
+
+function buttonWithText(wrapper: ReturnType<typeof mount>, text: string) {
+  const button = wrapper.findAll("button").find((item) => item.text().includes(text));
+  if (!button) throw new Error(`Button not found: ${text}`);
+  return button;
+}
+
+async function confirmDialog(): Promise<void> {
+  const button = document.querySelector<HTMLButtonElement>(".dialog-actions button:not(.secondary-button)");
+  if (!button) throw new Error("Confirmation button not found");
+  button.click(); await flushPromises();
+}
+
+function response(body: unknown, status = 200): Response {
+  return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
+}

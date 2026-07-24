@@ -10,7 +10,7 @@ from qb2api.accounts.repository import CredentialVersionConflict
 
 from .dependencies import admin_state, require_admin
 from .mutation_audit import add_audit, audit_operation, refresh_after_mutation
-from .validation import json_object, required_string
+from .validation import bounded_int, choice_filter, cursor_value, json_object, required_string
 
 router = APIRouter()
 _ROTATION_FIELDS = frozenset(
@@ -104,9 +104,30 @@ async def revoke_credential(provider: str, account_id: str, purpose: str, reques
 
 
 @router.get("/backup")
-async def list_backups(request: Request) -> dict[str, Any]:
+async def list_backups(
+    request: Request,
+    *,
+    limit: str | None = None,
+    cursor: str | None = None,
+    status: str | None = None,
+) -> dict[str, Any]:
     await require_admin(request)
-    return {"backups": await _repository(request).list_backup_runs()}
+    selected_limit = bounded_int(limit, default=50, maximum=100)
+    selected_status = choice_filter(
+        status, {"running", "succeeded", "failed", "cancelled"}, detail="invalid_status"
+    )
+    rows = await _repository(request).list_backup_runs(limit=500)
+    if selected_status is not None:
+        rows = [row for row in rows if row.get("status") == selected_status]
+    offset = cursor_value(cursor, allow_zero=True) or 0
+    page = rows[offset:offset + selected_limit]
+    next_cursor = str(offset + selected_limit) if len(rows) > offset + selected_limit else None
+    return {
+        "backups": page,
+        "limit": selected_limit,
+        "next_cursor": next_cursor,
+        "total": len(rows),
+    }
 
 
 @router.post("/backup")

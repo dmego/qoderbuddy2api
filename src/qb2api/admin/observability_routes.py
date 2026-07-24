@@ -190,6 +190,15 @@ async def account_metrics(
     return {"snapshots": page, "limit": selected_limit, "next_cursor": next_cursor}
 
 
+@router.get("/metrics/status")
+async def metrics_status(request: Request) -> dict[str, Any]:
+    await require_admin(request)
+    scheduler = getattr(admin_state(request), "metrics_scheduler", None)
+    if scheduler is None:
+        raise HTTPException(status_code=503, detail="metrics_scheduler_unavailable")
+    return scheduler.status_snapshot()
+
+
 @router.get("/metrics/accounts/{provider}/{account_id}")
 async def account_metric_detail(
     provider: str,

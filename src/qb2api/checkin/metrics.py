@@ -45,10 +45,14 @@ class MetricsScheduler:
         self._lock = asyncio.Lock()
         self._backoff: dict[str, tuple[int, datetime]] = {}
         self._closed = False
+        self._enabled = settings.metrics_enabled
         self._wakeup = asyncio.Event()
+        self._last_refresh_at: datetime | None = None
+        self._last_error: str | None = None
+        self._last_result: dict[str, Any] | None = None
 
     def start(self) -> None:
-        if self._task is None and self.settings.metrics_enabled:
+        if self._task is None and self._enabled and not self._closed:
             self._task = asyncio.create_task(self._run(), name="qb2api-metrics")
 
     async def stop(self) -> None:
@@ -65,18 +69,51 @@ class MetricsScheduler:
         self._task = None
         self._refresh_task = None
 
-    def reconfigure(self) -> None:
+    async def reconfigure(self, *, enabled: bool | None = None) -> None:
+        if enabled is not None and type(enabled) is not bool:
+            raise ValueError("metrics enabled must be boolean")
+        self._enabled = self.settings.metrics_enabled if enabled is None else enabled
         self._wakeup.set()
+        if not self._enabled and self._task is not None:
+            task, self._task = self._task, None
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        elif self._enabled:
+            self.start()
+
+    def status_snapshot(self) -> dict[str, Any]:
+        return {
+            "enabled": self._enabled,
+            "running": self._task is not None and not self._task.done(),
+            "refresh_in_progress": self._refresh_task is not None and not self._refresh_task.done(),
+            "last_refresh_at": self._last_refresh_at.isoformat() if self._last_refresh_at else None,
+            "last_error": self._last_error,
+            "last_result": self._last_result,
+            "backoff": [
+                {"metric": key, "attempts": attempts, "retry_at": retry_at.isoformat()}
+                for key, (attempts, retry_at) in sorted(self._backoff.items())
+            ],
+        }
 
     async def refresh_once(self) -> dict[str, Any]:
         async with self._lock:
             if self._refresh_task is None or self._refresh_task.done():
                 self._refresh_task = asyncio.create_task(self._refresh(), name="qb2api-metrics-refresh")
             task = self._refresh_task
-        return await asyncio.shield(task)
+        try:
+            result = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            self._last_error = type(error).__name__
+            raise
+        self._last_refresh_at = datetime.now(UTC)
+        self._last_error = None
+        self._last_result = result
+        return result
 
     async def _run(self) -> None:
-        while not self._closed:
+        while not self._closed and self._enabled:
             try:
                 await self.refresh_once()
             except asyncio.CancelledError:

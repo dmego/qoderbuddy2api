@@ -139,6 +139,26 @@ async def test_refresh_is_single_flight(metric_context):
     await scheduler.stop()
 
 
+@pytest.mark.asyncio
+async def test_scheduler_status_exposes_retry_backoff(metric_context):
+    repo, vault, registry, resolver = metric_context
+    await _seed(repo, vault, "qoder", "qd-1", "checkin", {"access_token": "qd-token"})
+    scheduler = MetricsScheduler(
+        settings=Settings(metrics_enabled=False),
+        repo=repo,
+        registry=registry,
+        resolver=resolver,
+        qoder_quota=FakeQuota(error=QuotaUnavailableError("http:503")),
+    )
+
+    await scheduler.refresh_once()
+
+    status = scheduler.status_snapshot()
+    assert status["last_result"]["unavailable"] >= 1
+    assert status["backoff"][0]["metric"] == "qoder:qd-1:quota"
+    await scheduler.stop()
+
+
 def test_normalize_quota_drops_identity_and_unknown_fields():
     assert normalize_quota({"userId": "secret", "userQuota": {"remaining": 3, "email": "x"}}) == {
         "user_quota": {"remaining": 3}

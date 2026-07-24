@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from qb2api.checkin.service import CheckinInProgressError, CheckinTarget
 
 from .dependencies import admin_state, require_admin
-from .mutation_audit import audit_operation
+from .mutation_audit import add_audit
 from .validation import bounded_int, choice_filter, json_object, required_string
 
 router = APIRouter()
@@ -24,6 +24,13 @@ async def checkin_status(request: Request) -> dict[str, Any]:
     await require_admin(request)
     state = admin_state(request)
     snapshot = await state.checkin_service.status_snapshot(next_run_at=_next_run(state))
+    scheduler = getattr(state, "checkin_scheduler", None)
+    if scheduler is not None:
+        snapshot["scheduler"] = scheduler.status_snapshot()
+        snapshot["next_run_at"] = snapshot["scheduler"]["next_run_at"]
+    metrics = getattr(state, "metrics_scheduler", None)
+    if metrics is not None:
+        snapshot["metrics"] = metrics.status_snapshot()
     snapshot["daily_states"] = [
         _daily_state_view(item) for item in snapshot.get("daily_states", [])
     ]
@@ -37,27 +44,25 @@ async def checkin_run(request: Request) -> Any:
     body = await json_object(request, allow_empty=True)
     targets = _targets(body)
     try:
-        async with audit_operation(
-            state.account_repo,
-            action="checkin.run",
-            resource_type="checkin",
-            resource_id="manual",
-            failure_code="checkin_run_failed",
-        ):
-            batch = await state.checkin_service.run_batch(
-                trigger="manual",
-                targets=targets,
-                skip_already_done=False,
-            )
+        run_id = await state.checkin_service.start_batch(
+            trigger="manual",
+            targets=targets,
+            skip_already_done=False,
+        )
     except CheckinInProgressError:
         return JSONResponse(status_code=409, content={"error": "checkin_run_in_progress"})
-    return {
-        "run_id": batch.run_id,
-        "status": batch.status,
-        "local_date": batch.local_date,
-        "timezone": batch.timezone,
-        "results": batch.results,
-    }
+    await add_audit(
+        state.account_repo,
+        action="checkin.run",
+        resource_type="checkin",
+        resource_id=run_id,
+        result="running",
+        metadata={"operation_id": run_id, "trigger": "manual"},
+    )
+    return JSONResponse(
+        status_code=202,
+        content={"operation_id": run_id, "run_id": run_id, "status": "running"},
+    )
 
 
 @router.get("/checkin/runs")
