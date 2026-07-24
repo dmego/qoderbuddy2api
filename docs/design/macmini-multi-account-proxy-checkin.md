@@ -1,12 +1,20 @@
 # 2api 统一账号池、多账号代理与双端自动签到重构设计
 
-> 状态：2026-07-23 扩展版设计基线，已获确认，进入分阶段实现
+> 状态：2026-07-23 扩展版设计基线，已获确认；截至 2026-07-24，九项本地实现任务已集成，真实 Provider 验收仍待授权
 >
 > 审查状态：吸收 2026-07-22 的架构审查，并加入完整本地控制台、Supervisor、Token/用量/积分监控设计；实现仍须保留真实协议 Spike 门禁
 >
 > 适用部署：Mac Mini 本地或 Tailscale 远程访问；常驻 Control Plane 管理独立 Proxy Worker
 >
 > 本文是 `docs/design` 的唯一设计方案。它合并了 CodeBuddy OAuth 池、WorkBuddy 签到、Qoder 双凭证、完整管理台和服务生命周期设计，并以当前 `2api`、本地参考工程和 2026-07-23 的 CLIProxyAPI/NewAPI/Sub2API/CPA-Dashboard 调研为事实依据。
+
+### 实现与验收状态（2026-07-24）
+
+- Control Plane/Worker、账号池、完整 Vue 管理台、设置、审计、备份和本地测试已按本设计集成；当前可复现的本地质量门禁记录在
+  [进度账本](../../.superpowers/sdd/progress.md)。
+- `CB-CHECKIN-01`、`QD-CHECKIN-01` 与 `AUTH-01` 仍是外部事实门禁，当前状态及脱敏记录规则以
+  [Spike 结果](../spike/spike-results.md) 为准。没有明确授权、真实账号登录和脱敏结果前，不能把这些项目写为已验证。
+- 第 17 节的阶段描述与第 20 节的复选框是部署/真实验收清单，不会因 mock、CI 或本地隔离 E2E 自动勾选。它们必须由实际 Mac Mini 部署与授权账号操作逐项提供证据。
 
 ## 1. 执行摘要
 
