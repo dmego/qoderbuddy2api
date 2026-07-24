@@ -4,6 +4,11 @@ import { createApp } from "vue";
 
 import App from "./App.vue";
 import { router } from "./router";
+import { useUiStore } from "./stores/ui";
 import "./styles/main.css";
 
-createApp(App).use(createPinia()).use(VueQueryPlugin).use(router).mount("#app");
+const app = createApp(App);
+const pinia = createPinia();
+app.use(pinia).use(VueQueryPlugin).use(router);
+useUiStore(pinia).initializeTheme();
+app.mount("#app");

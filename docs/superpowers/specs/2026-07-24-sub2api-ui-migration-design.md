@@ -95,7 +95,7 @@
 ```text
 frontend/
   tailwind.config.js                         # 从 Sub2API 派生的主题 token
-  postcss.config.cjs                         # Tailwind/PostCSS 编译入口
+  postcss.config.js                          # Tailwind/PostCSS 编译入口
   THIRD_PARTY_NOTICES.md                     # 最小的来源与派生组件清单
   licenses/sub2api-LGPL-3.0.txt              # 上游 LICENSE 的完整副本
   src/styles/tailwind.css                    # Tailwind layers + 从 style.css 派生的全局工具类

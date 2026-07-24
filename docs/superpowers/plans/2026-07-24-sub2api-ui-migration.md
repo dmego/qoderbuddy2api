@@ -41,7 +41,7 @@
 **Files:**
 
 - Create: `frontend/tailwind.config.js`
-- Create: `frontend/postcss.config.cjs`
+- Create: `frontend/postcss.config.js`
 - Create: `frontend/src/styles/tailwind.css`
 - Create: `frontend/src/styles/sub2api-overrides.css`
 - Create: `frontend/src/stores/ui.ts`
@@ -98,7 +98,7 @@ Keep the generated lockfile; do not add `vue-i18n`, `axios` or any upstream busi
 
 - [ ] **Step 4: Implement the source-derived theme foundation.**
 
-Create `tailwind.config.js` from the upstream color scale and set `content` to `./index.html` and `./src/**/*.{vue,ts}`. Create `postcss.config.cjs` with `tailwindcss` and `autoprefixer`. Put the following interface in `src/stores/ui.ts`:
+Create `tailwind.config.js` from the upstream color scale and set `content` to `./index.html` and `./src/**/*.{vue,ts}`. Create ESM `postcss.config.js` with `tailwindcss` and `autoprefixer`, because this frontend declares `type: module`. Put the following interface in `src/stores/ui.ts`:
 
 ```ts
 export type Theme = "light" | "dark" | "system";
@@ -162,7 +162,7 @@ Expected: the new UI store test and existing frontend type/lint/build checks pas
 - [ ] **Step 6: Commit the foundation phase.**
 
 ```bash
-git add frontend/package.json frontend/package-lock.json frontend/tailwind.config.js frontend/postcss.config.cjs frontend/index.html frontend/src/main.ts frontend/src/styles/main.css frontend/src/styles/tailwind.css frontend/src/styles/sub2api-overrides.css frontend/src/stores/ui.ts frontend/src/components/sub2api/layout/ThemeToggle.vue frontend/THIRD_PARTY_NOTICES.md frontend/licenses/sub2api-LGPL-3.0.txt frontend/tests/ui-foundation.spec.ts
+git add frontend/package.json frontend/package-lock.json frontend/tailwind.config.js frontend/postcss.config.js frontend/index.html frontend/src/main.ts frontend/src/styles/main.css frontend/src/styles/tailwind.css frontend/src/styles/sub2api-overrides.css frontend/src/stores/ui.ts frontend/src/components/sub2api/layout/ThemeToggle.vue frontend/THIRD_PARTY_NOTICES.md frontend/licenses/sub2api-LGPL-3.0.txt frontend/tests/ui-foundation.spec.ts
 git commit -m "feat(frontend): add sub2api ui foundation"
 ```
 
