@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import time
+from datetime import UTC, datetime, timedelta
+
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
@@ -59,6 +62,89 @@ def test_worker_accepts_only_hashes_from_runtime_snapshot(tmp_path) -> None:
     assert accepted.status_code == 200
     assert rejected.status_code == 401
     assert admin_rejected.status_code == 401
+
+
+def test_loaded_proxy_key_expires_without_runtime_reload(tmp_path) -> None:
+    settings = Settings(data_dir=str(tmp_path))
+    expires_at = (datetime.now(UTC) + timedelta(milliseconds=150)).isoformat()
+    snapshot = RuntimeSnapshot(
+        snapshot_version=1,
+        codebuddy_endpoint=settings.codebuddy_endpoint,
+        qoder_timeout=settings.qoder_timeout,
+        models=load_models_from_config(settings.model_config_path),
+        slots=(RuntimeSlot("codebuddy", "cb-1", 1, "ck-runtime"),),
+        proxy_keys=(
+            RuntimeProxyKey(
+                "pk-expiring",
+                hash_token("short-lived"),
+                expires_at,
+            ),
+        ),
+        proxy_auth_required=True,
+    )
+
+    async def load_snapshot() -> RuntimeSnapshot:
+        return snapshot
+
+    with TestClient(
+        create_worker_app(lambda: settings, snapshot_loader=load_snapshot)
+    ) as client:
+        accepted = client.get(
+            "/v1/models",
+            headers={"Authorization": "Bearer short-lived"},
+        )
+        time.sleep(0.2)
+        expired = client.get(
+            "/v1/models",
+            headers={"Authorization": "Bearer short-lived"},
+        )
+
+    assert accepted.status_code == 200
+    assert expired.status_code == 401
+
+
+def test_key_mutations_return_secret_when_runtime_reload_fails(tmp_path) -> None:
+    settings = Settings(
+        admin_key="admin-secret",
+        credential_key=Fernet.generate_key().decode(),
+        data_dir=str(tmp_path),
+    )
+    application = create_control_app(lambda: settings)
+    headers = {"Authorization": "Bearer admin-secret"}
+
+    async def fail_reload() -> None:
+        raise RuntimeError("simulated reload failure")
+
+    with TestClient(application) as client:
+        seed = client.post(
+            "/api/admin/proxy-keys",
+            headers=headers,
+            json={"name": "seed"},
+        )
+        application.state.refresh_provider_pools = fail_reload
+        created = client.post(
+            "/api/admin/proxy-keys",
+            headers=headers,
+            json={"name": "reload-failed"},
+        )
+        rotated = client.post(
+            f"/api/admin/proxy-keys/{seed.json()['key_id']}/rotate",
+            headers=headers,
+        )
+        listed = client.get("/api/admin/proxy-keys", headers=headers)
+
+    assert created.status_code == 201
+    assert created.json()["key"].startswith("qb2api_")
+    assert created.json()["runtime_apply"] == {
+        "status": "failed",
+        "error_code": "runtime_reload_failed",
+    }
+    assert rotated.status_code == 201
+    assert rotated.json()["key"].startswith("qb2api_")
+    assert rotated.json()["runtime_apply"]["status"] == "failed"
+    states = {item["key_id"]: item["enabled"] for item in listed.json()["keys"]}
+    assert states[seed.json()["key_id"]] is False
+    assert states[rotated.json()["key_id"]] is True
 
 
 def test_proxy_key_rotation_atomically_replaces_active_key(tmp_path) -> None:

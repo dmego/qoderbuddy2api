@@ -41,6 +41,7 @@ def test_control_handshake_returns_snapshot_only_to_owned_worker(tmp_path) -> No
     assert accepted.status_code == 200
     assert accepted.json()["protocol_version"] == RUNTIME_PROTOCOL_VERSION
     assert accepted.json()["snapshot_version"] >= 1
+    assert accepted.json()["proxy_auth_required"] is False
     assert accepted.json()["slots"] == [
         {
             "provider": "qoder",

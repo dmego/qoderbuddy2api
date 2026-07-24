@@ -15,6 +15,7 @@ from .repo_accounts import AccountRepositoryMixin, CredentialVersionConflict
 from .repo_catalog import CatalogRepositoryMixin
 from .repo_checkin import CheckinRepositoryMixin
 from .repo_control import ControlRepositoryMixin
+from .repo_proxy_keys import ProxyKeyRepositoryMixin
 from .repo_sessions import SessionRepositoryMixin
 from .repo_telemetry import TelemetryRepositoryMixin
 from .schema import SCHEMA
@@ -26,6 +27,7 @@ class AccountRepository(
     AccountRepositoryMixin,
     CatalogRepositoryMixin,
     ControlRepositoryMixin,
+    ProxyKeyRepositoryMixin,
     CheckinRepositoryMixin,
     SessionRepositoryMixin,
     TelemetryRepositoryMixin,

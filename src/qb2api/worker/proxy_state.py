@@ -71,13 +71,13 @@ class ProxyState:
     def verify_proxy_auth(self, authorization: str | None) -> bool:
         if self.runtime is None:
             return False
-        accepted = self.runtime.proxy_key_hashes
-        if not accepted:
+        if not self.runtime.proxy_auth_required:
             return True
         token = extract_bearer(authorization)
         if token is None:
             return False
         presented = hash_token(token)
+        accepted = self.runtime.active_proxy_key_hashes()
         return any(secrets.compare_digest(presented, expected) for expected in accepted)
 
     async def _load_snapshot(self) -> RuntimeSnapshot:

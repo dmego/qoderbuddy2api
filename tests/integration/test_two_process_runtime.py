@@ -41,9 +41,13 @@ def test_supervised_worker_handshake_loads_control_snapshot(tmp_path) -> None:
         )
         models = _wait_json(
             f"http://127.0.0.1:{worker_port}/v1/models",
-            {"Authorization": "Bearer proxy-smoke"},
         )
         dynamic_key = _create_proxy_key(control_port)
+        anonymous_after_create = httpx.get(
+            f"http://127.0.0.1:{worker_port}/v1/models",
+            timeout=5,
+            trust_env=False,
+        )
         dynamic_models = _wait_json(
             f"http://127.0.0.1:{worker_port}/v1/models",
             {"Authorization": f"Bearer {dynamic_key['key']}"},
@@ -52,6 +56,11 @@ def test_supervised_worker_handshake_loads_control_snapshot(tmp_path) -> None:
         rejected = httpx.get(
             f"http://127.0.0.1:{worker_port}/v1/models",
             headers={"Authorization": f"Bearer {dynamic_key['key']}"},
+            timeout=5,
+            trust_env=False,
+        )
+        anonymous_after_revoke = httpx.get(
+            f"http://127.0.0.1:{worker_port}/v1/models",
             timeout=5,
             trust_env=False,
         )
@@ -64,9 +73,11 @@ def test_supervised_worker_handshake_loads_control_snapshot(tmp_path) -> None:
         assert control["component"] == "control-plane"
         assert ready["snapshot_version"] >= 1
         assert any(item["id"] == "codebuddy/auto" for item in models["data"])
+        assert anonymous_after_create.status_code == 401
         assert any(item["id"] == "codebuddy/auto" for item in dynamic_models["data"])
         assert revoked["status"] == "succeeded"
         assert rejected.status_code == 401
+        assert anonymous_after_revoke.status_code == 401
         assert reloaded.status_code == 200
         assert reloaded.json()["status"] == "succeeded"
     finally:
@@ -114,7 +125,8 @@ def _environment(tmp_path: Path, control_port: int, worker_port: int) -> dict[st
         "QB2API_WORKER_START_TIMEOUT_SECONDS": "5",
         "QB2API_ADMIN_UI_ENABLED": "1",
         "QB2API_ADMIN_KEY": "admin-smoke",
-        "QB2API_PROXY_API_KEY": "proxy-smoke",
+        "QB2API_PROXY_API_KEY": "",
+        "QB2API_API_KEY": "",
         "QB2API_CREDENTIAL_KEY": Fernet.generate_key().decode(),
         "QB2API_WORKER_INTERNAL_TOKEN": "internal-smoke",
         "QB2API_DATA_DIR": str(tmp_path),

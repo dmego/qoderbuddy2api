@@ -44,7 +44,7 @@ class RuntimeSnapshotService:
         else:
             slots.extend(_env_slots(self._runtime.settings))
         models = load_models_from_config(self._runtime.settings.model_config_path)
-        proxy_keys = await self._proxy_keys()
+        proxy_keys, proxy_auth_required = await self._proxy_keys()
         return RuntimeSnapshot(
             snapshot_version=self._version,
             codebuddy_endpoint=self._runtime.settings.codebuddy_endpoint,
@@ -52,18 +52,28 @@ class RuntimeSnapshotService:
             models={key: tuple(value) for key, value in models.items()},
             slots=tuple(slots),
             proxy_keys=proxy_keys,
+            proxy_auth_required=proxy_auth_required,
         )
 
-    async def _proxy_keys(self) -> tuple[RuntimeProxyKey, ...]:
+    async def _proxy_keys(self) -> tuple[tuple[RuntimeProxyKey, ...], bool]:
         keys: list[RuntimeProxyKey] = []
         static_key = self._runtime.settings.proxy_api_key
         if static_key:
             keys.append(RuntimeProxyKey("env", hash_token(static_key)))
         repository = self._runtime.account_repo
+        records: list[dict[str, Any]] = []
         if repository is not None:
-            for item in await repository.list_active_proxy_key_hashes():
-                keys.append(RuntimeProxyKey(item["key_id"], item["key_hash"]))
-        return tuple(keys)
+            records = await repository.list_proxy_key_runtime_records()
+            for item in records:
+                if item["enabled"] and item["revoked_at"] is None:
+                    keys.append(
+                        RuntimeProxyKey(
+                            item["key_id"],
+                            item["key_hash"],
+                            item["expires_at"],
+                        )
+                    )
+        return tuple(keys), bool(static_key or records)
 
 
 def _primary_token(provider: str, payload: dict[str, Any]) -> str | None:

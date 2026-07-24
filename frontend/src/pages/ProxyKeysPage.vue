@@ -34,6 +34,7 @@ type RevealedKey = {
   name: string;
   expires_at: string | null;
   replaced_key_id?: string;
+  runtime_apply?: { status: "succeeded" | "failed"; error_code?: string };
 };
 
 type PendingAction = { kind: "rotate" | "revoke"; key: ProxyKey };
@@ -59,7 +60,7 @@ async function createKey(): Promise<void> {
   busy.value = "create";
   error.value = "";
   try {
-    revealed.value = await apiRequest<RevealedKey>("/proxy-keys", {
+    const result = await apiRequest<RevealedKey>("/proxy-keys", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -68,6 +69,7 @@ async function createKey(): Promise<void> {
         expires_at: form.expiresAt ? new Date(form.expiresAt).toISOString() : null,
       }),
     });
+    revealKey(result);
     form.name = "";
     form.expiresAt = "";
     await keyQuery.refetch();
@@ -88,7 +90,7 @@ async function confirmAction(): Promise<void> {
       `/proxy-keys/${action.key.key_id}/${action.kind}`,
       { method: "POST" },
     );
-    if (action.kind === "rotate") revealed.value = result as RevealedKey;
+    if (action.kind === "rotate") revealKey(result as RevealedKey);
     confirmation.value = null;
     await keyQuery.refetch();
   } catch (cause) {
@@ -111,6 +113,14 @@ async function copySecret(): Promise<void> {
 function dismissSecret(): void {
   revealed.value = null;
   copyState.value = "";
+}
+
+function revealKey(result: RevealedKey): void {
+  revealed.value = result;
+  copyState.value = "";
+  if (result.runtime_apply?.status === "failed") {
+    error.value = "Key 已安全保存，但 Worker 热加载失败。请保留本次明文，并在服务页重试 reload。";
+  }
 }
 
 function keyStatus(item: ProxyKey): "active" | "expired" | "revoked" {
@@ -177,7 +187,7 @@ function errorMessage(cause: unknown): string {
       </div>
       <div class="secret-value">
         <code>{{ revealed.key }}</code>
-        <button type="button" @click="copySecret"><Clipboard :size="16" />复制</button>
+        <button data-test="copy-secret" type="button" @click="copySecret"><Clipboard :size="16" />复制</button>
       </div>
       <small>{{ copyState || `Key ID: ${revealed.key_id}` }}</small>
     </section>

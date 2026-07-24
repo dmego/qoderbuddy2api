@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import replace
+from datetime import UTC, datetime
 
 from qb2api.config import Settings
 from qb2api.models import load_models_from_config
@@ -22,6 +23,8 @@ class WorkerRuntime:
         self.qoder_pool = DynamicProviderPool("qoder")
         self.snapshot_version = 0
         self.proxy_key_hashes: frozenset[str] = frozenset()
+        self.proxy_key_expirations: tuple[tuple[str, float | None], ...] = ()
+        self.proxy_auth_required = False
         self._slot_providers: dict[str, Provider] = {}
         self._slot_signatures: dict[str, str] = {}
 
@@ -52,11 +55,26 @@ class WorkerRuntime:
         self._slot_signatures = signatures
         self.snapshot_version = snapshot.snapshot_version
         self.proxy_key_hashes = frozenset(key.key_hash for key in snapshot.proxy_keys)
+        self.proxy_key_expirations = tuple(
+            (key.key_hash, _expiry_timestamp(key.expires_at))
+            for key in snapshot.proxy_keys
+        )
+        self.proxy_auth_required = bool(
+            snapshot.proxy_auth_required or snapshot.proxy_keys
+        )
 
     async def close(self) -> None:
         await self.providers.close_all()
         self._slot_providers = {}
         self._slot_signatures = {}
+
+    def active_proxy_key_hashes(self) -> tuple[str, ...]:
+        now = datetime.now(UTC).timestamp()
+        return tuple(
+            key_hash
+            for key_hash, expires_at in self.proxy_key_expirations
+            if expires_at is None or expires_at > now
+        )
 
     def _reuse(self, key: str, signature: str) -> Provider | None:
         if self._slot_signatures.get(key) != signature:
@@ -93,6 +111,7 @@ def local_snapshot(settings: Settings) -> RuntimeSnapshot:
         models={key: tuple(value) for key, value in models.items()},
         slots=tuple(slots),
         proxy_keys=proxy_keys,
+        proxy_auth_required=bool(settings.proxy_api_key),
     )
 
 
@@ -107,3 +126,9 @@ def _build_provider(factory: ProviderFactory, slot: RuntimeSlot) -> Provider:
     if slot.provider == "codebuddy":
         return factory.codebuddy_static(slot.token)
     return factory.qoder(slot.token)
+
+
+def _expiry_timestamp(value: str | None) -> float | None:
+    if value is None:
+        return None
+    return datetime.fromisoformat(value).timestamp()

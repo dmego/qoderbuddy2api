@@ -12,13 +12,17 @@ describe("ProxyKeysPage", () => {
 
   it("creates and reveals a key once without browser persistence", async () => {
     const storageSpy = vi.spyOn(Storage.prototype, "setItem");
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    let issued = 0;
     const fetchMock = vi.fn(async (_input: string, init?: RequestInit) => {
       if (init?.method === "POST") {
+        issued += 1;
         return {
           ok: true,
           json: async () => ({
             key_id: "pk-new",
-            key: "qb2api_one_time_secret",
+            key: issued === 1 ? "qb2api_one_time_secret" : "qb2api_replacement_secret",
             name: "Codex",
             expires_at: null,
           }),
@@ -40,8 +44,19 @@ describe("ProxyKeysPage", () => {
     expect(wrapper.text()).toContain("仅显示这一次");
     expect(storageSpy).not.toHaveBeenCalled();
 
+    await wrapper.get("[data-test='copy-secret']").trigger("click");
+    await flushPromises();
+    expect(writeText).toHaveBeenCalledWith("qb2api_one_time_secret");
+    expect(wrapper.text()).toContain("已复制到剪贴板");
+
+    await wrapper.get("#proxy-key-name").setValue("Codex replacement");
+    await wrapper.get("form").trigger("submit");
+    await flushPromises();
+    expect(wrapper.text()).toContain("qb2api_replacement_secret");
+    expect(wrapper.text()).not.toContain("已复制到剪贴板");
+
     await wrapper.get("[data-test='dismiss-secret']").trigger("click");
-    expect(wrapper.text()).not.toContain("qb2api_one_time_secret");
+    expect(wrapper.text()).not.toContain("qb2api_replacement_secret");
     storageSpy.mockRestore();
   });
 

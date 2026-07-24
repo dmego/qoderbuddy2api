@@ -8,7 +8,7 @@ from typing import Any
 
 from .models import ModelCapabilities, ModelDefinition
 
-RUNTIME_PROTOCOL_VERSION = 1
+RUNTIME_PROTOCOL_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +27,7 @@ class RuntimeProxyKey:
 
     key_id: str
     key_hash: str = field(repr=False)
+    expires_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +40,7 @@ class RuntimeSnapshot:
     models: dict[str, tuple[ModelDefinition, ...]]
     slots: tuple[RuntimeSlot, ...]
     proxy_keys: tuple[RuntimeProxyKey, ...] = ()
+    proxy_auth_required: bool = False
     protocol_version: int = RUNTIME_PROTOCOL_VERSION
     generated_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
@@ -63,9 +65,14 @@ class RuntimeSnapshot:
                 for slot in self.slots
             ],
             "proxy_keys": [
-                {"key_id": key.key_id, "key_hash": key.key_hash}
+                {
+                    "key_id": key.key_id,
+                    "key_hash": key.key_hash,
+                    "expires_at": key.expires_at,
+                }
                 for key in self.proxy_keys
             ],
+            "proxy_auth_required": self.proxy_auth_required,
         }
 
     @classmethod
@@ -86,6 +93,9 @@ class RuntimeSnapshot:
             models=models,
             slots=slots,
             proxy_keys=proxy_keys,
+            proxy_auth_required=_boolean(
+                value.get("proxy_auth_required"), "proxy_auth_required"
+            ),
             protocol_version=protocol,
         )
 
@@ -168,6 +178,7 @@ def _parse_proxy_keys(value: Any) -> tuple[RuntimeProxyKey, ...]:
         keys.append(RuntimeProxyKey(
             key_id=_text(item.get("key_id"), "proxy_key.key_id"),
             key_hash=key_hash,
+            expires_at=_optional_timestamp(item.get("expires_at")),
         ))
     return tuple(keys)
 
@@ -182,3 +193,23 @@ def _positive_int(value: Any, field_name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValueError(f"invalid {field_name}")
     return value
+
+
+def _boolean(value: Any, field_name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"invalid {field_name}")
+    return value
+
+
+def _optional_timestamp(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or len(value) > 64:
+        raise ValueError("invalid proxy_key.expires_at")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError("invalid proxy_key.expires_at") from error
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).isoformat()
