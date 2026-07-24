@@ -120,7 +120,8 @@
 
 ## Deliberately deferred at this checkpoint
 
-- No push, branch rewrite, or destructive cleanup has been performed; the current code baseline is committed at `1640970`.
+- No push, branch rewrite, or destructive cleanup has been performed. The Task 9
+  code baseline is `dec1e62`; its completion record is `1640970`.
 - Trusted remote HTTP is explicitly supported only with
   `QB2API_ADMIN_COOKIE_SECURE=false`; secure-by-default `auto` remains enforced.
 
