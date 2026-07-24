@@ -30,14 +30,20 @@ async def create_proxy_key(request: Request) -> dict[str, Any]:
     _validate_fields(body)
     key_id, raw = _new_key()
     expires_at = _expiry(body.get("expires_at"))
+    key_name = label(body.get("name"), default="Proxy key")
     await _repository(request).create_proxy_api_key(
         key_id=key_id,
-        name=label(body.get("name"), default="Proxy key"),
+        name=key_name,
         key_hash=hash_token(raw),
         expires_at=expires_at,
     )
     await _after_key_change(request, "proxy_key.create", key_id)
-    return {"key_id": key_id, "key": raw, "name": body.get("name") or "Proxy key", "expires_at": expires_at}
+    return {
+        "key_id": key_id,
+        "key": raw,
+        "name": key_name,
+        "expires_at": expires_at,
+    }
 
 
 @router.post("/proxy-keys/{key_id}/revoke")

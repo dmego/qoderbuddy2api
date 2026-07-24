@@ -38,7 +38,7 @@ Shared domain      = accounts + credentials + models + usage + quotas + check-in
 | Qoder check-in | 默认使用桌面会话 access/refresh 双凭证；不假设 `pt_` 可以直接签到 |
 | 调度器 | Control Plane 内独立 Check-inScheduler、MetricsScheduler 和 UsageRollupScheduler；按账号串行执行，单号失败不阻断其他账号 |
 | 持久化 | SQLite 保存账号、purpose、配置、模型目录、Proxy Key、服务状态、审计、请求事件、用量汇总和积分快照；凭据字段使用 `cryptography` 加密 |
-| 远程安全 | Proxy 与 Admin 使用不同 Key；非 loopback 管理面必须配置 Admin Key、凭据加密主密钥和 HTTPS，优先通过 Tailscale Serve/反向代理或 SSH loopback 访问 |
+| 远程安全 | Proxy 与 Admin 使用不同 Key；非 loopback 管理面必须配置 Admin Key 和凭据加密主密钥。默认要求 HTTPS；若环境无法提供 HTTPS，可显式配置 `QB2API_ADMIN_COOKIE_SECURE=false`，仅限受信 Tailscale/LAN，并在 UI 持续提示传输风险 |
 | 外部契约 | WorkBuddy 路径/鉴权、Qoder `pt_` 是否可签到、refresh 轮换和积分查询必须通过真实账号 Spike 后才可标记为已验证 |
 
 ### 1.3 非目标
@@ -593,7 +593,7 @@ Mac Mini 可把 key 放进 Keychain，但不是第一阶段必要依赖。无 ke
 - `QB2API_DATA_DIR`、数据库和备份加入 `.gitignore`。
 - POSIX 目录建议 `0700`，数据库和临时导入文件 `0600`。
 - 启用管理 UI、动态凭据或签到时必须配置 Admin Key；env-only proxy 可继续兼容无 Proxy Key 模式。
-- 远程管理必须使用 HTTPS；优先 Tailscale Serve/受信反向代理。HTTP 只允许 SSH 转发后的 loopback 开发访问。
+- 远程管理优先使用 HTTPS（Tailscale Serve/受信反向代理）。无法部署 HTTPS 时，可显式配置 `QB2API_ADMIN_COOKIE_SECURE=false` 允许受信 Tailscale/LAN HTTP；这属于管理员主动接受风险的降级模式，禁止公网暴露，并应限制监听地址和主机防火墙。
 - upstream host 使用 provider allowlist，管理请求不能提供任意 URL，防止 SSRF。
 - 导入请求限制 body、速率和并发；完成后清除前端表单和后端临时变量。
 - `/api/config` 只返回掩码配置。
@@ -652,9 +652,9 @@ Admin Key 只从部署 Secret/环境读取，不保存进数据库。服务每�
 
 - `true`：只接受 HTTPS 管理请求，始终设置 `Secure`。
 - `auto`（默认）：直接 HTTPS 或受信代理传入的 HTTPS scheme 设置 `Secure`；loopback HTTP 不设置；远程 HTTP 拒绝创建 session。
-- `false`：仅允许 loopback 开发/SSH 隧道；若请求来自非 loopback，启动或请求校验失败，不能作为远程部署逃生开关。
+- `false`：显式关闭 Cookie 的 `Secure` 标志，允许 loopback 或受信 Tailscale/LAN HTTP。该值代表部署者主动接受应用层无 TLS 的风险；管理台必须显示醒目警告，服务不得因此放宽 Admin Key、CSRF、限流或监听/防火墙边界。
 
-因此生产拓扑必须是 `https://<tailscale-host>/admin`；直接 `http://<tailscale-ip>:9999/admin` 不是受支持的远程会话方式。不把 API Key 放进 URL、LocalStorage 或 SessionStorage。
+因此默认生产拓扑仍是 `https://<tailscale-host>/admin`。确实无法提供 HTTPS 时，`http://<tailscale-ip>:9999/admin` 只在 `QB2API_ADMIN_COOKIE_SECURE=false`、端口仅对 tailnet/受信 LAN 可达且用户理解风险时受支持。`auto` 永远不会静默降级远程 HTTP。不把 API Key 放进 URL、LocalStorage 或 SessionStorage。
 
 ### 7.3 UI 页面
 
@@ -1263,7 +1263,7 @@ QB2API_DATA_DIR=./data
 QB2API_CREDENTIAL_KEY=<fernet-key-required-for-persistent-secrets>
 QB2API_ADMIN_UI_ENABLED=true
 QB2API_ADMIN_UI_PATH=/admin
-QB2API_ADMIN_COOKIE_SECURE=auto
+QB2API_ADMIN_COOKIE_SECURE=auto # false=显式允许受信 Tailscale/LAN HTTP
 QB2API_ADMIN_SESSION_TTL_HOURS=12
 QB2API_ADMIN_SESSION_IDLE_MINUTES=60
 QB2API_TRUSTED_PROXY_HEADERS=false
@@ -1276,7 +1276,7 @@ QB2API_WORKER_INTERNAL_TOKEN=<generated-or-secret-file>
 QB2API_RUNTIME_SETTINGS_ENABLED=true
 ```
 
-Control Plane 默认只绑定 loopback；Tailscale Serve/Caddy 负责远程 HTTPS ingress。为兼容旧 proxy，可将 Worker 通过显式反向代理暴露到原入口，但不允许 Control Plane 管理端口直接与 Worker 共享监听地址。启用管理 UI、动态凭据或签到时无 `QB2API_ADMIN_KEY`/主密钥拒绝启动；非 loopback 管理还必须满足 7.2 的 HTTPS/cookie 契约。Proxy Key 可以为空以兼容旧的开放 proxy，但远程 proxy 应显式配置 `QB2API_PROXY_API_KEY`。旧 `QB2API_API_KEY` 只映射 Proxy 权限；配置了两个新 Key 且值相同必须拒绝启动。
+Control Plane 默认只绑定 loopback；优先由 Tailscale Serve/Caddy 提供远程 HTTPS ingress。无法部署 HTTPS 时，可把 Control Plane 显式绑定到 Tailscale IP（优先于 `0.0.0.0`），配置 `QB2API_ADMIN_COOKIE_SECURE=false` 并用 tailnet ACL/主机防火墙限制来源。为兼容旧 proxy，可将 Worker 通过显式反向代理暴露到原入口，但不允许 Control Plane 管理端口直接与 Worker 共享监听地址。启用管理 UI、动态凭据或签到时无 `QB2API_ADMIN_KEY`/主密钥拒绝启动；非 loopback 管理必须满足 7.2 的 cookie 契约。Proxy Key 可以为空以兼容旧的开放 proxy，但远程 proxy 应显式配置 `QB2API_PROXY_API_KEY`。旧 `QB2API_API_KEY` 只映射 Proxy 权限；配置了两个新 Key 且值相同必须拒绝启动。
 
 `QB2API_WORKER_INTERNAL_TOKEN` 只给 Supervisor/Worker 的内部握手使用，不能作为客户端 API key 或 Admin Key。若未显式配置，首次启动生成 256-bit 随机 token 写入 `QB2API_DATA_DIR/worker.internal`（0600），并在 Worker restart 时递增 auth version；Control Plane 不把它返回 UI。
 
@@ -1575,10 +1575,11 @@ AUTH-01: CodeBuddy expiresIn、refreshToken、refresh endpoint
   launchd/systemd starts Control Plane only
   Supervisor starts/stops Worker on demand
 
-[HTTPS ingress]
-  Tailscale Serve 或受信 Caddy/nginx
-  https://<tailscale-host> -> http://127.0.0.1:9999
-  只从受信 ingress 接受 forwarded scheme
+[管理入口（选择一种）]
+  推荐：https://<tailscale-host> -> Tailscale Serve/Caddy -> 127.0.0.1:9999
+  降级：http://<tailscale-ip>:9999 + QB2API_ADMIN_COOKIE_SECURE=false
+        Control 只绑定 Tailscale IP，并用 tailnet ACL/主机防火墙限制来源
+  只有来自受信 ingress 的请求才能接受 forwarded scheme
 
 [Proxy ingress, optional]
   local reverse proxy -> http://127.0.0.1:10001
@@ -1586,7 +1587,8 @@ AUTH-01: CodeBuddy expiresIn、refreshToken、refresh endpoint
   upstream path must preserve Proxy API Key and never Admin cookie
 
 [开发/维护电脑]
-  浏览器访问 https://<tailscale-host>/admin
+  浏览器访问推荐的 https://<tailscale-host>/admin
+  或显式降级的 http://<tailscale-ip>:9999/admin（UI 显示风险警告）
   通过 auth_url 完成 CodeBuddy 登录
   按一次性 Windows exporter runbook 导入 Qoder check-in access/refresh
   必要时手动导入 WorkBuddy Cookie
@@ -1605,7 +1607,7 @@ AUTH-01: CodeBuddy expiresIn、refreshToken、refresh endpoint
 4. static/dynamic 账号数量和 capability 符合预期。
 5. Control Plane 只有一个 Checkin/Metrics/Usage scheduler 实例；下一次时间正确。
 6. Worker owner/PID/start-time/internal token 与 `service_runtime` 一致，健康握手成功。
-7. 远程入口为 HTTPS，`QB2API_ADMIN_COOKIE_SECURE` 结果与代理 scheme 一致。
+7. 远程入口优先为 HTTPS；若显式使用受信 HTTP，`QB2API_ADMIN_COOKIE_SECURE=false`、监听地址、tailnet ACL/主机防火墙和 UI 警告均已核对。`auto` 下远程 HTTP 必须登录失败。
 8. 匿名只能取得 UI shell，所有账号数据 API 均返回未认证；admin session 不能调用 proxy API。
 9. 停止 Worker 后管理台仍可登录、查看历史和修改设置；start/restart 后健康状态可恢复。
 
@@ -1647,8 +1649,8 @@ Qoder 首次开通：
 | 流式中途 failover | SSE、tool call 或内容拼接损坏 | 首个下游 bytes 后只记录失败并终止当前流，禁止第二账号重放 |
 | bootstrap 白名单过宽 | 未认证读取/修改管理数据 | method + path 精确矩阵；公开 shell 无状态；管理 API 认证回归测试 |
 | Proxy Key 泄露取得 Admin 权限 | 客户端配置泄露导致凭据和账号被接管 | `QB2API_PROXY_API_KEY` 与 `QB2API_ADMIN_KEY` 分离；旧 Key 只映射 Proxy |
-| Secure cookie 与 HTTP 不匹配 | 登录循环或降级为不安全 cookie | 远程 HTTPS 强制；`auto` 只对 loopback HTTP 降级；受信 scheme 校验 |
-| 远程管理暴露 | 凭据被控制 | Proxy/Admin Key + session + CSRF + HTTPS/Tailscale/SSH + 登录限流 |
+| Secure cookie 与 HTTP 不匹配 | 登录循环或误以为已有 TLS 保护 | `auto` 只对 loopback HTTP 降级；远程 HTTP 必须显式 `false`，并显示风险警告；受信 scheme 校验 |
+| 远程管理暴露 | 凭据被控制 | Proxy/Admin Key + session + CSRF + HTTPS 优先；降级 HTTP 仅限 Tailscale/LAN ACL/防火墙 + 登录限流 |
 | SQLite 阻塞事件循环/锁冲突 | Proxy、签到或 Admin 请求抖动/失败 | aiosqlite 单连接 worker、WAL、busy_timeout、短事务、version cache |
 | Settings 双来源 | UI 显示已保存但 Scheduler 未变更 | runtime settings version + apply mode + operation id；环境变量只作为 fallback，禁止双写 |
 | WorkBuddy status method 未确认 | 误发错误请求或误判签到 | status method 为空即跳过 preflight，CB-CHECKIN-01 后才启用 |
@@ -1703,7 +1705,7 @@ Qoder 首次开通：
 - [ ] 未认证浏览器可加载登录 shell，但不能访问任何账号、签到、配置或 session 状态数据。
 - [ ] session 登录限流、多会话上限、logout/logout-all、Admin Key 轮换撤销均有测试。
 - [ ] admin session 只发送到 `/api/admin` 且不能认证 `/v1/*` 或 `/api/config`；cookie 变更请求必须通过 CSRF。
-- [ ] 非 loopback 管理无 Admin Key、主密钥或 HTTPS 时拒绝启动/创建 session。
+- [ ] 非 loopback 管理无 Admin Key 或主密钥时拒绝启动；`auto`/`true` 下无 HTTPS 拒绝创建 session，只有显式 `false` 允许受信 Tailscale/LAN HTTP 并显示风险警告。
 - [ ] Qoder chat/check-in 导入只在受保护管理面接受，status/身份验证成功后 Secret 才加密落库。
 - [ ] Cookie 只有真实契约需要时启用，普通前端不自动读取。
 - [ ] API、UI、日志和错误响应无 Authorization、Cookie、Refresh Token 原文。

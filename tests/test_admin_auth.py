@@ -115,8 +115,7 @@ def test_resolve_cookie_secure_modes():
         resolve_cookie_secure("auto", is_https=False, is_loopback=False)
 
     assert resolve_cookie_secure("false", is_https=False, is_loopback=True) is False
-    with pytest.raises(SessionCreateError):
-        resolve_cookie_secure("false", is_https=False, is_loopback=False)
+    assert resolve_cookie_secure("false", is_https=False, is_loopback=False) is False
 
 
 def test_build_session_cookie_params():

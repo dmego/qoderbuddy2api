@@ -72,7 +72,7 @@ async def _lifespan(application: FastAPI):
     async def refresh_runtime() -> None:
         await runtime.refresh_accounts()
         snapshot_service.bump()
-        if supervisor.snapshot.observed_state == "HEALTHY":
+        if supervisor.snapshot.desired_state == "RUNNING":
             operation = await supervisor.reload(
                 idempotency_key=f"runtime-snapshot-{snapshot_service.version}"
             )

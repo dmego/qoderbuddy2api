@@ -1,0 +1,15 @@
+.transport-warning {
+  display: flex;
+  gap: 11px;
+  margin-top: 24px;
+  padding: 13px;
+  border: 1px solid #705a32;
+  border-radius: 6px;
+  color: var(--amber);
+  background: #251f15;
+}
+
+.transport-warning svg { flex: 0 0 auto; margin-top: 1px; }
+.transport-warning strong { display: block; font-size: 12px; }
+.transport-warning p { margin: 5px 0 0; color: #c8b898; font-size: 11px; line-height: 1.6; }
+.transport-warning code { color: #f0cb88; overflow-wrap: anywhere; }

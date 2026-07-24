@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { KeyRound, LockKeyhole } from "@lucide/vue";
+import { KeyRound, LockKeyhole, TriangleAlert } from "@lucide/vue";
 import { ref } from "vue";
 import { useRouter } from "vue-router";
 import { useSessionStore } from "@/stores/session";
@@ -27,6 +27,8 @@ async function login(): Promise<void> {
     if (!payload.csrf_token) throw new Error("missing csrf token");
     session.establish(payload.csrf_token);
     await router.replace("/overview");
+  } catch {
+    error.value = "无法建立管理会话，请检查网络和 Cookie 安全配置。";
   } finally {
     pending.value = false;
     adminKey.value = "";
@@ -60,7 +62,20 @@ async function login(): Promise<void> {
           {{ pending ? "正在验证" : "登录控制台" }}
         </button>
       </form>
-      <p class="security-note">远程访问必须经过 HTTPS；密钥不会写入浏览器存储。</p>
+      <aside class="transport-warning" aria-label="远程 HTTP 安全提示">
+        <TriangleAlert :size="18" aria-hidden="true" />
+        <div>
+          <strong>受信局域网 HTTP 是显式降级模式</strong>
+          <p>
+            只有在 Mac mini 的 Tailscale 或受信 LAN 内无法部署 HTTPS 时，才配置
+            <code>QB2API_ADMIN_COOKIE_SECURE=false</code>。此时密钥和会话不受 TLS
+            保护，禁止暴露到公网。
+          </p>
+        </div>
+      </aside>
+      <p class="security-note">Admin Key 只用于建立 HttpOnly 会话，密钥不会写入浏览器存储。</p>
     </section>
   </main>
 </template>
+
+<style scoped src="../styles/login.css"></style>

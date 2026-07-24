@@ -15,6 +15,7 @@ const UsagePage = () => import("@/pages/UsagePage.vue");
 const CheckinPage = () => import("@/pages/CheckinPage.vue");
 const SettingsPage = () => import("@/pages/SettingsPage.vue");
 const AuditPage = () => import("@/pages/AuditPage.vue");
+const ProxyKeysPage = () => import("@/pages/ProxyKeysPage.vue");
 
 export const router = createRouter({
   history: createWebHistory("/admin/"),
@@ -29,6 +30,7 @@ export const router = createRouter({
         { path: "service", name: "service", component: ServicePage },
         { path: "accounts", name: "accounts", component: AccountsPage },
         { path: "credentials", name: "credentials", component: CredentialsPage },
+        { path: "proxy-keys", name: "proxy-keys", component: ProxyKeysPage },
         { path: "models", name: "models", component: ModelsPage },
         { path: "usage", name: "usage", component: UsagePage },
         { path: "checkin", name: "checkin", component: CheckinPage },

@@ -79,6 +79,32 @@ def test_untrusted_peer_cannot_spoof_forwarded_https() -> None:
     assert "requires HTTPS" in response.json()["error"]
 
 
+def test_explicit_insecure_cookie_mode_allows_trusted_remote_http() -> None:
+    configured = Settings(
+        admin_key="admin-secret",
+        admin_ui_enabled=True,
+        credential_key="configured-for-startup-only",
+        admin_cookie_secure="false",
+    )
+    application = create_control_app(lambda: configured)
+    application.state.admin_sessions = AdminSessionStore()
+    application.state.login_limiter = LoginRateLimiter()
+
+    response = TestClient(
+        application,
+        base_url="http://macmini.tailnet.example",
+    ).post(
+        "/api/admin/session",
+        json={"admin_key": "admin-secret"},
+    )
+
+    assert response.status_code == 200
+    cookie = response.headers["set-cookie"]
+    assert "HttpOnly" in cookie
+    assert "SameSite=lax" in cookie
+    assert "Secure" not in cookie
+
+
 @pytest.mark.asyncio
 async def test_reauthentication_revokes_previous_cookie_session() -> None:
     configured = Settings(

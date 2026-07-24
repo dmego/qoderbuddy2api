@@ -116,10 +116,9 @@ def resolve_cookie_secure(
             raise SessionCreateError("admin cookie secure=true requires HTTPS")
         return True
     if mode == "false":
-        if not is_loopback:
-            raise SessionCreateError(
-                "admin cookie secure=false only allowed on loopback"
-            )
+        # This is an explicit operator override for trusted LAN/Tailscale HTTP.
+        # Keep ``auto`` secure by default; ``false`` deliberately accepts the
+        # transport risk and only controls the browser Cookie Secure flag.
         return False
     # auto
     if is_https:

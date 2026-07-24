@@ -43,6 +43,18 @@ def test_supervised_worker_handshake_loads_control_snapshot(tmp_path) -> None:
             f"http://127.0.0.1:{worker_port}/v1/models",
             {"Authorization": "Bearer proxy-smoke"},
         )
+        dynamic_key = _create_proxy_key(control_port)
+        dynamic_models = _wait_json(
+            f"http://127.0.0.1:{worker_port}/v1/models",
+            {"Authorization": f"Bearer {dynamic_key['key']}"},
+        )
+        revoked = _revoke_proxy_key(control_port, dynamic_key["key_id"])
+        rejected = httpx.get(
+            f"http://127.0.0.1:{worker_port}/v1/models",
+            headers={"Authorization": f"Bearer {dynamic_key['key']}"},
+            timeout=5,
+            trust_env=False,
+        )
         reloaded = httpx.post(
             f"http://127.0.0.1:{control_port}/api/admin/service/reload",
             headers={"Authorization": "Bearer admin-smoke"},
@@ -52,6 +64,9 @@ def test_supervised_worker_handshake_loads_control_snapshot(tmp_path) -> None:
         assert control["component"] == "control-plane"
         assert ready["snapshot_version"] >= 1
         assert any(item["id"] == "codebuddy/auto" for item in models["data"])
+        assert any(item["id"] == "codebuddy/auto" for item in dynamic_models["data"])
+        assert revoked["status"] == "succeeded"
+        assert rejected.status_code == 401
         assert reloaded.status_code == 200
         assert reloaded.json()["status"] == "succeeded"
     finally:
@@ -63,6 +78,29 @@ def test_supervised_worker_handshake_loads_control_snapshot(tmp_path) -> None:
             output = process.communicate(timeout=5)[0]
     assert process.returncode in {0, -signal.SIGTERM}, output
     assert _wait_closed(worker_port), output
+
+
+def _create_proxy_key(control_port: int) -> dict[str, str]:
+    response = httpx.post(
+        f"http://127.0.0.1:{control_port}/api/admin/proxy-keys",
+        headers={"Authorization": "Bearer admin-smoke"},
+        json={"name": "runtime-smoke"},
+        timeout=5,
+        trust_env=False,
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def _revoke_proxy_key(control_port: int, key_id: str) -> dict[str, str]:
+    response = httpx.post(
+        f"http://127.0.0.1:{control_port}/api/admin/proxy-keys/{key_id}/revoke",
+        headers={"Authorization": "Bearer admin-smoke"},
+        timeout=5,
+        trust_env=False,
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
 
 
 def _environment(tmp_path: Path, control_port: int, worker_port: int) -> dict[str, str]:

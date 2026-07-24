@@ -1,0 +1,2 @@
+import{A as e,F as t,M as n,O as r,T as i,X as a,Z as o,w as s}from"./admin.js";var c=n({__name:`StatePill`,props:{value:{type:[String,Boolean,null]}},setup(n){let c=n,l=s(()=>`state-pill--${String(c.value??`unknown`).toLowerCase().replaceAll(`_`,`-`)}`);return(n,s)=>(t(),r(`span`,{class:a([`state-pill`,l.value])},[s[0]||=i(`span`,{class:`state-pill__dot`,"aria-hidden":`true`},null,-1),e(` `+o(typeof c.value==`boolean`?c.value?`启用`:`停用`:c.value??`未知`),1)],2))}});export{c as t};
+//# sourceMappingURL=StatePill-Ce45f9dJ.js.map
