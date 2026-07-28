@@ -554,7 +554,6 @@ refactor(core): remove legacy and size debt
 - run a real Control Plane and supervised Worker for browser tests;
 - cover login, remote HTTP warning, Proxy Key, service lifecycle, account import/detail, credential rotation, model probe, usage filters/export, check-in, settings, audit and backup;
 - capture desktop and narrow/mobile screenshots;
-- compare the current Vue console against the locally cloned Sub2API information architecture without copying third-party code, brand, assets or color system;
 - check console errors, clipped text, overflow, blank charts, inaccessible icon buttons and keyboard focus;
 - run fresh-data and migrated-data smoke;
 - run the full Python/frontend/static/build gates;

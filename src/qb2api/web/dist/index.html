@@ -3,19 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="light dark" />
-    <meta name="theme-color" content="#0f172a" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#101413" />
     <meta name="description" content="2api Control Plane - manage local proxy service, provider accounts, credentials, models, usage, check-ins, and audit records." />
     <title>2api Admin</title>
-    <script>
-      (() => {
-        try {
-          const theme = localStorage.getItem("2api-ui-theme");
-          const dark = theme === "dark" || (!theme || theme === "system") && window.matchMedia("(prefers-color-scheme: dark)").matches;
-          document.documentElement.classList.toggle("dark", dark);
-        } catch {}
-      })();
-    </script>
     <script type="module" crossorigin src="/admin/assets/admin.js"></script>
     <link rel="stylesheet" crossorigin href="/admin/assets/admin.css">
   </head>

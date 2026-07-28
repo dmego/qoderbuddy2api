@@ -6,7 +6,7 @@
 >
 > 适用部署：Mac Mini 本地或 Tailscale 远程访问；常驻 Control Plane 管理独立 Proxy Worker
 >
-> 本文是 `docs/design` 的唯一设计方案。它合并了 CodeBuddy OAuth 池、WorkBuddy 签到、Qoder 双凭证、完整管理台和服务生命周期设计，并以当前 `2api`、本地参考工程和 2026-07-23 的 CLIProxyAPI/NewAPI/Sub2API/CPA-Dashboard 调研为事实依据。
+> 本文是 `docs/design` 的唯一设计方案。它合并了 CodeBuddy OAuth 池、WorkBuddy 签到、Qoder 双凭证、完整管理台和服务生命周期设计，并以当前 `2api`、本地参考工程和 2026-07-23 的 CLIProxyAPI/NewAPI/CPA-Dashboard 调研为事实依据。
 
 ### 实现与验收状态（2026-07-24）
 
@@ -91,7 +91,6 @@ Shared domain      = accounts + credentials + models + usage + quotas + check-in
 | [`CLIProxyAPI`](https://github.com/router-for-me/CLIProxyAPI) | Management API、远程管理开关、API key、auth manager、配置/auth watcher、provider model registry、request-log/debug 开关 | 管理 API 与代理执行解耦、热加载、模型注册、认证来源审计 | 不把 Go 管理中心源码或外部统计服务嵌入 Python；不把远程管理默认打开 |
 | [`CPA-Dashboard`](https://github.com/dongshuyan/CPA-Dashboard) | 服务控制/账号管理分栏，Provider 筛选，配额刷新，失效账号高亮，批量删除和卡片化账号详情 | 账号健康矩阵、配额刷新、批量动作、服务控制入口 | 不复制 emoji 图标、不可访问的深色对比和超长账号卡片布局 |
 | [`NewAPI`](https://github.com/QuantumNous/new-api) | Dashboard、Channels、Models、Keys、Usage Logs、System Info；设置按 auth/billing/content/models/operations/security/site 分组 | 域分组、可筛选表格、用量日志、系统信息、配置来源和权限路由 | 不引入用户计费、支付、套餐、兑换码和普通用户门户 |
-| [`Sub2API`](https://github.com/Wei-Shaw/sub2api) | Vue + Vite；admin accounts/channels/usage/ops/settings/audit/backup；DataTable、懒加载、自动刷新、错误详情、运行时设置 | Vue 管理台信息架构、DataTable/筛选/抽屉/确认框、Ops 图表和备份工作流 | 不引入 PostgreSQL/Redis/支付系统；本地单管理员仍使用 SQLite |
 
 调研日期为 2026-07-23；源码采用 shallow clone 读取，管理台最终实现必须以 2api 自身权限、数据和安全边界为准。
 
@@ -668,7 +667,7 @@ Admin Key 只从部署 Secret/环境读取，不保存进数据库。服务每�
 
 管理台采用 `Vue 3 + TypeScript + Vite + Pinia + Vue Router + TanStack Vue Query + ECharts + Lucide`。Vite 仅用于构建，生产部署仍由 Control Plane 同源提供静态产物，不增加 Node 常驻进程。匿名访问只加载登录 shell；登录后才请求管理数据。
 
-视觉定位是桌面优先、浅色且高密度的本地基础设施控制台，不是极简营销页，也不复制参考工程的代码、品牌或配色。视觉信息架构参考 Sub2API 的固定侧栏、工作区 Header、筛选表格、详情抽屉与危险操作确认，但实现保留 2api 的单管理员安全边界。左侧固定导航按 `运行`、`账号池`、`代理与模型`、`自动化`、`治理` 五个业务域分组；中间工作区使用紧凑页面标题、状态摘要、筛选工具栏、表格和详情抽屉。主操作使用蓝色，绿色/琥珀色/红色分别表示成功、注意和失败，状态同时配合文字与图标，不能只靠颜色传达。避免渐变背景、装饰性大卡片、夸张标题、嵌套卡片和单一色系。
+视觉定位是桌面优先、浅色且高密度的本地基础设施控制台，不是极简营销页，也不复制参考工程的代码、品牌或配色。视觉信息架构采用 2api 自身的固定侧栏、工作区 Header、筛选表格、详情抽屉与危险操作确认，并保留单管理员安全边界。左侧固定导航按 `运行`、`账号池`、`代理与模型`、`自动化`、`治理` 五个业务域分组；中间工作区使用紧凑页面标题、状态摘要、筛选工具栏、表格和详情抽屉。主操作使用蓝色，绿色/琥珀色/红色分别表示成功、注意和失败，状态同时配合文字与图标，不能只靠颜色传达。避免渐变背景、装饰性大卡片、夸张标题、嵌套卡片和单一色系。
 
 桌面端侧栏支持折叠并保留 icon tooltip；窄屏改为显式打开/关闭的抽屉和遮罩，不把导航挤进内容区。数据表在窄屏保持可横向滚动，详情、确认和危险动作进入全屏可访问抽屉/对话框。所有图标按钮均有可访问名称，辅助文字、导航分组与状态文字达到 WCAG AA 对比度；Playwright 覆盖桌面和窄屏导航，Lighthouse 在两种设备配置下验证可访问性、最佳实践、SEO 与 agentic browsing。
 
