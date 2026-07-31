@@ -11,15 +11,40 @@ const props = defineProps<{ labels: string[]; values: number[]; color?: string }
 const chartHost = ref<HTMLElement | null>(null);
 let chart: echarts.ECharts | null = null;
 
+// 从设计 token 取色，避免图表与 tokens.css 各自维护一套配色
+function token(name: string, fallback: string): string {
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return value || fallback;
+}
+
 function render(): void {
   if (!chartHost.value) return;
+  const accent = props.color ?? token("--accent", "#e8913a");
+  const axis = token("--faint", "#66666f");
+  const line = token("--line", "#26262e");
   chart ??= echarts.init(chartHost.value);
   chart.setOption({
     animation: false,
     grid: { left: 8, right: 8, top: 12, bottom: 22, containLabel: true },
-    xAxis: { type: "category", data: props.labels, axisLabel: { color: "#718078", fontSize: 10 } },
-    yAxis: { type: "value", splitLine: { lineStyle: { color: "#26332e" } }, axisLabel: { color: "#718078", fontSize: 10 } },
-    series: [{ type: "line", smooth: true, symbol: "none", data: props.values, lineStyle: { color: props.color ?? "#62d7a2", width: 2 }, areaStyle: { color: "rgba(98,215,162,.1)" } }],
+    xAxis: {
+      type: "category",
+      data: props.labels,
+      axisLine: { lineStyle: { color: line } },
+      axisLabel: { color: axis, fontSize: 10, fontFamily: token("--mono", "monospace") },
+    },
+    yAxis: {
+      type: "value",
+      splitLine: { lineStyle: { color: line } },
+      axisLabel: { color: axis, fontSize: 10, fontFamily: token("--mono", "monospace") },
+    },
+    series: [{
+      type: "line",
+      smooth: false,
+      symbol: "none",
+      data: props.values,
+      lineStyle: { color: accent, width: 1.5 },
+      areaStyle: { color: token("--accent-soft", "rgb(232 145 58 / 0.12)") },
+    }],
   });
 }
 

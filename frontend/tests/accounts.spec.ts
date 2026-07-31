@@ -144,8 +144,10 @@ describe("AccountImportPanel", () => {
       return response({ status: "ok", account: { provider: "codebuddy", account_id: "cb-main", label: "主账号" } });
     }));
     const wrapper = mount(AccountImportPanel, { global: { plugins: [createPinia()] } });
-    const checkin = wrapper.findAll("button").find((button) => button.text() === "每日签到");
-    await checkin?.trigger("click");
+    // 展开「手动导入签到凭据」折叠面板
+    const checkinDetails = wrapper.findAll("details").find((d) => d.text().includes("手动导入签到凭据"));
+    await checkinDetails?.find("summary").trigger("click");
+    await flushPromises();
     await wrapper.get('input[aria-label="账号 ID"]').setValue("cb-main");
     await wrapper.get('select[aria-label="签到认证模式"]').setValue("cookie");
     await wrapper.get('input[aria-label="WorkBuddy Cookie"]').setValue("session=secret");
@@ -158,7 +160,29 @@ describe("AccountImportPanel", () => {
     expect(JSON.parse(String(calls[0].init?.body))).toMatchObject({ account_id: "cb-main", mode: "cookie", cookie: "session=secret" });
     expect(document.querySelector(".confirm-dialog")).toBeNull();
     expect(wrapper.text()).not.toContain("session=secret");
-    expect(wrapper.text()).toContain("凭据已验证并保存");
+    expect(wrapper.text()).toContain("签到凭据已验证并保存");
+  });
+
+  it("prefills and opens manual checkin import after automatic Qoder derivation fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => response({
+      status: "ok",
+      checkin_derived: false,
+      account: { provider: "qoder", account_id: "qd-new", label: "新账号" },
+    })));
+    const wrapper = mount(AccountImportPanel, {
+      props: { provider: "qoder" },
+      global: { plugins: [createPinia()] },
+    });
+
+    await wrapper.get('input[aria-label="Personal Access Token (PAT)"]').setValue("pat-secret");
+    await wrapper.findAll("button").find((button) => button.text().includes("验证并保存"))?.trigger("click");
+    await flushPromises();
+
+    const manualDetails = wrapper.findAll("details").find((details) => details.text().includes("手动导入签到凭据"));
+    expect(manualDetails?.attributes("open")).toBeDefined();
+    const accountIdInput = wrapper.get('input[aria-label="账号 ID"]').element as HTMLInputElement;
+    expect(accountIdInput.value).toBe("qd-new");
+    expect(wrapper.text()).toContain("签到未能自动启用");
   });
 
 });

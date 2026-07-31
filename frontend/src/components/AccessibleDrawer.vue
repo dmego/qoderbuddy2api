@@ -56,7 +56,7 @@ function focusableElements(): HTMLElement[] {
       <section ref="panel" class="detail-drawer data-panel" role="dialog" aria-modal="true" :aria-labelledby="titleId" @keydown.esc="close" @keydown="trapFocus">
         <div class="drawer-heading">
           <div><h2 :id="titleId">{{ title }}</h2><p v-if="subtitle" class="mono">{{ subtitle }}</p></div>
-          <button class="icon-button drawer-close" type="button" :aria-label="closeLabel" @click="close"><X :size="16" /></button>
+          <button class="icon-button drawer-close" type="button" :aria-label="closeLabel" :title="closeLabel" @click="close"><X :size="16" /></button>
         </div>
         <slot />
       </section>

@@ -1,43 +1,104 @@
+/* Terminal 设计系统：暗底、等宽承载数据、靠线分区而非阴影。
+   强调色取琥珀 CRT（amber terminal），状态色只保留 ok / warn / err 三档。 */
 :root {
-  color: #182230;
-  background: #f6f8fb;
-  font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  color-scheme: dark;
+
+  /* 底色三层，不再增加层级 */
+  --canvas: #0b0b0d;
+  --surface: #101014;
+  --surface-raised: #16161b;
+  --surface-muted: #1d1d23;
+
+  /* 终端靠线分区 */
+  --line: #26262e;
+  --line-strong: #383842;
+
+  --text: #e4e4e8;
+  --muted: #9494a0;
+  --faint: #66666f;
+
+  /* 琥珀强调，全站唯一强调色 */
+  --accent: #e8913a;
+  --accent-strong: #f2a355;
+  --accent-soft: rgb(232 145 58 / 0.12);
+  --accent-line: rgb(232 145 58 / 0.32);
+
+  --ok: #4ec06e;
+  --ok-soft: rgb(78 192 110 / 0.12);
+  --ok-line: rgb(78 192 110 / 0.3);
+  --warn: #d6a03b;
+  --warn-soft: rgb(214 160 59 / 0.12);
+  --warn-line: rgb(214 160 59 / 0.3);
+  --err: #e5484d;
+  --err-soft: rgb(229 72 77 / 0.12);
+  --err-line: rgb(229 72 77 / 0.32);
+
+  /* 英文与数字走等宽，中文自动回退到黑体 */
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
+  --font: var(--mono), var(--sans);
+
+  /* 终端不用圆角，2px 只为消除锯齿 */
+  --radius: 2px;
+  /* 所有交互控件共用一个高度，按钮与 input/select 才能对齐 */
+  --control-h: 34px;
+  --control-h-sm: 29px;
+  --overlay: 0 0 0 1px var(--line-strong), 0 16px 48px rgb(0 0 0 / 0.6);
+
+  color: var(--text);
+  background: var(--canvas);
+  font-family: var(--font);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --canvas: #f6f8fb;
-  --surface: #ffffff;
-  --surface-raised: #fafbfd;
-  --surface-muted: #f1f4f8;
-  --line: #e3e8ef;
-  --line-strong: #cbd4df;
-  --text: #182230;
-  --muted: #667085;
-  --faint: #8a94a6;
-  --blue: #2b5fad;
-  --blue-strong: #214d90;
-  --blue-soft: #eef4fc;
-  --green: #177451;
-  --green-soft: #edf8f2;
-  --amber: #a66314;
-  --amber-soft: #fff7e9;
-  --red: #bc3851;
-  --red-soft: #fff1f3;
-  --purple: #6b57ad;
-  --purple-soft: #f4f1ff;
-  --shadow-xs: 0 1px 2px rgb(16 24 40 / 0.03);
-  --shadow-sm: 0 2px 6px rgb(16 24 40 / 0.05);
-  --shadow-lg: 0 20px 48px rgb(15 23 42 / 0.14);
 }
 
 * { box-sizing: border-box; }
 html { min-width: 320px; min-height: 100%; background: var(--canvas); }
-body { min-width: 320px; min-height: 100vh; margin: 0; background: var(--canvas); }
-button, input, select, textarea { font: inherit; }
+body { min-width: 320px; min-height: 100vh; margin: 0; background: var(--canvas); font-family: var(--font); }
 button { cursor: pointer; touch-action: manipulation; }
-button:disabled { cursor: not-allowed; opacity: 0.55; }
+button:disabled { cursor: not-allowed; opacity: 0.42; }
 a { color: inherit; text-decoration: none; }
-button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
-::selection { color: #163d73; background: #dbe9fb; }
+code, kbd, samp, pre { font-family: var(--mono); }
+
+/* 控件基线绑在元素上，不绑在容器 class 上：
+   否则任何新位置的 select/input 都会退回浏览器原生外观。 */
+button, input, select, textarea { font: inherit; font-family: var(--font); }
+input, select, textarea {
+  min-height: var(--control-h);
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  outline: 0;
+  color: var(--text);
+  background: var(--canvas);
+  font-size: 12px;
+}
+textarea { padding: 8px 10px; line-height: 1.6; }
+input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-line); }
+input::placeholder, textarea::placeholder { color: var(--faint); }
+input[type="checkbox"], input[type="radio"] { min-height: 0; padding: 0; accent-color: var(--accent); }
+
+/* 原生箭头在暗色下不可控，换自绘 chevron */
+select {
+  appearance: none;
+  padding-right: 27px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239494a0' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+}
+select option { color: var(--text); background: var(--surface); }
+
+/* 焦点环取方形，符合终端语言 */
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+::selection { color: #0b0b0d; background: var(--accent); }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--canvas); }
+::-webkit-scrollbar-thumb { border: 3px solid var(--canvas); background: var(--line-strong); }
+::-webkit-scrollbar-thumb:hover { background: var(--faint); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }

@@ -56,7 +56,7 @@ function trapFocus(event: KeyboardEvent): void {
         <div class="dialog-heading">
           <span class="dialog-icon" :class="{ 'dialog-icon--danger': tone === 'danger' }"><AlertTriangle :size="20" /></span>
           <div><h2 id="confirm-dialog-title">{{ title }}</h2><p id="confirm-dialog-description">{{ description }}</p></div>
-          <button class="icon-button" type="button" aria-label="关闭确认对话框" :disabled="busy" @click="cancel"><X :size="16" /></button>
+          <button class="icon-button" type="button" aria-label="关闭确认对话框" title="关闭确认对话框" :disabled="busy" @click="cancel"><X :size="16" /></button>
         </div>
         <label v-if="verificationText" class="dialog-verification">输入 <strong>{{ verificationText }}</strong> 继续<input v-model="confirmation" autocomplete="off" /></label>
         <div class="dialog-actions">

@@ -140,6 +140,45 @@ class WorkBuddyClient:
 
         return await self._claim(account_id=account_id, headers=headers)
 
+    async def status(
+        self,
+        *,
+        account_id: str = "",
+        auth_mode: AuthMode | str = "bearer",
+        access_token: str | None = None,
+        cookie: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> CheckInResult:
+        """Run a configured status probe without falling through to claim."""
+        try:
+            headers = self._build_headers(
+                auth_mode=auth_mode,
+                access_token=access_token,
+                cookie=cookie,
+                extra_headers=extra_headers,
+            )
+        except ValueError as error:
+            return CheckInResult(
+                outcome=CheckInOutcome.AUTH_FAILED,
+                provider=self.provider,
+                account_id=account_id,
+                message=str(error),
+            )
+        if not self.status_method:
+            return CheckInResult(
+                outcome=CheckInOutcome.FAILED,
+                provider=self.provider,
+                account_id=account_id,
+                message="status probe unavailable",
+            )
+        result = await self._status(account_id=account_id, headers=headers)
+        return result or CheckInResult(
+            outcome=CheckInOutcome.FAILED,
+            provider=self.provider,
+            account_id=account_id,
+            message="status probe did not verify credential",
+        )
+
     async def _status(
         self,
         *,

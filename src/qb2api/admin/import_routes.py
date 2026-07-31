@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -14,6 +15,7 @@ from qb2api.accounts.imports import (
     persist_qoder_chat,
     persist_qoder_checkin,
 )
+from qb2api.accounts.repo_credentials import CredentialVersionConflict
 from qb2api.auth.codebuddy_oauth import CodeBuddyOAuthError
 from qb2api.auth.flows import FlowBusyError
 from qb2api.checkin.models import SUCCESS_OUTCOMES, CheckInOutcome
@@ -21,13 +23,18 @@ from qb2api.checkin.models import SUCCESS_OUTCOMES, CheckInOutcome
 from .dependencies import admin_state, require_admin
 from .import_support import (
     codebuddy_label,
+    derive_qoder_checkin,
     require_codebuddy_account,
+    verify_codebuddy_checkin,
+    verify_qoder_checkin,
     verify_workbuddy,
     workbuddy_input,
 )
 from .mutation_audit import add_audit, refresh_after_mutation
 from .validation import json_object, label, optional_account_id, required_string
 from .views import account_view_dict, find_account_view
+
+logger = logging.getLogger("qb2api.admin.import_routes")
 
 router = APIRouter()
 
@@ -88,9 +95,16 @@ async def codebuddy_oauth_poll(request: Request) -> Any:
             account_id=lease.record.account_id,
         )
         state.credential_resolver.invalidate("codebuddy", account_id, "chat")
+        # 自动验证签到: CodeBuddy 和 WorkBuddy 共用同一套 OAuth token
+        checkin_verified = await _try_verify_codebuddy_checkin(
+            state,
+            account_id,
+            result.access_token,
+        )
         consume = True
         return {
             "status": "success",
+            "checkin_verified": checkin_verified,
             "account": await _publish(
                 state, "codebuddy", account_id, mutation_action="account.import"
             ),
@@ -118,8 +132,14 @@ async def codebuddy_manual(request: Request) -> dict[str, Any]:
         account_id=account_id,
     )
     state.credential_resolver.invalidate("codebuddy", account_id, "chat")
+    checkin_verified = await _try_verify_codebuddy_checkin(
+        state,
+        account_id,
+        access_token,
+    )
     return {
         "status": "ok",
+        "checkin_verified": checkin_verified,
         "account": await _publish(
             state, "codebuddy", account_id, mutation_action="account.import"
         ),
@@ -167,23 +187,107 @@ async def qoder_chat_import(request: Request) -> dict[str, Any]:
     state = admin_state(request)
     body = await json_object(request)
     pat = required_string(body, "pat", "token", detail="pat_required")
+    requested_account_id = optional_account_id(body.get("account_id"))
     try:
         account_id = await persist_qoder_chat(
             state.account_repo,
             state.credential_vault,
             label=label(body.get("label"), default="qoder"),
             pat=pat,
-            account_id=optional_account_id(body.get("account_id")),
+            account_id=requested_account_id,
         )
     except LookupError as error:
         raise HTTPException(status_code=404, detail="account_not_found") from error
     state.credential_resolver.invalidate("qoder", account_id, "chat")
+    checkin_derived = False
+    if requested_account_id is None:
+        checkin_derived = await _try_derive_qoder_checkin(state, account_id, pat)
     return {
         "status": "ok",
+        "checkin_derived": checkin_derived,
         "account": await _publish(
             state, "qoder", account_id, mutation_action="account.import"
         ),
     }
+
+
+async def _try_derive_qoder_checkin(
+    state: Any,
+    account_id: str,
+    pat: str,
+) -> bool:
+    """尝试用 PAT 派生签到凭据，失败时不阻塞导入。"""
+    try:
+        derived = await derive_qoder_checkin(state.settings, pat)
+    except Exception as error:
+        logger.warning(
+            "qoder checkin derive error for %s: %s",
+            account_id,
+            type(error).__name__,
+        )
+        return False
+    if derived is None:
+        return False
+    access_token, refresh_token = derived
+    if not await verify_qoder_checkin(state, account_id, access_token):
+        return False
+    try:
+        await persist_qoder_checkin(
+            state.account_repo,
+            state.credential_vault,
+            account_id=account_id,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            verified_at=datetime.now(UTC).replace(microsecond=0).isoformat(),
+            expected_version=0,
+        )
+        state.credential_resolver.invalidate("qoder", account_id, "checkin")
+        return True
+    except CredentialVersionConflict:
+        return False
+    except Exception as error:
+        logger.warning(
+            "qoder checkin persist error for %s: %s",
+            account_id,
+            type(error).__name__,
+        )
+        return False
+
+
+async def _try_verify_codebuddy_checkin(
+    state: Any,
+    account_id: str,
+    access_token: str,
+) -> bool:
+    """用 chat 的 access_token 验证签到可用性，成功则自动启用 checkin purpose。"""
+    try:
+        ok = await verify_codebuddy_checkin(state, access_token)
+    except Exception:
+        return False
+    if not ok:
+        return False
+    now = datetime.now(UTC).replace(microsecond=0).isoformat()
+    purposes = await state.account_repo.list_purposes("codebuddy", account_id)
+    current = next((p for p in purposes if p["purpose"] == "checkin"), None)
+    if current is None:
+        return False
+    await state.account_repo.upsert_purpose(
+        provider="codebuddy",
+        account_id=account_id,
+        purpose="checkin",
+        enabled=True,
+        status="active",
+        verification_status="verified",
+        capabilities=current.get("capabilities") or ["checkin.workbuddy"],
+        verified_at=now,
+        expires_at=current.get("expires_at"),
+        last_success_at=now,
+        failure_count=0,
+        last_error=None,
+    )
+    state.credential_resolver.invalidate("codebuddy", account_id, "checkin")
+    await state.account_registry.rebuild()
+    return True
 
 
 @router.post("/auth/qoder/checkin")

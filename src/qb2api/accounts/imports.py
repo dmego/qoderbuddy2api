@@ -136,6 +136,7 @@ async def persist_qoder_checkin(
     access_token: str,
     refresh_token: str,
     verified_at: str,
+    expected_version: int | None = None,
 ) -> int:
     if await _qoder_account(repo, account_id) is None:
         raise LookupError(f"qoder account not found: {account_id}")
@@ -160,6 +161,7 @@ async def persist_qoder_checkin(
             mode="access_refresh",
             encrypted_payload=encrypted,
             has_refresh_token=True,
+            expected_version=expected_version,
         )
         await _audit_credential_import(repo, "qoder", account_id, purpose="checkin")
         return version

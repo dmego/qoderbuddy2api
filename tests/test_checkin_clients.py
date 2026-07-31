@@ -106,6 +106,24 @@ async def test_workbuddy_status_already_short_circuits_claim():
 
 
 @pytest.mark.asyncio
+async def test_workbuddy_status_never_falls_through_to_claim():
+    calls: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path))
+        return _json_response(200, {"status": "CLAIMABLE"}, request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await WorkBuddyClient(status_method="GET", client=http).status(
+            auth_mode="bearer",
+            access_token="t",
+        )
+
+    assert result.outcome == CheckInOutcome.FAILED
+    assert calls == [("GET", "/billing/meter/checkin-status")]
+
+
+@pytest.mark.asyncio
 async def test_workbuddy_cookie_auth_mode():
     def handler(request: httpx.Request) -> httpx.Response:
         assert "Authorization" not in request.headers

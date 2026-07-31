@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from qb2api.accounts.imports import persist_qoder_checkin
 from qb2api.accounts.promote import promote_env_account
+from qb2api.accounts.repo_credentials import CredentialVersionConflict
 from qb2api.checkin.service import CheckinInProgressError, CheckinTarget
 
 from .account_support import account_audit, empty_mutation_body, filter_accounts, published_view
 from .catalog_routes import ProbeError, probe_model_for_account
 from .dependencies import admin_state, require_admin
+from .import_support import derive_qoder_checkin, verify_qoder_checkin
 from .mutation_audit import add_audit, audit_operation, refresh_after_mutation
 from .validation import (
     bounded_int,
@@ -159,6 +163,55 @@ async def verify_checkin(
         resource_id=f"{provider}:{account_id}",
     )
     return {"status": "ok", "run_id": batch.run_id, "results": batch.results}
+
+
+@router.post("/accounts/{provider}/{account_id}/rederive-checkin")
+async def rederive_checkin(
+    provider: str,
+    account_id: str,
+    request: Request,
+) -> Any:
+    await require_admin(request)
+    state = admin_state(request)
+    if provider != "qoder":
+        return JSONResponse(status_code=400, content={"error": "unsupported_provider"})
+    if state.account_registry.is_env_account(provider, account_id):
+        raise HTTPException(status_code=400, detail="cannot_modify_env_account")
+    if find_account_view(state, provider, account_id) is None:
+        raise HTTPException(status_code=404, detail="account_not_found")
+    try:
+        credential = await state.credential_resolver.credential("qoder", account_id, "chat")
+    except LookupError:
+        raise HTTPException(status_code=400, detail="chat_credential_missing")
+    pat = credential.payload.get("pat")
+    if not pat:
+        raise HTTPException(status_code=400, detail="pat_missing_in_credential")
+    derived = await derive_qoder_checkin(state.settings, pat)
+    if derived is None:
+        raise HTTPException(status_code=502, detail="checkin_derive_failed")
+    access_token, refresh_token = derived
+    if not await verify_qoder_checkin(state, account_id, access_token):
+        raise HTTPException(status_code=400, detail="checkin_credential_rejected")
+    current = await state.account_repo.get_credential("qoder", account_id, "checkin")
+    expected_version = int(current["credential_version"]) if current else 0
+    try:
+        await persist_qoder_checkin(
+            state.account_repo,
+            state.credential_vault,
+            account_id=account_id,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            verified_at=datetime.now(UTC).replace(microsecond=0).isoformat(),
+            expected_version=expected_version,
+        )
+    except CredentialVersionConflict as error:
+        raise HTTPException(status_code=409, detail="credential_version_conflict") from error
+    state.credential_resolver.invalidate("qoder", account_id, "checkin")
+    await refresh_after_mutation(
+        state, mutation_action="account.rederive_checkin", resource_type="account",
+        resource_id=f"{provider}:{account_id}",
+    )
+    return {"status": "ok", "account": published_view(state, provider, account_id)}
 
 
 @router.post("/accounts/{provider}/{account_id}/refresh")

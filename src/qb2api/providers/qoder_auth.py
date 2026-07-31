@@ -57,6 +57,9 @@ class QoderSession:
         self.user_id = ""
         self.cosy_key = ""
         self.payload_b64 = ""
+        # 认证响应中带回的 OAuth 令牌，签到可据此派生
+        self.security_oauth_token = ""
+        self.refresh_token = ""
         self.authenticated_at: float | None = None
         self.last_success_at: float | None = None
         self.invalid_reason: str | None = None
@@ -80,6 +83,10 @@ class QoderSession:
             identity = _identity(job)
         except (KeyError, TypeError, ValueError) as error:
             raise QoderError("Qoder authentication response was invalid") from error
+        # jobToken 响应中带回 securityOauthToken + refreshToken，
+        # 签到端点 (openapi.qoder.com.cn) 可据此派生 access_token
+        self.security_oauth_token = str(job.get("securityOauthToken", ""))
+        self.refresh_token = str(job.get("refreshToken", ""))
         key = uuid.uuid4().hex[:16].encode("ascii")
         self.cosy_key = base64.b64encode(_rsa_encrypt(key)).decode("ascii")
         encrypted = _aes_encrypt(

@@ -11,7 +11,13 @@ def test_env_only_proxy_boots_without_admin_keys(monkeypatch):
     import os
 
     for k in list(os.environ):
-        if k.startswith("QB2API_") or k in ("CODEBUDDY_TOKEN", "QODER_TOKEN"):
+        if k.startswith("QB2API_") or k in {
+            "CHECKIN_ENABLED",
+            "CODEBUDDY_CHECKIN_ENABLED",
+            "QODER_CHECKIN_ENABLED",
+            "CODEBUDDY_TOKEN",
+            "QODER_TOKEN",
+        }:
             monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("CODEBUDDY_TOKEN", "ck_test_token")
     monkeypatch.setenv("QB2API_ADMIN_UI_ENABLED", "false")
