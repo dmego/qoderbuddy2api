@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
@@ -16,24 +15,27 @@ from .base import Provider
 
 logger = logging.getLogger("qb2api")
 
-# Claude Code default identity triggers CodeBuddy content filter.
-# Scrub only this outbound phrase; keep the rest of the system prompt.
-_CLAUDE_CODE_IDENTITY_RE = re.compile(
-    r"You are Claude Code,\s*Anthropic's official CLI for Claude\.?",
-    re.IGNORECASE,
+# Claude Code's system prompt triggers the CodeBuddy content filter.
+# Replace the whole outbound system message with a neutral one when it
+# contains Claude/Anthropic identity phrasing (any prompt variant).
+_CLAUDE_SYSTEM_SENTINELS = (
+    "You are Claude Code",
+    "You are a Claude agent",
+    "Anthropic's official CLI for Claude",
+    "Claude Agent SDK",
 )
-_SCRUBBED_IDENTITY = "You are a coding CLI assistant."
+_NEUTRAL_SYSTEM = "You are a helpful assistant."
 
 CredentialGetter = Callable[[], Awaitable[str]]
 
 
 def scrub_codebuddy_text(text: str) -> str:
-    """Remove Claude Code/Anthropic identity phrasing that CodeBuddy rejects."""
+    """Replace Claude/Anthropic system prompts CodeBuddy rejects."""
     if not text:
         return text
-    if "Claude Code" not in text and "official CLI for Claude" not in text:
+    if not any(sentinel in text for sentinel in _CLAUDE_SYSTEM_SENTINELS):
         return text
-    return _CLAUDE_CODE_IDENTITY_RE.sub(_SCRUBBED_IDENTITY, text)
+    return _NEUTRAL_SYSTEM
 
 
 def scrub_codebuddy_content(content: Any) -> Any:

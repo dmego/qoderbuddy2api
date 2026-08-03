@@ -8,15 +8,19 @@ from qb2api.providers.qoder import QODER_CLI_MODEL_KEYS, QoderProvider, QoderSes
 class TestCodeBuddyScrub:
     """CodeBuddy rejects Claude Code identity phrasing; scrub on outbound only."""
 
-    def test_scrub_replaces_claude_code_identity(self):
+    def test_scrub_replaces_claude_code_system_prompt(self):
         source = "You are Claude Code, Anthropic's official CLI for Claude.\nHelp with code."
 
         result = scrub_codebuddy_text(source)
 
-        assert "Claude Code" not in result
-        assert "Anthropic" not in result
-        assert result.startswith("You are a coding CLI assistant.")
-        assert "Help with code." in result
+        assert result == "You are a helpful assistant."
+
+    def test_scrub_replaces_sdk_and_agent_identity_variants(self):
+        sdk = "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK."
+        agent = "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+
+        assert scrub_codebuddy_text(sdk) == "You are a helpful assistant."
+        assert scrub_codebuddy_text(agent) == "You are a helpful assistant."
 
     def test_scrub_leaves_normal_system_untouched(self):
         source = "You are a helpful coding assistant."
@@ -40,8 +44,7 @@ class TestCodeBuddyScrub:
 
         body = provider._build_body(request)
 
-        assert body["messages"][0]["content"].startswith("You are a coding CLI assistant.")
-        assert "Anthropic" not in body["messages"][0]["content"]
+        assert body["messages"][0]["content"] == "You are a helpful assistant."
         assert "Claude Code" in body["messages"][1]["content"]
 
 
