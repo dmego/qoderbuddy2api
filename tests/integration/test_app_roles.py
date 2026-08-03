@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
@@ -12,16 +13,24 @@ from qb2api.control.app import create_control_app
 from qb2api.worker.app import create_worker_app
 
 
-def test_control_plane_does_not_expose_proxy_routes(tmp_path) -> None:
+def test_control_plane_forwards_proxy_routes_to_worker(tmp_path) -> None:
     settings = Settings(
         admin_ui_enabled=True,
         admin_key="admin-secret",
         credential_key=Fernet.generate_key().decode(),
         data_dir=str(tmp_path),
     )
-    with TestClient(create_control_app(lambda: settings)) as client:
+    application = create_control_app(lambda: settings)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"proxied": True})
+
+    application.state.proxy_forward_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler)
+    )
+    with TestClient(application) as client:
         assert client.get("/health").json()["component"] == "control-plane"
-        assert client.get("/v1/models").status_code == 404
+        assert client.get("/v1/models").json()["proxied"] is True
         assert client.get("/admin").status_code == 200
 
 

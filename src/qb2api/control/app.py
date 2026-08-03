@@ -9,8 +9,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from qb2api.admin.legacy_config_routes import router as legacy_config_router
@@ -25,6 +26,16 @@ from .supervisor import ServiceSupervisor
 
 _WEB_DIST_DIR = Path(__file__).resolve().parents[1] / "web" / "dist"
 _WEB_ASSETS_DIR = _WEB_DIST_DIR / "assets"
+_HOP_HEADERS = {
+    "host",
+    "content-length",
+    "connection",
+    "keep-alive",
+    "transfer-encoding",
+    "upgrade",
+    "proxy-connection",
+    "te",
+}
 
 
 def create_control_app(
@@ -95,6 +106,57 @@ def _install_static(application: FastAPI) -> None:
 
 def _register_middleware(application: FastAPI) -> None:
     application.middleware("http")(authenticate_request)
+    application.middleware("http")(forward_proxy_requests)
+
+
+async def forward_proxy_requests(request: Request, call_next: Callable):
+    """Unified-port entry: forward /v1/* to the Proxy Worker."""
+    if not request.url.path.startswith("/v1/"):
+        return await call_next(request)
+    settings = request.app.state.settings
+    target = f"http://{settings.worker_host}:{settings.worker_port}"
+    url = target + request.url.path
+    if request.url.query:
+        url += "?" + request.url.query
+    headers = {
+        key: value
+        for key, value in request.headers.items()
+        if key.lower() not in _HOP_HEADERS
+    }
+    body = await request.body()
+    client = getattr(request.app.state, "proxy_forward_client", None)
+    owns_client = client is None
+    client = client or httpx.AsyncClient(timeout=httpx.Timeout(300, connect=10))
+    upstream = client.build_request(
+        request.method,
+        url,
+        headers=headers,
+        content=body or None,
+    )
+    try:
+        response = await client.send(upstream, stream=True)
+    except httpx.HTTPError:
+        if owns_client:
+            await client.aclose()
+        return JSONResponse(
+            status_code=502,
+            content={"detail": "proxy worker unavailable"},
+        )
+
+    async def relay():
+        try:
+            async for chunk in response.aiter_bytes():
+                yield chunk
+        finally:
+            await response.aclose()
+            if owns_client:
+                await client.aclose()
+
+    return StreamingResponse(
+        relay(),
+        status_code=response.status_code,
+        headers={"content-type": response.headers.get("content-type", "application/octet-stream")},
+    )
 
 
 create_control_app.__doc__ = "Create a persistent admin-only Control Plane application."

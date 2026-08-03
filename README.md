@@ -66,13 +66,15 @@ Default addresses:
 
 - Control health: `http://127.0.0.1:9999/health`
 - Admin UI: `http://127.0.0.1:9999/admin/`
+- Unified proxy entry: `http://127.0.0.1:9999/v1`（转发到 Worker，客户端只配这一个地址即可）
 - Worker models: `http://127.0.0.1:10001/v1/models`
 - OpenAI base URL: `http://127.0.0.1:10001/v1`
 - Anthropic Messages: `http://127.0.0.1:10001/v1/messages`
 
 Model clients use the Worker address and send the Proxy Key only through an
-`Authorization: Bearer …` header. The Control Plane deliberately does not
-proxy `/v1` traffic.
+`Authorization: Bearer …` header. When using the unified entry on 9999, the
+Control Plane forwards `/v1/*` to the Worker; security boundaries remain at
+the process level.
 
 ## Trusted remote HTTP and HTTPS
 
