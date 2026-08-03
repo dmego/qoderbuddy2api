@@ -124,6 +124,7 @@ def _codebuddy_checkin_values(enabled: bool) -> dict[str, object]:
         "codebuddy_checkin_status_method": os.getenv("CODEBUDDY_CHECKIN_STATUS_METHOD", "").strip().upper(),
         "codebuddy_checkin_claim_path": os.getenv("CODEBUDDY_CHECKIN_CLAIM_PATH", "/billing/meter/daily-checkin"),
         "codebuddy_checkin_claim_method": os.getenv("CODEBUDDY_CHECKIN_CLAIM_METHOD", "POST").strip().upper() or "POST",
+        "codebuddy_credits_path": os.getenv("CODEBUDDY_CREDITS_PATH", "/billing/meter/get-user-resource"),
     }
 
 
@@ -142,6 +143,7 @@ def _observability_values() -> dict[str, object]:
     return {
         "metrics_enabled": _env_bool("QB2API_METRICS_ENABLED", True),
         "metrics_interval_seconds": _env_int("QB2API_METRICS_INTERVAL_SECONDS", 900),
+        "metrics_history_retention_days": _env_int("QB2API_METRICS_HISTORY_RETENTION_DAYS", 90),
         "usage_rollup_interval_seconds": _env_int("QB2API_USAGE_ROLLUP_INTERVAL_SECONDS", 60),
         "usage_detail_retention_days": _env_int("QB2API_USAGE_DETAIL_RETENTION_DAYS", 90),
         "log_requests": _env_bool("QB2API_LOG_REQUESTS", True),
@@ -213,6 +215,7 @@ class Settings:
     codebuddy_checkin_status_method: str = ""  # empty = no status preflight
     codebuddy_checkin_claim_path: str = "/billing/meter/daily-checkin"
     codebuddy_checkin_claim_method: str = "POST"
+    codebuddy_credits_path: str = "/billing/meter/get-user-resource"
 
     # Qoder check-in (design 13.3)
     qoder_checkin_enabled: bool = False
@@ -223,6 +226,7 @@ class Settings:
     qoder_quota_path: str = "/api/v2/quota/usage"
     metrics_enabled: bool = True
     metrics_interval_seconds: int = 900
+    metrics_history_retention_days: int = 90
     usage_rollup_interval_seconds: int = 60
     usage_detail_retention_days: int = 90
 

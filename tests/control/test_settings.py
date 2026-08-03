@@ -12,6 +12,17 @@ from qb2api.config import Settings
 from qb2api.runtime import RuntimeServices
 
 
+def test_history_retention_setting_validation():
+    from qb2api.control.settings import SettingsApplier
+
+    assert (
+        SettingsApplier.attribute("monitoring.metrics_history_retention_days")
+        == "metrics_history_retention_days"
+    )
+    with pytest.raises(ValueError):
+        SettingsApplier.validate("monitoring.metrics_history_retention_days", 0)
+
+
 @pytest.mark.asyncio
 async def test_runtime_loads_effective_settings_from_database(tmp_path):
     path = tmp_path / "qb2api.sqlite3"

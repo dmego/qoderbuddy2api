@@ -20,6 +20,8 @@ def _clear_relevant_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "QODER_CHECKIN_ENABLED",
         "CODEBUDDY_TOKEN",
         "QODER_TOKEN",
+        "CODEBUDDY_CREDITS_PATH",
+        "QB2API_METRICS_HISTORY_RETENTION_DAYS",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -73,6 +75,20 @@ def test_checkin_defaults_off_unless_provider_flags(monkeypatch: pytest.MonkeyPa
     settings = _settings_from_test_env()
     assert settings.codebuddy_checkin_enabled is True
     assert settings.checkin_enabled is True
+
+
+def test_credits_path_and_history_retention_defaults(monkeypatch: pytest.MonkeyPatch):
+    _clear_relevant_env(monkeypatch)
+    monkeypatch.setenv("QB2API_ADMIN_UI_ENABLED", "false")
+    settings = _settings_from_test_env()
+    assert settings.codebuddy_credits_path == "/billing/meter/get-user-resource"
+    assert settings.metrics_history_retention_days == 90
+
+    monkeypatch.setenv("QB2API_METRICS_HISTORY_RETENTION_DAYS", "180")
+    monkeypatch.setenv("CODEBUDDY_CREDITS_PATH", "/custom/credits")
+    settings = _settings_from_test_env()
+    assert settings.metrics_history_retention_days == 180
+    assert settings.codebuddy_credits_path == "/custom/credits"
 
 
 def test_validate_rejects_equal_proxy_and_admin_keys():

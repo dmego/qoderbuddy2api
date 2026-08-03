@@ -30,6 +30,7 @@ const metadata: Record<string, Meta> = {
   "checkin.retry_limit": { label: "签到重试次数", description: "仅重试网络、超时及可重试的上游错误。", min: 0, max: 10, unit: "次" },
   "monitoring.metrics_enabled": { label: "启用账号指标采集", description: "关闭后停止定时采集，但保留已记录快照。" },
   "monitoring.metrics_interval_seconds": { label: "账号指标刷新间隔", description: "配额、积分与凭据状态采集频率。", min: 30, max: 86400, unit: "秒" },
+  "monitoring.metrics_history_retention_days": { label: "积分历史保留天数", description: "账号积分历史快照的保留窗口。", min: 1, max: 3650, unit: "天" },
   "usage.rollup_interval_seconds": { label: "用量聚合间隔", description: "将请求明细汇总到趋势桶的频率。", min: 10, max: 3600, unit: "秒" },
   "usage.detail_retention_days": { label: "请求明细保留天数", description: "降低该值会缩短可查询的请求明细窗口。", min: 1, max: 3650, unit: "天" },
 };

@@ -11,6 +11,7 @@ from qb2api.config import Settings
 _RANGE_RULES = {
     "service.worker.start_timeout_seconds": (1, 300, "worker start timeout must be between 1 and 300 seconds"),
     "monitoring.metrics_interval_seconds": (30, 86400, "metrics interval must be between 30 and 86400 seconds"),
+    "monitoring.metrics_history_retention_days": (1, 3650, "history retention must be between 1 and 3650 days"),
     "usage.rollup_interval_seconds": (30, 86400, "usage rollup interval must be between 30 and 86400 seconds"),
     "usage.detail_retention_days": (1, 3650, "usage retention must be between 1 and 3650 days"),
     "checkin.catch_up_window_hours": (0, 72, "checkin catch-up window must be between 0 and 72 hours"),
@@ -45,6 +46,7 @@ class SettingsApplier:
         "checkin.retry_limit": "checkin_retry_limit",
         "monitoring.metrics_enabled": "metrics_enabled",
         "monitoring.metrics_interval_seconds": "metrics_interval_seconds",
+        "monitoring.metrics_history_retention_days": "metrics_history_retention_days",
         "usage.rollup_interval_seconds": "usage_rollup_interval_seconds",
         "usage.detail_retention_days": "usage_detail_retention_days",
     }
