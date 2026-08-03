@@ -19,8 +19,8 @@ async def account_metric_history(
     provider: str,
     account_id: str,
     metric_kind: str,
-    request: Request,
     *,
+    request: Request,
     limit: str | None = None,
     since: str | None = None,
 ) -> dict[str, Any]:

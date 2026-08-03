@@ -73,6 +73,10 @@ def normalize_credits(body: dict[str, Any] | None) -> dict[str, Any]:
     accounts = payload.get("Accounts") if isinstance(payload, dict) else None
     if not isinstance(accounts, list) or not accounts:
         return {}
+    return _aggregate_credits(accounts)
+
+
+def _aggregate_credits(accounts: list[dict[str, Any]]) -> dict[str, Any]:
     total_remaining = 0
     total_used = 0
     total_capacity = 0
@@ -86,23 +90,15 @@ def normalize_credits(body: dict[str, Any] | None) -> dict[str, Any]:
         if not isinstance(account, dict):
             continue
         unit = unit or str(account.get("CapacityUnit") or "")
-        remain = _number(account.get("CapacityRemain"))
-        used = _number(account.get("CapacityUsed"))
-        size = _number(account.get("CapacitySize"))
-        cycle_remain = _number(account.get("CycleCapacityRemain"))
-        cycle_size = _number(account.get("CycleCapacitySize"))
+        remain, used, size, cycle_remain, cycle_size = _account_numbers(account)
         total_remaining += remain
         total_used += used
         total_capacity += size
         cycle_remaining += cycle_remain
         cycle_capacity += cycle_size
-        if remain <= 0:
-            depleted += 1
-        if lowest is None or remain < lowest:
-            lowest = remain
-        epoch_ms = _epoch_ms(account.get("ExpiredTime"))
-        if epoch_ms is not None:
-            expires.append(epoch_ms)
+        depleted += int(remain <= 0)
+        lowest = remain if lowest is None else min(lowest, remain)
+        _collect_expiry(expires, account)
     return {
         "unit": unit or "credits",
         "total_remaining": total_remaining,
@@ -115,6 +111,22 @@ def normalize_credits(body: dict[str, Any] | None) -> dict[str, Any]:
         "lowest_remaining": lowest if lowest is not None else 0,
         "expires_at": _epoch_ms_to_iso(min(expires)) if expires else None,
     }
+
+
+def _account_numbers(account: dict[str, Any]) -> tuple[int, int, int, int, int]:
+    return (
+        _number(account.get("CapacityRemain")),
+        _number(account.get("CapacityUsed")),
+        _number(account.get("CapacitySize")),
+        _number(account.get("CycleCapacityRemain")),
+        _number(account.get("CycleCapacitySize")),
+    )
+
+
+def _collect_expiry(expires: list[int], account: dict[str, Any]) -> None:
+    epoch_ms = _epoch_ms(account.get("ExpiredTime"))
+    if epoch_ms is not None:
+        expires.append(epoch_ms)
 
 
 def _number(value: Any) -> int:

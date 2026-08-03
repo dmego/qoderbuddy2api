@@ -1,7 +1,8 @@
 """CodeBuddy and Qoder provider payload contracts."""
 
 from qb2api.openai import ChatCompletionRequest
-from qb2api.providers.codebuddy import CodeBuddyProvider, scrub_codebuddy_text
+from qb2api.providers.codebuddy import CodeBuddyProvider
+from qb2api.providers.codebuddy_scrub import scrub_codebuddy_text
 from qb2api.providers.qoder import QODER_CLI_MODEL_KEYS, QoderProvider, QoderSession
 
 

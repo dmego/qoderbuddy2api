@@ -11,7 +11,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from qb2api.admin.legacy_config_routes import router as legacy_config_router
@@ -113,6 +113,10 @@ async def forward_proxy_requests(request: Request, call_next: Callable):
     """Unified-port entry: forward /v1/* to the Proxy Worker."""
     if not request.url.path.startswith("/v1/"):
         return await call_next(request)
+    return await _relay_to_worker(request)
+
+
+async def _relay_to_worker(request: Request) -> Response:
     settings = request.app.state.settings
     target = f"http://{settings.worker_host}:{settings.worker_port}"
     url = target + request.url.path
@@ -143,20 +147,21 @@ async def forward_proxy_requests(request: Request, call_next: Callable):
             content={"detail": "proxy worker unavailable"},
         )
 
-    async def relay():
-        try:
-            async for chunk in response.aiter_bytes():
-                yield chunk
-        finally:
-            await response.aclose()
-            if owns_client:
-                await client.aclose()
-
     return StreamingResponse(
-        relay(),
+        _relay_iterator(response, client, owns_client),
         status_code=response.status_code,
         headers={"content-type": response.headers.get("content-type", "application/octet-stream")},
     )
+
+
+async def _relay_iterator(response: httpx.Response, client: httpx.AsyncClient, owns_client: bool):
+    try:
+        async for chunk in response.aiter_bytes():
+            yield chunk
+    finally:
+        await response.aclose()
+        if owns_client:
+            await client.aclose()
 
 
 create_control_app.__doc__ = "Create a persistent admin-only Control Plane application."
