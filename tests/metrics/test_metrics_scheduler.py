@@ -11,6 +11,7 @@ from qb2api.accounts.registry import AccountRegistry
 from qb2api.accounts.repository import AccountRepository
 from qb2api.accounts.resolver import CredentialResolver
 from qb2api.accounts.vault import CredentialVault
+from qb2api.checkin.codebuddy_credits import CodeBuddyCreditsUnavailableError
 from qb2api.checkin.metrics import MetricsScheduler
 from qb2api.checkin.quota import QoderQuotaClient, QuotaUnavailableError, normalize_quota
 from qb2api.config import Settings
@@ -73,23 +74,82 @@ class FakeQuota:
         return None
 
 
+class FakeCredits:
+    def __init__(self, result=None, error=None):
+        self.result = result
+        self.error = error
+        self.calls = 0
+
+    async def fetch(self, token):
+        self.calls += 1
+        await asyncio.sleep(0)
+        if self.error:
+            raise self.error
+        return self.result
+
+    async def aclose(self):
+        return None
+
+
 @pytest.mark.asyncio
-async def test_scheduler_keeps_workbuddy_points_unknown(metric_context):
+async def test_scheduler_collects_workbuddy_points_fresh(metric_context):
     repo, vault, registry, resolver = metric_context
     await _seed(repo, vault, "codebuddy", "cb-1", "checkin", {"access_token": "cb-token"})
+    credits = FakeCredits({
+        "unit": "credits", "total_remaining": 300, "total_used": 0,
+        "total_capacity": 500, "cycle_remaining": 300, "cycle_capacity": 500,
+        "package_count": 2, "depleted_packages": 0, "lowest_remaining": 100,
+        "expires_at": None,
+    })
     scheduler = MetricsScheduler(
         settings=Settings(metrics_enabled=False),
         repo=repo,
         registry=registry,
         resolver=resolver,
         qoder_quota=FakeQuota(),
+        codebuddy_credits=credits,
     )
-    result = await scheduler.refresh_once()
-    points = [row for row in await repo.list_metric_snapshots() if row["metric_kind"] == "points"]
-    assert result["unknown"] >= 1
-    assert points[0]["value"] is None
-    assert points[0]["last_error"] == "protocol_not_verified"
-    await scheduler.stop()
+    try:
+        result = await scheduler.refresh_once()
+        points = [row for row in await repo.list_metric_snapshots() if row["metric_kind"] == "points"]
+        assert result["fresh"] >= 1
+        assert points[0]["status"] == "fresh"
+        assert points[0]["value"]["total_remaining"] == 300
+        history = await repo.list_metric_history(
+            provider="codebuddy", account_id="cb-1", metric_kind="points",
+        )
+        assert history and history[-1]["value"]["total_remaining"] == 300
+    finally:
+        await scheduler.stop()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_marks_workbuddy_points_stale_on_failure(metric_context):
+    repo, vault, registry, resolver = metric_context
+    await _seed(repo, vault, "codebuddy", "cb-1", "checkin", {"access_token": "cb-token"})
+    credits = FakeCredits({
+        "unit": "credits", "total_remaining": 300, "total_used": 0,
+        "total_capacity": 500, "cycle_remaining": 300, "cycle_capacity": 500,
+        "package_count": 2, "depleted_packages": 0, "lowest_remaining": 100,
+        "expires_at": None,
+    })
+    scheduler = MetricsScheduler(
+        settings=Settings(metrics_enabled=False),
+        repo=repo,
+        registry=registry,
+        resolver=resolver,
+        qoder_quota=FakeQuota(),
+        codebuddy_credits=credits,
+    )
+    try:
+        await scheduler.refresh_once()
+        credits.error = CodeBuddyCreditsUnavailableError("http:503")
+        await scheduler.refresh_once()
+        points = [row for row in await repo.list_metric_snapshots() if row["metric_kind"] == "points"]
+        assert points[0]["status"] == "stale"
+        assert points[0]["value"]["total_remaining"] == 300
+    finally:
+        await scheduler.stop()
 
 
 @pytest.mark.asyncio

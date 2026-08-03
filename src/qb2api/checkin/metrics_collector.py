@@ -7,13 +7,12 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from qb2api.accounts.models import Credential
 from qb2api.accounts.registry import AccountRegistry
 from qb2api.accounts.repository import AccountRepository
 from qb2api.accounts.resolver import CredentialResolver
 from qb2api.config import Settings
 
-from .quota import QuotaUnavailableError, normalize_quota
+from .metrics_providers import ProviderMetricCollectorMixin
 
 MetricKey = tuple[str, str, str]
 MetricRows = dict[MetricKey, dict[str, Any]]
@@ -26,6 +25,7 @@ class MetricDependencies:
     registry: AccountRegistry
     resolver: CredentialResolver
     qoder_quota: Any
+    codebuddy_credits: Any
 
 
 @dataclass
@@ -35,7 +35,7 @@ class MetricCollectionState:
     seen: set[MetricKey]
 
 
-class MetricSnapshotCollector:
+class MetricSnapshotCollector(ProviderMetricCollectorMixin):
     """Collect persisted snapshots while retaining retry state across runs."""
 
     def __init__(self, dependencies: MetricDependencies, backoff: dict[str, tuple[int, datetime]]) -> None:
@@ -49,9 +49,23 @@ class MetricSnapshotCollector:
             counts={"fresh": 0, "stale": 0, "unknown": 0, "unavailable": 0, "skipped": 0},
             seen=set(),
         )
-        for item in await self._dependencies.repo.list_credential_metadata():
-            await self._collect_item(item, state)
+        for account in await self._dependencies.repo.list_accounts():
+            if not account.get("enabled"):
+                continue
+            provider = str(account["provider"])
+            account_id = str(account["account_id"])
+            for purpose in await self._dependencies.repo.list_purposes(provider, account_id):
+                if not purpose.get("enabled"):
+                    continue
+                await self._collect_item(
+                    provider=provider,
+                    account_id=account_id,
+                    purpose=str(purpose["purpose"]),
+                    expires_at=purpose.get("expires_at"),
+                    state=state,
+                )
         self._count_unseen_previous(state)
+        await self._prune_history()
         return state.counts
 
     async def _previous_rows(self) -> MetricRows:
@@ -61,15 +75,20 @@ class MetricSnapshotCollector:
             for row in snapshots
         }
 
-    async def _collect_item(self, item: dict[str, Any], state: MetricCollectionState) -> None:
-        provider = str(item["provider"])
-        account_id = str(item["account_id"])
-        purpose = str(item["purpose"])
+    async def _collect_item(
+        self,
+        *,
+        provider: str,
+        account_id: str,
+        purpose: str,
+        expires_at: str | None,
+        state: MetricCollectionState,
+    ) -> None:
         await self._write_token_snapshot(
             provider=provider,
             account_id=account_id,
             purpose=purpose,
-            item=item,
+            expires_at=expires_at,
             state=state,
         )
         await self._write_checkin_snapshot(provider, account_id, state)
@@ -86,15 +105,15 @@ class MetricSnapshotCollector:
         provider: str,
         account_id: str,
         purpose: str,
-        item: dict[str, Any],
+        expires_at: str | None,
         state: MetricCollectionState,
     ) -> None:
         key = (provider, account_id, f"token:{purpose}")
         state.seen.add(key)
-        status = _token_status(item.get("expires_at"))
+        status = _token_status(expires_at)
         await self._write(
             key=key,
-            value={"status": status, "expires_at": item.get("expires_at")},
+            value={"status": status, "expires_at": expires_at},
             status=status,
             state=state,
         )
@@ -133,48 +152,6 @@ class MetricSnapshotCollector:
             status="fresh" if daily_state else "unknown",
             state=state,
         )
-
-    async def _write_provider_snapshot(
-        self,
-        *,
-        provider: str,
-        account_id: str,
-        purpose: str,
-        state: MetricCollectionState,
-    ) -> None:
-        if provider == "qoder" and purpose == "checkin":
-            await self._write_quota_snapshot(account_id, state)
-        elif provider == "codebuddy" and purpose == "checkin":
-            key = (provider, account_id, "points")
-            state.seen.add(key)
-            await self._write(
-                key=key,
-                value=None,
-                status="unknown",
-                state=state,
-                error="protocol_not_verified",
-            )
-
-    async def _write_quota_snapshot(
-        self,
-        account_id: str,
-        state: MetricCollectionState,
-    ) -> None:
-        key = ("qoder", account_id, "quota")
-        state.seen.add(key)
-        if await self._write_backoff_snapshot(key, state):
-            return
-        try:
-            credential = await self._dependencies.resolver.credential("qoder", account_id, "checkin")
-            token = _access_token(credential)
-            value = normalize_quota(await self._dependencies.qoder_quota.fetch(token))
-        except (LookupError, QuotaUnavailableError) as error:
-            await self._write_failure(key, state, str(error))
-        except Exception as error:
-            await self._write_failure(key, state, type(error).__name__)
-        else:
-            await self._write(key=key, value=value, status="fresh", state=state)
-            self._backoff.pop(self._backoff_key(key), None)
 
     async def _write_backoff_snapshot(
         self,
@@ -241,6 +218,15 @@ class MetricSnapshotCollector:
             last_error=error,
             observed_at=observed_at,
         )
+        if value is not None:
+            await self._dependencies.repo.upsert_metric_history(
+                provider=key[0],
+                account_id=key[1],
+                metric_kind=key[2],
+                value=value,
+                status=status,
+                observed_at=observed_at,
+            )
         state.counts[status] = state.counts.get(status, 0) + 1
 
     def _local_date(self) -> str:
@@ -252,6 +238,13 @@ class MetricSnapshotCollector:
             if key not in state.seen:
                 state.counts["skipped"] += 1
 
+    async def _prune_history(self) -> None:
+        retention = self._dependencies.settings.metrics_history_retention_days
+        if retention <= 0:
+            return
+        before = (datetime.now(UTC) - timedelta(days=retention)).isoformat()
+        await self._dependencies.repo.delete_metric_history_before(before)
+
     def _record_backoff(self, key: MetricKey) -> None:
         marker = self._backoff_key(key)
         attempts = self._backoff.get(marker, (0, datetime.now(UTC)))[0] + 1
@@ -261,14 +254,6 @@ class MetricSnapshotCollector:
     @staticmethod
     def _backoff_key(key: MetricKey) -> str:
         return ":".join(key)
-
-
-def _access_token(credential: Credential) -> str:
-    payload = credential.payload
-    token = payload.get("access_token") or payload.get("device_token") or payload.get("token")
-    if not isinstance(token, str) or not token.strip():
-        raise QuotaUnavailableError("access token unavailable")
-    return token.strip()
 
 
 def _token_status(expires_at: str | None) -> str:
