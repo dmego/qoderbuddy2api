@@ -10,9 +10,10 @@ OpenAI / Anthropic 兼容模型接口。
 ## 拓扑与凭据边界
 
 ```text
-浏览器（管理） ───────> Control Plane :9999
-                         ├─ 管理台、SQLite、审计、备份、Supervisor
-                         └─ Proxy Worker 127.0.0.1:10001 ──> /v1、/v1/messages
+浏览器（管理） ─────┐
+CLI 客户端（/v1）───┴──> Control Plane :9999
+                        ├─ 管理台、SQLite、审计、备份、Supervisor
+                        └─ /v1/* 转发到 Proxy Worker 127.0.0.1:10001
 ```
 
 Control Plane 是唯一常驻服务，它启动和管理 Worker；不要为 Worker 单独建立
@@ -61,12 +62,15 @@ mkdir -p data logs && chmod 700 data logs
 
 - Control health：`http://127.0.0.1:9999/health`
 - 管理台：`http://127.0.0.1:9999/admin/`
-- Worker 模型：`http://127.0.0.1:10001/v1/models`
-- OpenAI base URL：`http://127.0.0.1:10001/v1`
-- Anthropic Messages：`http://127.0.0.1:10001/v1/messages`
+- 统一代理入口（推荐）：`http://127.0.0.1:9999/v1`
+  - 模型列表：`http://127.0.0.1:9999/v1/models`
+  - OpenAI base URL：`http://127.0.0.1:9999/v1`
+  - Anthropic Messages：`http://127.0.0.1:9999/v1/messages`
+- 直连 Worker（兼容，可选）：`http://127.0.0.1:10001/v1`
 
-模型客户端访问 Worker 地址，并仅用 `Authorization: Bearer …` 请求头传递 Proxy
-Key。Control Plane 不会转发 `/v1` 流量。
+客户端只填统一入口 `9999` 即可：Control Plane 会把 `/v1/*` 转发到 Worker。
+模型请求通过 `Authorization: Bearer …` 请求头只传递 Proxy Key；管理面与代理面
+仍是两个进程，进程级安全边界不变，只是对外呈现单端口。
 
 ## 可信远程 HTTP 与 HTTPS
 
