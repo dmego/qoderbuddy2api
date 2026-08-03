@@ -100,8 +100,9 @@ def normalize_credits(body: dict[str, Any] | None) -> dict[str, Any]:
             depleted += 1
         if lowest is None or remain < lowest:
             lowest = remain
-        if account.get("ExpiredTime"):
-            expires.append(int(account["ExpiredTime"]))
+        epoch_ms = _epoch_ms(account.get("ExpiredTime"))
+        if epoch_ms is not None:
+            expires.append(epoch_ms)
     return {
         "unit": unit or "credits",
         "total_remaining": total_remaining,
@@ -127,3 +128,20 @@ def _number(value: Any) -> int:
 
 def _epoch_ms_to_iso(value: int) -> str:
     return datetime.fromtimestamp(value / 1000, tz=UTC).isoformat()
+
+
+def _epoch_ms(value: Any) -> int | None:
+    if isinstance(value, bool) or value in (None, ""):
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return int(parsed.timestamp() * 1000)

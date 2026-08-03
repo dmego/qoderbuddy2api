@@ -73,6 +73,14 @@ def test_normalize_credits_rejects_missing_data():
     assert normalize_credits({"code": 1, "msg": "boom"}) == {}
 
 
+def test_normalize_credits_accepts_space_separated_expiry():
+    body = _body()
+    account = body["data"]["Response"]["Data"]["Accounts"][1]
+    account["ExpiredTime"] = "2026-07-22 22:34:16"
+    value = normalize_credits(body)
+    assert value["expires_at"] == "2026-07-22T22:34:16+00:00"
+
+
 @pytest.mark.asyncio
 async def test_client_rejects_empty_token():
     client = CodeBuddyCreditsClient()
