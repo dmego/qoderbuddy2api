@@ -6,8 +6,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from qb2api.app import create_app
 from qb2api.config import Settings
+from qb2api.control.app import create_control_app as create_app
 
 
 def _client(*, enabled: bool) -> TestClient:

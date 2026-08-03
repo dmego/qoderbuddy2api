@@ -6,8 +6,6 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from qb2api.app import app as compatibility_app
-from qb2api.app import create_app
 from qb2api.config import Settings
 from qb2api.control.app import create_control_app
 from qb2api.worker.app import create_worker_app
@@ -32,11 +30,6 @@ def test_control_plane_forwards_proxy_routes_to_worker(tmp_path) -> None:
         assert client.get("/health").json()["component"] == "control-plane"
         assert client.get("/v1/models").json()["proxied"] is True
         assert client.get("/admin").status_code == 200
-
-
-def test_compatibility_app_defaults_to_the_control_plane() -> None:
-    assert compatibility_app.state.role == "control"
-    assert create_app is create_control_app
 
 
 def test_worker_blocks_management_surface() -> None:
