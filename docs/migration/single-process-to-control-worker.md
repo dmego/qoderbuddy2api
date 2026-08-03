@@ -9,12 +9,16 @@
 | 目标 | Control Plane | Proxy Worker | 客户端 |
 | --- | --- | --- | --- |
 | 保留旧 proxy `9999` | `127.0.0.1:10002` | `127.0.0.1:9999` | 本机 `/v1` 地址不变 |
-| 保留旧管理端口 `9999` | `127.0.0.1:9999` | `127.0.0.1:10001` | 代理客户端改到 10001 或经单独反向代理 |
+| 保留旧管理端口 `9999` | `127.0.0.1:9999` | `127.0.0.1:10001` | 客户端统一填 `http://127.0.0.1:9999/v1`，Control Plane 转发 `/v1/*` 到 Worker；直连 `10001` 仍兼容 |
 
 不要让旧进程、新 Control Plane、Worker 占用同一端口。发现冲突时人工确认并停止旧服务；
 禁止按端口盲杀。当前 split entrypoint 使用明确的 `QB2API_CONTROL_HOST/PORT` 与
 `QB2API_WORKER_HOST/PORT`：旧 `QB2API_HOST/QB2API_PORT` 不会自动重映射为 Worker，
 必须按上表更新 `.env`。
+
+统一入口（推荐）：Control Plane 在 `9999` 上把 `/v1/*` 原样转发给 loopback
+Worker（`10001`），客户端只需配置一个 base URL；管理面 `/api/admin`、`/admin`
+仍由 Control Plane 处理，进程与凭据边界不变。
 
 ## 2. 迁移前
 

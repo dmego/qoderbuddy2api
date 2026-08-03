@@ -73,9 +73,12 @@ QB2API_ADMIN_COOKIE_SECURE=auto
 curl --fail http://127.0.0.1:9999/health
 ```
 
-管理台是 `http://127.0.0.1:9999/admin/`；本机模型客户端使用
-`http://127.0.0.1:10001/v1`。Worker 的 `/internal/*` 只能由 Control Plane 通过
-内部 token 使用，不能对 LAN/Tailscale 暴露，也不能以 Admin/Proxy Key 代替内部 token。
+管理台是 `http://127.0.0.1:9999/admin/`；本机模型客户端统一使用
+`http://127.0.0.1:9999/v1`（`/v1/models`、OpenAI base URL、Anthropic Messages
+都在此入口，Control Plane 会把 `/v1/*` 转发到 Worker）。直连 Worker 的
+`http://127.0.0.1:10001/v1` 仍可用作兼容地址。Worker 的 `/internal/*` 只能由
+Control Plane 通过内部 token 使用，不能对 LAN/Tailscale 暴露，也不能以
+Admin/Proxy Key 代替内部 token。
 
 ## 3. 远程管理
 

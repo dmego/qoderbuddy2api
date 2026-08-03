@@ -28,7 +28,7 @@
 Shared domain      = accounts + credentials + models + usage + quotas + check-in
 ```
 
-客户端只需要访问 Worker 的 `/v1` 或 Anthropic 兼容端点，日常不再打开 CodeBuddy、WorkBuddy 或 QoderWork。浏览器访问 Control Plane 管理账号登录、凭据、模型、服务生命周期、Token 用量、积分快照和每日签到。停止 Worker 不会停止管理台。
+客户端只需要访问统一入口 Control Plane 的 `/v1`（`/v1/models`、OpenAI base URL、Anthropic Messages 均经 `9999` 转发到 Worker）或直连 Worker 的 Anthropic 兼容端点，日常不再打开 CodeBuddy、WorkBuddy 或 QoderWork。浏览器访问 Control Plane 管理账号登录、凭据、模型、服务生命周期、Token 用量、积分快照和每日签到。停止 Worker 不会停止管理台。
 
 ### 1.2 核心决策
 
@@ -1287,7 +1287,7 @@ QB2API_WORKER_INTERNAL_TOKEN=<generated-or-secret-file>
 QB2API_RUNTIME_SETTINGS_ENABLED=true
 ```
 
-Control Plane 默认只绑定 loopback；优先由 Tailscale Serve/Caddy 提供远程 HTTPS ingress。无法部署 HTTPS 时，可把 Control Plane 显式绑定到 Tailscale IP（优先于 `0.0.0.0`），配置 `QB2API_ADMIN_COOKIE_SECURE=false` 并用 tailnet ACL/主机防火墙限制来源。为兼容旧 proxy，可将 Worker 通过显式反向代理暴露到原入口，但不允许 Control Plane 管理端口直接与 Worker 共享监听地址。启用管理 UI、动态凭据或签到时无 `QB2API_ADMIN_KEY`/主密钥拒绝启动；非 loopback 管理必须满足 7.2 的 cookie 契约。Proxy Key 可以为空以兼容旧的开放 proxy，但远程 proxy 应显式配置 `QB2API_PROXY_API_KEY`。旧 `QB2API_API_KEY` 只映射 Proxy 权限；配置了两个新 Key 且值相同必须拒绝启动。
+Control Plane 默认只绑定 loopback；优先由 Tailscale Serve/Caddy 提供远程 HTTPS ingress。无法部署 HTTPS 时，可把 Control Plane 显式绑定到 Tailscale IP（优先于 `0.0.0.0`），配置 `QB2API_ADMIN_COOKIE_SECURE=false` 并用 tailnet ACL/主机防火墙限制来源。为兼容旧 proxy，可将 Worker 通过显式反向代理暴露到原入口；Control Plane 同时把 `/v1/*` 从管理端口转发到 loopback Worker 作为统一入口——转发只发生在进程边界，两者监听地址不共享，管理端口不直接处理模型请求。启用管理 UI、动态凭据或签到时无 `QB2API_ADMIN_KEY`/主密钥拒绝启动；非 loopback 管理必须满足 7.2 的 cookie 契约。Proxy Key 可以为空以兼容旧的开放 proxy，但远程 proxy 应显式配置 `QB2API_PROXY_API_KEY`。旧 `QB2API_API_KEY` 只映射 Proxy 权限；配置了两个新 Key 且值相同必须拒绝启动。
 
 `QB2API_WORKER_INTERNAL_TOKEN` 只给 Supervisor/Worker 的内部握手使用，不能作为客户端 API key 或 Admin Key。若未显式配置，首次启动生成 256-bit 随机 token 写入 `QB2API_DATA_DIR/worker.internal`（0600），并在 Worker restart 时递增 auth version；Control Plane 不把它返回 UI。
 
@@ -1592,9 +1592,9 @@ AUTH-01: CodeBuddy expiresIn、refreshToken、refresh endpoint
         Control 只绑定 Tailscale IP，并用 tailnet ACL/主机防火墙限制来源
   只有来自受信 ingress 的请求才能接受 forwarded scheme
 
-[Proxy ingress, optional]
-  local reverse proxy -> http://127.0.0.1:10001
-  only when remote clients need direct proxy access
+[Proxy ingress, recommended unified entry]
+  CLI clients -> 127.0.0.1:9999/v1 (Control Plane forwards /v1/* to Worker)
+  direct Worker 127.0.0.1:10001/v1 remains available as a compatible address
   upstream path must preserve Proxy API Key and never Admin cookie
 
 [开发/维护电脑]

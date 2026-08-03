@@ -11,9 +11,10 @@ Mini or development machine, not for public multi-tenant Internet exposure.
 ## Topology and credentials
 
 ```text
-Browser (admin) ─────> Control Plane :9999
-                         ├─ Admin UI, SQLite, audit, backup, supervisor
-                         └─ Proxy Worker 127.0.0.1:10001 ──> /v1, /v1/messages
+Browser (admin) ─────┐
+CLI clients (/v1) ───┴──> Control Plane :9999
+                          ├─ Admin UI, SQLite, audit, backup, supervisor
+                          └─ /v1/* forwarded to Proxy Worker 127.0.0.1:10001
 ```
 
 The Control Plane is the only persistent service. It starts and owns the
@@ -66,15 +67,15 @@ Default addresses:
 
 - Control health: `http://127.0.0.1:9999/health`
 - Admin UI: `http://127.0.0.1:9999/admin/`
-- Unified proxy entry: `http://127.0.0.1:9999/v1`（转发到 Worker，客户端只配这一个地址即可）
-- Worker models: `http://127.0.0.1:10001/v1/models`
-- OpenAI base URL: `http://127.0.0.1:10001/v1`
-- Anthropic Messages: `http://127.0.0.1:10001/v1/messages`
+- Unified proxy entry (recommended): `http://127.0.0.1:9999/v1`
+  - Models: `http://127.0.0.1:9999/v1/models`
+  - OpenAI base URL: `http://127.0.0.1:9999/v1`
+  - Anthropic Messages: `http://127.0.0.1:9999/v1/messages`
+- Direct Worker (compatible, optional): `http://127.0.0.1:10001/v1`
 
-Model clients use the Worker address and send the Proxy Key only through an
-`Authorization: Bearer …` header. When using the unified entry on 9999, the
-Control Plane forwards `/v1/*` to the Worker; security boundaries remain at
-the process level.
+客户端只填统一入口 `9999` 即可：Control Plane 会把 `/v1/*` 转发到 Worker。
+模型请求通过 `Authorization: Bearer …` 只发送 Proxy Key；进程级安全边界保持不变
+（管理面与代理面仍是两个进程，只是对外呈现单端口）。
 
 ## Trusted remote HTTP and HTTPS
 
