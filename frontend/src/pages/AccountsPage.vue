@@ -113,7 +113,14 @@ function accountActionLabel(kind: string): string { return ({ toggle: "更新状
 function asRecord(value: unknown): Record<string, unknown> { return typeof value === "object" && value !== null ? value as Record<string, unknown> : {}; }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function metricStatus(account: Account): string { const rows = metrics.data.value?.snapshots ?? []; const found = rows.filter((item) => item.provider === account.provider && item.account_id === account.account_id); return account.metrics_status ?? (found.some((item) => item.status === "stale") ? "stale" : found.length ? "fresh" : "unavailable"); }
-function metricSummary(metric: Metric): string { if (metric.metric_kind === "quota" && typeof metric.value?.total_usage_percentage === "number") return `已使用 ${metric.value.total_usage_percentage}%`; if (metric.metric_kind === "points" && metric.status === "unknown") return "接口协议尚未验证"; if (metric.metric_kind === "checkin") return String(metric.value?.terminal_outcome ?? "今日尚未执行"); return String(metric.value?.status ?? metric.status); }
+function metricSummary(metric: Metric): string {
+  const value = metric.value as { total_remaining?: number; unit?: string } | null;
+  if (metric.metric_kind === "points" && value && typeof value.total_remaining === "number") return `剩余 ${value.total_remaining} ${value.unit ?? "credits"}`;
+  if (metric.metric_kind === "quota" && typeof metric.value?.total_usage_percentage === "number") return `已使用 ${metric.value.total_usage_percentage}%`;
+  if (metric.metric_kind === "points" && metric.status === "unknown") return "接口协议尚未验证";
+  if (metric.metric_kind === "checkin") return String(metric.value?.terminal_outcome ?? "今日尚未执行");
+  return String(metric.value?.status ?? metric.status);
+}
 </script>
 
 <template>

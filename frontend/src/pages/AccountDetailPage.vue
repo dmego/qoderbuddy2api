@@ -6,6 +6,7 @@ import { useRoute, useRouter } from "vue-router";
 
 import { apiRequest } from "@/api/client";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
+import MetricChart from "@/components/MetricChart.vue";
 import NotificationRegion from "@/components/NotificationRegion.vue";
 import OperationStatus from "@/components/OperationStatus.vue";
 import PanelHeader from "@/components/PanelHeader.vue";
@@ -17,6 +18,7 @@ type Purpose = { enabled: boolean; status: string; verification_status: string; 
 type Account = { provider: string; account_id: string; label: string; source: string; enabled: boolean; summary_status: string; masked_identity?: string; created_at?: string; updated_at?: string; purposes: Record<string, Purpose> };
 type Credential = { provider: string; account_id: string; purpose: string; mode: string; credential_version: number; expires_at?: string; has_refresh_token: boolean; updated_at: string };
 type Metric = { metric_kind: string; status: string; observed_at?: string; value: Record<string, unknown> | null };
+type MetricHistoryRow = { observed_at: string; status: string; value: Record<string, unknown> | null };
 type RequestEvent = { event_id: string; model_id?: string; status: string; latency_ms?: number; started_at?: string; error_code?: string };
 type CheckinAttempt = { provider: string; account_id: string; outcome: string; finished_at?: string; error_code?: string };
 type DetailAction = "save" | "refresh" | "probe" | "verify" | "rederive" | "promote" | "delete";
@@ -41,6 +43,7 @@ const credentials = useQuery({ queryKey: ["account-credentials", provider, accou
   return result.credentials.filter((item) => item.account_id === accountId.value);
 } });
 const metrics = useQuery({ queryKey: ["account-metrics", provider, accountId], queryFn: () => apiRequest<{ snapshots: Metric[] }>(`/metrics/accounts/${encodeURIComponent(provider.value)}/${encodeURIComponent(accountId.value)}`) });
+const pointsHistory = useQuery({ queryKey: ["account-metric-history", provider, accountId], queryFn: () => apiRequest<{ rows: MetricHistoryRow[] }>(`/metrics/accounts/${encodeURIComponent(provider.value)}/${encodeURIComponent(accountId.value)}/history/points?limit=500`), staleTime: 30_000 });
 const events = useQuery({ queryKey: ["account-events", provider, accountId], queryFn: () => apiRequest<{ events: RequestEvent[] }>(`/usage/events?limit=10&provider=${encodeURIComponent(provider.value)}&account_id=${encodeURIComponent(accountId.value)}`) });
 const checkin = useQuery({ queryKey: ["account-checkin", provider, accountId], queryFn: () => accountCheckinHistory(provider.value, accountId.value) });
 
@@ -107,7 +110,25 @@ function checkinErrorHint(code: string | null | undefined): string | null {
   if (code === "checkin_failed") return null;
   return code ?? null;
 }
-function metricValue(metric: Metric): string { return metric.value ? JSON.stringify(metric.value) : "尚无可用数据"; }
+function metricValue(metric: Metric): string {
+  const value = metric.value as { unit?: string; total_remaining?: number; total_used?: number; total_capacity?: number } | null;
+  if (metric.metric_kind === "points" && value && typeof value.total_remaining === "number") {
+    return `剩余 ${value.total_remaining} ${value.unit ?? "credits"}（已用 ${value.total_used ?? 0} / 总 ${value.total_capacity ?? 0}）`;
+  }
+  return metric.value ? JSON.stringify(metric.value) : "尚无可用数据";
+}
+const creditsChart = computed(() => {
+  const rows = pointsHistory.data.value?.rows ?? [];
+  const labels: string[] = [];
+  const values: number[] = [];
+  for (const row of rows) {
+    const total = (row.value as { total_remaining?: number } | null)?.total_remaining;
+    if (typeof total !== "number") continue;
+    labels.push(row.observed_at.slice(5, 16));
+    values.push(total);
+  }
+  return { labels, values };
+});
 function setPurpose(name: string, event: Event): void { if (name === "chat") draftChat.value = (event.target as HTMLInputElement).checked; else draftCheckin.value = (event.target as HTMLInputElement).checked; }
 
 async function accountCheckinHistory(selectedProvider: string, selectedAccountId: string): Promise<CheckinAttempt[]> {
@@ -133,6 +154,7 @@ async function accountCheckinHistory(selectedProvider: string, selectedAccountId
       </section>
       <section class="data-panel"><PanelHeader title="用途与路由状态" description="代理请求与每日签到可以独立启停，签到失败不会移出代理账号池。" /><div class="form-grid"><label>显示名称<input v-model="draftLabel" :disabled="!canWrite" aria-label="账号显示名称" /></label><label class="inline-check"><input v-model="draftEnabled" type="checkbox" :disabled="!canWrite" />账号启用</label><label v-for="name in ['chat', 'checkin']" :key="name" class="inline-check"><input :checked="name === 'chat' ? draftChat : draftCheckin" type="checkbox" :disabled="!canWrite || !account.data.value.purposes[name]" @change="setPurpose(name, $event)" /><span>{{ statusLabel(name) }}</span><StatePill v-if="account.data.value.purposes[name]" :value="account.data.value.purposes[name].status" /></label></div><div class="purpose-cards"><div v-for="(item, name) in account.data.value.purposes" :key="name"><strong>{{ statusLabel(String(name)) }}</strong><StatePill :value="item.verification_status" /><small>到期：{{ item.expires_at ?? "未设置" }} · 验证：{{ item.verified_at ?? "尚未验证" }}<template v-if="item.last_error"> · {{ item.last_error }}</template></small></div></div><div class="form-actions"><button type="button" :disabled="!canWrite" @click="requestAction('save')"><ShieldCheck :size="16" />保存账号设置</button></div></section>
       <section class="overview-grid"><div class="data-panel"><PanelHeader title="凭据元数据" description="模式、版本与过期时间；不显示原始凭据或凭据指纹。" /><div v-if="credentials.isPending.value" class="loading-row">正在读取凭据元数据…</div><div v-else-if="!credentials.data.value?.length" class="compact-empty">尚未保存持久凭据。</div><div v-else class="metric-list"><div v-for="item in credentials.data.value" :key="item.purpose"><strong>{{ statusLabel(item.purpose) }} · {{ item.mode }}</strong><StatePill :value="item.has_refresh_token ? 'refresh' : 'static'" /><span>版本 v{{ item.credential_version }} · 到期 {{ item.expires_at ?? "未设置" }}</span><small>最后更新 {{ item.updated_at }}</small></div></div></div><div class="data-panel"><PanelHeader title="积分与配额" description="未知或过期值不会显示为 0。" /><div v-if="metrics.isPending.value" class="loading-row">正在读取账号指标…</div><div v-else-if="!metrics.data.value?.snapshots.length" class="compact-empty">尚未采集账号指标。</div><div v-else class="metric-list"><div v-for="metric in metrics.data.value.snapshots" :key="metric.metric_kind"><strong>{{ metric.metric_kind }}</strong><StatePill :value="metric.status" /><span>{{ metricValue(metric) }}</span><small>{{ metric.observed_at ?? "--" }}</small></div></div></div></section>
+      <section class="data-panel"><PanelHeader title="积分趋势" description="每次采集一个点，默认保留 90 天。" /><div v-if="pointsHistory.isPending.value" class="loading-row">正在读取积分历史…</div><div v-else-if="pointsHistory.isError.value" class="data-state data-state--error">积分历史读取失败。<button class="secondary-button compact-button" type="button" @click="pointsHistory.refetch()">重试</button></div><div v-else-if="!creditsChart.labels.length" class="compact-empty">尚未采集积分历史。</div><template v-else><MetricChart :labels="creditsChart.labels" :values="creditsChart.values" /><small class="chart-caption">最近 {{ creditsChart.labels.length }} 个采样点 · 总剩余 Credits</small></template></section>
       <section class="overview-grid"><div class="data-panel"><PanelHeader title="最近请求事件" description="仅显示脱敏元数据。" /><div v-if="events.isPending.value" class="loading-row">正在读取请求事件…</div><div v-else-if="!events.data.value?.events.length" class="compact-empty">尚无此账号的请求事件。</div><div v-else class="metric-list"><div v-for="event in events.data.value.events" :key="event.event_id"><strong>{{ event.model_id ?? "未知模型" }}</strong><StatePill :value="event.status" /><span>{{ event.latency_ms ?? "--" }} ms<template v-if="event.error_code"> · {{ event.error_code }}</template></span><small>{{ event.started_at ?? "--" }}</small></div></div></div><div class="data-panel"><PanelHeader title="签到历史" description="最近 20 个签到批次中与此账号匹配的结果。" /><div v-if="checkin.isPending.value" class="loading-row">正在读取签到历史…</div><div v-else-if="!checkin.data.value?.length" class="compact-empty">尚未记录签到结果。</div><div v-else class="metric-list"><div v-for="(item, index) in checkin.data.value" :key="`${item.finished_at}:${index}`"><strong>每日签到</strong><StatePill :value="item.outcome" /><span>{{ checkinErrorHint(item.error_code) ?? "已完成" }}</span><small>{{ item.finished_at ?? "--" }}</small></div></div></div></section>
     </template>
     <OperationStatus :operation="lastOperation" />
@@ -140,3 +162,7 @@ async function accountCheckinHistory(selectedProvider: string, selectedAccountId
     <NotificationRegion :notifications="notifications" @dismiss="dismiss" />
   </section>
 </template>
+
+<style scoped>
+.chart-caption { display: block; margin-top: 6px; color: var(--faint, #66666f); font-size: 12px; }
+</style>
