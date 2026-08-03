@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from .account_queries import INSERT_CREDENTIAL, UPDATE_CREDENTIAL, UPSERT_ACCOUNT, UPSERT_PURPOSE
-from .schema_management import MANAGEMENT_SCHEMA_V4
+from .schema_management import MANAGEMENT_SCHEMA
 
 __all__ = [
     "INSERT_CREDENTIAL",
@@ -277,4 +277,4 @@ CREATE TABLE IF NOT EXISTS backup_runs (
 );
 """
 
-SCHEMA = BASE_SCHEMA + MANAGEMENT_SCHEMA_V4
+SCHEMA = BASE_SCHEMA + MANAGEMENT_SCHEMA

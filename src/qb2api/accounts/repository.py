@@ -81,7 +81,7 @@ class AccountRepository(
                 "INTEGER NOT NULL DEFAULT 0",
             )
             await self.db.execute(
-                "INSERT INTO schema_meta(key, value) VALUES('schema_version', '4') "
+                "INSERT INTO schema_meta(key, value) VALUES('schema_version', '5') "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
             )
             await self.db.commit()

@@ -20,7 +20,7 @@ def test_public_schema_contains_current_management_tables() -> None:
         )
     }
     connection.close()
-    assert {"service_events", "metric_refresh_operations"} <= tables
+    assert {"service_events", "metric_refresh_operations", "account_metric_history"} <= tables
 
 
 @pytest.mark.asyncio
@@ -54,7 +54,7 @@ async def test_v2_usage_rollup_table_gets_token_count_columns(tmp_path):
     cursor = await repository.db.execute("PRAGMA table_info(usage_rollups)")
     columns = {row[1] for row in await cursor.fetchall()}
     assert {"token_event_count", "missing_token_count"} <= columns
-    assert await repository.schema_version() == "4"
+    assert await repository.schema_version() == "5"
     await repository.close()
 
 
@@ -137,7 +137,7 @@ async def test_v3_to_v4_adds_management_tables_and_preserves_data(tmp_path):
     assert event_count[0][0] == 0
     assert tuple(audit[0]) == ("account.update", "succeeded")
     assert tuple(usage[0]) == ("request-v3", 1, 2)
-    assert await repository.schema_version() == "4"
+    assert await repository.schema_version() == "5"
     await repository.close()
 
 
