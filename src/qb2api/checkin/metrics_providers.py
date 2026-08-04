@@ -1,4 +1,4 @@
-"""Provider-specific metric collection (Qoder quota / CodeBuddy credits)."""
+"""Provider-specific metric collection (Qoder quota / activity / CodeBuddy credits)."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ class ProviderMetricCollectorMixin:
             if key in state.seen:
                 return
             await self._write_quota_snapshot(account_id, state)
+            await self._write_activity_snapshot(account_id, state)
         elif provider == "codebuddy":
             key = (provider, account_id, "points")
             if key in state.seen:
@@ -69,6 +70,25 @@ class ProviderMetricCollectorMixin:
             await self._write(key=key, value=value, status="fresh", state=state)
             self._backoff.pop(self._backoff_key(key), None)
 
+    async def _write_activity_snapshot(self, account_id: str, state: Any) -> None:
+        client = self._dependencies.qoder_activity
+        if client is None:
+            return
+        key = ("qoder", account_id, "activity")
+        state.seen.add(key)
+        if await self._write_backoff_snapshot(key, state):
+            return
+        try:
+            pat = await _qoder_pat(self._dependencies.resolver, account_id)
+            value = {"activities": await client.fetch(pat)}
+        except (LookupError, QuotaUnavailableError) as error:
+            await self._write_failure(key, state, str(error))
+        except Exception as error:
+            await self._write_failure(key, state, type(error).__name__)
+        else:
+            await self._write(key=key, value=value, status="fresh", state=state)
+            self._backoff.pop(self._backoff_key(key), None)
+
 
 def _access_token(credential: Any) -> str:
     payload = credential.payload
@@ -96,3 +116,16 @@ async def _qoder_access_token(credential: Any) -> str:
     if not isinstance(token, str) or not token.strip():
         raise QuotaUnavailableError("qoder oauth token unavailable")
     return token.strip()
+
+
+async def _qoder_pat(resolver: Any, account_id: str) -> str:
+    """Resolve the PAT for a Qoder account, preferring chat credential."""
+    for purpose in ("checkin", "chat"):
+        try:
+            credential = await resolver.credential("qoder", account_id, purpose)
+        except LookupError:
+            continue
+        pat = credential.payload.get("pat")
+        if isinstance(pat, str) and pat.strip():
+            return pat.strip()
+    raise LookupError(f"no qoder PAT for {account_id}")

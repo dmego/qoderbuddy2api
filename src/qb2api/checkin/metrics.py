@@ -12,6 +12,7 @@ from qb2api.accounts.repository import AccountRepository
 from qb2api.accounts.resolver import CredentialResolver
 from qb2api.config import Settings
 
+from .activity import QoderActivityClient
 from .codebuddy_credits import CodeBuddyCreditsClient
 from .metrics_collector import MetricDependencies, MetricSnapshotCollector
 from .quota import QoderQuotaClient
@@ -31,6 +32,7 @@ class MetricsScheduler:
         resolver: CredentialResolver,
         qoder_quota: QoderQuotaClient | None = None,
         codebuddy_credits: CodeBuddyCreditsClient | None = None,
+        qoder_activity: QoderActivityClient | None = None,
     ) -> None:
         self.settings = settings
         self.qoder_quota = qoder_quota or QoderQuotaClient(
@@ -41,6 +43,11 @@ class MetricsScheduler:
         self.codebuddy_credits = codebuddy_credits or CodeBuddyCreditsClient(
             base_url=settings.codebuddy_checkin_base,
             path=settings.codebuddy_credits_path,
+            timeout=float(settings.checkin_request_timeout_seconds),
+        )
+        self.qoder_activity = qoder_activity or QoderActivityClient(
+            base_url=settings.qoder_activity_base,
+            path=settings.qoder_activity_path,
             timeout=float(settings.checkin_request_timeout_seconds),
         )
         self._task: asyncio.Task[None] | None = None
@@ -55,6 +62,7 @@ class MetricsScheduler:
                 resolver=resolver,
                 qoder_quota=self.qoder_quota,
                 codebuddy_credits=self.codebuddy_credits,
+                qoder_activity=self.qoder_activity,
             ),
             self._backoff,
         )
@@ -81,6 +89,7 @@ class MetricsScheduler:
             await asyncio.gather(self._refresh_task, return_exceptions=True)
         await self.qoder_quota.aclose()
         await self.codebuddy_credits.aclose()
+        await self.qoder_activity.aclose()
         self._task = None
         self._refresh_task = None
 

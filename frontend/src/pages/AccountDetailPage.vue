@@ -111,9 +111,13 @@ function checkinErrorHint(code: string | null | undefined): string | null {
   return code ?? null;
 }
 function metricValue(metric: Metric): string {
-  const value = metric.value as { unit?: string; total_remaining?: number; total_used?: number; total_capacity?: number } | null;
+  const value = metric.value as { unit?: string; total_remaining?: number; total_used?: number; total_capacity?: number; activities?: { model?: string; tag?: string; limit?: number; used?: number; remaining?: number }[] } | null;
   if (metric.metric_kind === "points" && value && typeof value.total_remaining === "number") {
     return `剩余 ${value.total_remaining} ${value.unit ?? "credits"}（已用 ${value.total_used ?? 0} / 总 ${value.total_capacity ?? 0}）`;
+  }
+  if (metric.metric_kind === "activity" && value && Array.isArray(value.activities)) {
+    if (!value.activities.length) return "当前无免费模型活动";
+    return value.activities.map((a) => `${a.model ?? "?"}: 剩 ${a.remaining ?? 0}/${a.limit ?? 0}（tag ${a.tag ?? "-"}）`).join("；");
   }
   return metric.value ? JSON.stringify(metric.value) : "尚无可用数据";
 }

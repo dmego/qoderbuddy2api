@@ -93,6 +93,23 @@ class FakeCredits:
         return None
 
 
+class FakeActivity:
+    def __init__(self, result=None, error=None):
+        self.result = result
+        self.error = error
+        self.calls = 0
+
+    async def fetch(self, pat):
+        self.calls += 1
+        await asyncio.sleep(0)
+        if self.error:
+            raise self.error
+        return self.result
+
+    async def aclose(self):
+        return None
+
+
 @pytest.mark.asyncio
 async def test_scheduler_collects_workbuddy_points_fresh(metric_context):
     repo, vault, registry, resolver = metric_context
@@ -245,7 +262,8 @@ async def test_scheduler_status_exposes_retry_backoff(metric_context):
 
     status = scheduler.status_snapshot()
     assert status["last_result"]["unavailable"] >= 1
-    assert status["backoff"][0]["metric"] == "qoder:qd-1:quota"
+    backoff_metrics = {entry["metric"] for entry in status["backoff"]}
+    assert "qoder:qd-1:quota" in backoff_metrics
     await scheduler.stop()
 
 
@@ -267,3 +285,56 @@ def test_access_token_rejects_pat_without_exchange():
     credential = SimpleNamespace(payload={"pat": "qoder-pat"})
     with pytest.raises(QuotaUnavailableError, match="access token unavailable"):
         _access_token(credential)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_collects_qoder_activity_fresh(metric_context):
+    repo, vault, registry, resolver = metric_context
+    await _seed(
+        repo, vault, "qoder", "qd-1", "checkin",
+        {"access_token": "qd-token", "refresh_token": "r", "pat": "qd-pat"},
+    )
+    activity = FakeActivity([
+        {"model": "Qwen3.7-Max", "tag": "FREE", "limit": 10, "used": 2, "remaining": 8},
+        {"model": "DeepSeek-V4-Pro", "tag": "FREE", "limit": 5, "used": 5, "remaining": 0},
+    ])
+    scheduler = MetricsScheduler(
+        settings=Settings(metrics_enabled=False),
+        repo=repo,
+        registry=registry,
+        resolver=resolver,
+        qoder_quota=FakeQuota({"user_quota": {"remaining": 1}}),
+        qoder_activity=activity,
+    )
+    try:
+        await scheduler.refresh_once()
+        snap = [r for r in await repo.list_metric_snapshots() if r["metric_kind"] == "activity"][0]
+        assert snap["status"] == "fresh"
+        assert snap["value"]["activities"][0]["model"] == "Qwen3.7-Max"
+        assert snap["value"]["activities"][0]["remaining"] == 8
+        assert activity.calls == 1
+    finally:
+        await scheduler.stop()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_marks_qoder_activity_unavailable_on_failure(metric_context):
+    repo, vault, registry, resolver = metric_context
+    await _seed(
+        repo, vault, "qoder", "qd-1", "chat", {"pat": "qd-pat"},
+    )
+    scheduler = MetricsScheduler(
+        settings=Settings(metrics_enabled=False),
+        repo=repo,
+        registry=registry,
+        resolver=resolver,
+        qoder_quota=FakeQuota({"user_quota": {"remaining": 1}}),
+        qoder_activity=FakeActivity(error=QuotaUnavailableError("empty activity response")),
+    )
+    try:
+        await scheduler.refresh_once()
+        snap = [r for r in await repo.list_metric_snapshots() if r["metric_kind"] == "activity"][0]
+        assert snap["status"] == "unavailable"
+        assert snap["value"] is None
+    finally:
+        await scheduler.stop()

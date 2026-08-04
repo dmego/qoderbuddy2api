@@ -132,10 +132,12 @@ def _qoder_checkin_values(enabled: bool) -> dict[str, object]:
     return {
         "qoder_checkin_enabled": enabled,
         "qoder_checkin_base": os.getenv("QODER_CHECKIN_BASE", "https://openapi.qoder.com.cn"),
+        "qoder_activity_base": os.getenv("QODER_ACTIVITY_BASE", "https://gateway.qoder.com.cn"),
         "qoder_checkin_status_path": os.getenv("QODER_CHECKIN_STATUS_PATH", "/sash/api/v1/me/daily-check-in/status"),
         "qoder_checkin_claim_path": os.getenv("QODER_CHECKIN_CLAIM_PATH", "/sash/api/v1/me/daily-check-in/claim"),
         "qoder_checkin_refresh_path": os.getenv("QODER_CHECKIN_REFRESH_PATH", "/api/v1/deviceToken/refresh"),
         "qoder_quota_path": os.getenv("QODER_QUOTA_PATH", "/api/v2/quota/usage"),
+        "qoder_activity_path": os.getenv("QODER_ACTIVITY_PATH", "/algo/api/v2/activity"),
     }
 
 
@@ -220,10 +222,12 @@ class Settings:
     # Qoder check-in (design 13.3)
     qoder_checkin_enabled: bool = False
     qoder_checkin_base: str = "https://openapi.qoder.com.cn"
+    qoder_activity_base: str = "https://gateway.qoder.com.cn"
     qoder_checkin_status_path: str = "/sash/api/v1/me/daily-check-in/status"
     qoder_checkin_claim_path: str = "/sash/api/v1/me/daily-check-in/claim"
     qoder_checkin_refresh_path: str = "/api/v1/deviceToken/refresh"
     qoder_quota_path: str = "/api/v2/quota/usage"
+    qoder_activity_path: str = "/algo/api/v2/activity"
     metrics_enabled: bool = True
     metrics_interval_seconds: int = 900
     metrics_history_retention_days: int = 90

@@ -1319,9 +1319,12 @@ CODEBUDDY_CHECKIN_CLAIM_METHOD=POST
 
 QODER_CHECKIN_ENABLED=true
 QODER_CHECKIN_BASE=https://openapi.qoder.com.cn
+QODER_ACTIVITY_BASE=https://gateway.qoder.com.cn
 QODER_CHECKIN_STATUS_PATH=/sash/api/v1/me/daily-check-in/status
 QODER_CHECKIN_CLAIM_PATH=/sash/api/v1/me/daily-check-in/claim
 QODER_CHECKIN_REFRESH_PATH=/api/v1/deviceToken/refresh
+QODER_QUOTA_PATH=/api/v2/quota/usage
+QODER_ACTIVITY_PATH=/algo/api/v2/activity
 ```
 
 空的 `CODEBUDDY_CHECKIN_STATUS_METHOD` 表示禁用 status preflight，不允许猜测 POST。WorkBuddy status method/auth 在 CB-CHECKIN-01 后固定；Qoder PAT 合并方向在 QD-CHECKIN-01 后决定。未验证能力使用 `verification_status=unverified`，不自动调度。

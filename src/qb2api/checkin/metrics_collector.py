@@ -26,6 +26,7 @@ class MetricDependencies:
     resolver: CredentialResolver
     qoder_quota: Any
     codebuddy_credits: Any
+    qoder_activity: Any = None
 
 
 @dataclass
