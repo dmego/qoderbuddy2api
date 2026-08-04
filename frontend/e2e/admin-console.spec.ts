@@ -5,7 +5,7 @@ const adminKey = "playwright-admin-key";
 async function login(page: Page): Promise<void> {
   await page.goto("/admin/login");
   await expect(page.getByRole("heading", { name: "管理员登录" })).toBeVisible();
-  await expect(page.getByLabel("远程 HTTP 安全提示")).toContainText("QB2API_ADMIN_COOKIE_SECURE=false");
+  await expect(page.getByLabel("远程 HTTP 安全提示")).toHaveCount(0);
   await page.getByLabel("管理员密钥（Admin Key）").fill(adminKey);
   await page.getByRole("button", { name: "登录控制台" }).click();
   await expect(page).toHaveURL(/\/admin\/overview$/);
@@ -40,6 +40,7 @@ test.describe.serial("2api Control Plane", () => {
     await login(page);
     const pages = [
       ["账号", "账号管理"],
+      ["积分监控", "积分监控"],
       ["凭据", "凭据管理"],
       ["代理密钥", "代理密钥"],
       ["模型", "模型管理"],

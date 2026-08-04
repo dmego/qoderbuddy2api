@@ -36,7 +36,7 @@ h2 { margin-bottom: 4px; color: var(--text); font-size: 13px; font-weight: 600; 
 .summary-tile small { color: var(--faint); }
 
 .data-panel { min-width: 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
-.data-panel > :not(.panel-heading):not(.table-wrap):not(.paginated-table):not(.service-status-block):not(.metric-chart):not(.chart-empty):not(.health-list):not(.checkin-rail):not(.settings-list):not(.operation-grid):not(.usage-filter-grid):not(.filter-grid):not(.detail-list):not(.metric-list):not(.result-log):not(.large-state):not(.alert-count):not(.compact-empty):not(.empty-state):not(.loading-row) { margin-inline: 16px; }
+.data-panel > :not(.panel-heading):not(.table-wrap):not(.paginated-table):not(.service-status-block):not(.metric-chart):not(.chart-empty):not(.health-list):not(.checkin-rail):not(.settings-list):not(.usage-filter-grid):not(.filter-grid):not(.detail-list):not(.metric-list):not(.result-log):not(.large-state):not(.alert-count):not(.compact-empty):not(.empty-state):not(.loading-row) { margin-inline: 16px; }
 .data-panel--wide { min-height: 250px; }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 52px; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--surface-raised); }
 .panel-actions, .header-actions, .toolbar, .command-bar, .row-actions, .form-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -70,7 +70,6 @@ h2 { margin-bottom: 4px; color: var(--text); font-size: 13px; font-weight: 600; 
 .command-bar { padding: 0 16px 16px; }
 .diagnostic-panel .detail-list { padding-inline: 16px; }
 
-.operation-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 16px; }
 .operation-status { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; min-height: 74px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-raised); }
 .operation-status div { display: grid; gap: 3px; min-width: 0; }
 .operation-status strong { color: var(--text); font-size: 12px; }
@@ -85,7 +84,6 @@ h2 { margin-bottom: 4px; color: var(--text); font-size: 13px; font-weight: 600; 
 @media (max-width: 1120px) {
   .summary-grid--five { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .service-layout, .overview-grid { grid-template-columns: 1fr; }
-  .operation-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 760px) {
   .page-stage { padding: 20px 16px 38px; }
@@ -94,7 +92,6 @@ h2 { margin-bottom: 4px; color: var(--text); font-size: 13px; font-weight: 600; 
   .page-header .header-actions > * { flex: 1 1 auto; }
   .summary-grid, .summary-grid--five { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .service-status-block, .checkin-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .operation-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 480px) {
   .summary-grid, .summary-grid--five { grid-template-columns: 1fr; }

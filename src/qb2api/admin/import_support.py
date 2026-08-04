@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from qb2api.checkin.executor_helpers import qoder_client, workbuddy_client
+from qb2api.checkin.executor_helpers import workbuddy_client
 from qb2api.checkin.models import SUCCESS_OUTCOMES, CheckInOutcome
 from qb2api.config import Settings
 from qb2api.providers.qoder_auth import QoderError, QoderSession
@@ -97,17 +97,12 @@ async def derive_qoder_checkin(
 ) -> tuple[str, str] | None:
     """用 PAT 认证后派生签到凭据 (access_token, refresh_token)。
 
-    链路: PAT -> jobToken 响应带 refreshToken -> deviceToken/refresh -> access_token。
+    实测链路: PAT -> jobToken 响应里的 securityOauthToken (jt-) 即签到 access_token，
+    refreshToken (jrt-) 作为刷新凭据保留。不再依赖 deviceToken/refresh——该端点对
+    当前账号返回 400，且 jt- 已能直接通过签到 status/claim 与 quota 校验。
     返回 None 表示派生失败，不阻塞 PAT 导入。
     """
-    refresh_token = await _qoder_refresh_token_from_pat(pat)
-    if not refresh_token:
-        return None
-    return await _qoder_access_tokens_from_refresh(settings, refresh_token)
-
-
-async def _qoder_refresh_token_from_pat(pat: str) -> str | None:
-    """Authenticate the PAT and return the opaque refresh token if supplied."""
+    del settings  # 派生不再调用 qoder_client，保留参数以兼容调用方签名
     session = QoderSession(pat)
     try:
         await session.authenticate()
@@ -126,45 +121,23 @@ async def _qoder_refresh_token_from_pat(pat: str) -> str | None:
     finally:
         await session.close()
 
+    access_token = session.security_oauth_token
     refresh_token = session.refresh_token
+    if not access_token:
+        logger.warning(
+            "qoder checkin derive: no securityOauthToken in jobToken response "
+            "(refreshToken present: %s)",
+            bool(refresh_token),
+        )
+        return None
     if not refresh_token:
         logger.warning(
             "qoder checkin derive: no refreshToken in jobToken response "
-            "(security_oauth_token present: %s)",
-            bool(session.security_oauth_token),
+            "(securityOauthToken present: %s)",
+            bool(access_token),
         )
         return None
-    return refresh_token
-
-
-async def _qoder_access_tokens_from_refresh(
-    settings: Settings,
-    refresh_token: str,
-) -> tuple[str, str] | None:
-    """Refresh the device token without exposing upstream response text."""
-    client = qoder_client(settings)
-    try:
-        result = await client.refresh(refresh_token=refresh_token)
-    except Exception as error:
-        logger.warning(
-            "qoder checkin derive: refresh request error: %s",
-            type(error).__name__,
-        )
-        return None
-    finally:
-        await client.close()
-
-    if not result.ok or not result.access_token:
-        logger.warning(
-            "qoder checkin derive: refresh failed (outcome=%s, http=%s)",
-            result.outcome,
-            result.http_status,
-        )
-        return None
-
-    # 上游可能轮换 refresh_token，取响应中的新值
-    final_refresh = result.refresh_token or refresh_token
-    return result.access_token, final_refresh
+    return access_token, refresh_token
 
 
 async def verify_codebuddy_checkin(
@@ -202,7 +175,12 @@ async def verify_qoder_checkin(
     account_id: str,
     access_token: str,
 ) -> bool:
-    """Verify a derived Qoder token before marking its check-in purpose active."""
+    """Verify a derived Qoder token before marking its check-in purpose active.
+
+    Accepts any non-failing status: an already-checked-in signal (CLAIMED_TODAY,
+    ALREADY_CLAIMED, ALREADY_CHECKED_IN, CHECKED_IN…), a claimable signal, or a
+    just-claimed result. Only explicit auth/transport failures reject the token.
+    """
     try:
         result = await state.checkin_service.qoder_client.status(
             access_token=access_token,
@@ -210,7 +188,4 @@ async def verify_qoder_checkin(
         )
     except Exception:
         return False
-    return result.outcome in {
-        CheckInOutcome.ALREADY_CHECKED_IN,
-        CheckInOutcome.SKIPPED,
-    }
+    return result.outcome in {*SUCCESS_OUTCOMES, CheckInOutcome.SKIPPED}

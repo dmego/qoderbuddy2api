@@ -30,7 +30,6 @@ type EventPage = { events: ServiceEvent[]; next_cursor?: string | null };
 const queryClient = useQueryClient();
 const eventType = ref("");
 const eventStatus = ref("");
-const recent = ref<Record<string, unknown>[]>([]);
 const activeOperation = ref<Record<string, unknown> | null>(null);
 const confirmAction = ref<"stop" | "restart" | null>(null);
 const { cursor, page, canPrevious, next, previous, reset } = useCursorPager();
@@ -51,7 +50,6 @@ const action = useMutation({
   },
   onSuccess: async (result) => {
     activeOperation.value = result;
-    recent.value = [result, ...recent.value].slice(0, 6);
     notifyTerminal(result);
     await Promise.all([queryClient.invalidateQueries({ queryKey: ["service"] }), queryClient.invalidateQueries({ queryKey: ["service-events"] })]);
   },
@@ -116,12 +114,6 @@ function displayTime(value?: string | number): string { if (!value) return "--";
         </dl>
       </aside>
     </div>
-
-    <section class="data-panel">
-      <PanelHeader title="本次会话操作" description="异步操作完成后会保留最终状态；完整历史以持久化事件为准。" />
-      <div v-if="!recent.length" class="compact-empty">本次会话尚未执行服务操作。</div>
-      <div v-else class="operation-grid"><OperationStatus v-for="item in recent" :key="String(item.operation_id)" :operation="item" /></div>
-    </section>
 
     <section class="data-panel">
       <PanelHeader title="持久化事件" :description="`第 ${page} 页 · 代理进程重启后仍可追溯`">

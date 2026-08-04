@@ -9,6 +9,7 @@ const LoginPage = () => import("@/pages/LoginPage.vue");
 const OverviewPage = () => import("@/pages/OverviewPage.vue");
 const ServicePage = () => import("@/pages/ServicePage.vue");
 const AccountsPage = () => import("@/pages/AccountsPage.vue");
+const CreditsPage = () => import("@/pages/CreditsPage.vue");
 const AddAccountPage = () => import("@/pages/AddAccountPage.vue");
 const AccountDetailPage = () => import("@/pages/AccountDetailPage.vue");
 const CredentialsPage = () => import("@/pages/CredentialsPage.vue");
@@ -31,6 +32,7 @@ export const router = createRouter({
         { path: "overview", name: "overview", component: OverviewPage },
         { path: "service", name: "service", component: ServicePage },
         { path: "accounts", name: "accounts", component: AccountsPage },
+        { path: "credits", name: "credits", component: CreditsPage },
         { path: "accounts/add", name: "account-add", component: AddAccountPage },
         { path: "accounts/:provider/:accountId", name: "account-detail", component: AccountDetailPage },
         { path: "credentials", name: "credentials", component: CredentialsPage },

@@ -11,8 +11,9 @@ import pytest
 from qb2api.accounts.imports import persist_qoder_chat, persist_qoder_checkin
 from qb2api.accounts.repo_credentials import CredentialVersionConflict
 from qb2api.admin import account_routes, import_routes, import_support
-from qb2api.checkin.models import CheckInOutcome, CheckInResult, RefreshResult
+from qb2api.checkin.models import CheckInOutcome, CheckInResult
 from qb2api.config import Settings
+from qb2api.providers.qoder_auth import QoderError
 
 
 class _QoderProbe:
@@ -323,6 +324,35 @@ async def test_qoder_rederive_rejects_environment_account_before_deriving(
 
 
 @pytest.mark.asyncio
+async def test_verify_qoder_checkin_accepts_claimed_today_and_rejects_failure(
+    admin_context,
+) -> None:
+    """verify_qoder_checkin 应接受任何非失败状态（CLAIMED/ALREADY/SKIPPED），拒绝失败。"""
+    app, _repository, _vault, _registry = admin_context
+
+    def make_probe(outcome: CheckInOutcome) -> SimpleNamespace:
+        return SimpleNamespace(qoder_client=_QoderProbe(
+            CheckInResult(outcome=outcome, provider="qoder")
+        ))
+
+    state = SimpleNamespace(checkin_service=None)
+    accepted = {CheckInOutcome.CLAIMED, CheckInOutcome.ALREADY_CHECKED_IN, CheckInOutcome.SKIPPED}
+    rejected = {
+        CheckInOutcome.AUTH_FAILED,
+        CheckInOutcome.NEEDS_REAUTH,
+        CheckInOutcome.FAILED,
+        CheckInOutcome.RATE_LIMITED,
+        CheckInOutcome.TRANSIENT_ERROR,
+    }
+    for outcome in accepted:
+        state.checkin_service = make_probe(outcome)
+        assert await import_support.verify_qoder_checkin(state, "acct", "tok") is True, outcome
+    for outcome in rejected:
+        state.checkin_service = make_probe(outcome)
+        assert await import_support.verify_qoder_checkin(state, "acct", "tok") is False, outcome
+
+
+@pytest.mark.asyncio
 async def test_qoder_checkin_persistence_rejects_stale_credential_version(admin_context) -> None:
     _app, repository, vault, _registry = admin_context
     account_id = await persist_qoder_chat(repository, vault, label="main", pat="pat-secret")
@@ -366,20 +396,7 @@ async def test_qoder_derive_never_logs_upstream_response_message(monkeypatch, ca
         async def close(self) -> None:
             return None
 
-    class RefreshClient:
-        async def refresh(self, *, refresh_token: str) -> RefreshResult:
-            assert refresh_token == "refresh-secret"
-            return RefreshResult(
-                http_status=502,
-                outcome=CheckInOutcome.FAILED,
-                message="upstream-secret-must-not-leak",
-            )
-
-        async def close(self) -> None:
-            return None
-
     monkeypatch.setattr(import_support, "QoderSession", Session)
-    monkeypatch.setattr(import_support, "qoder_client", lambda _settings: RefreshClient())
 
     with caplog.at_level(logging.WARNING, logger="qb2api.admin.import_support"):
         result = await import_support.derive_qoder_checkin(
@@ -387,6 +404,54 @@ async def test_qoder_derive_never_logs_upstream_response_message(monkeypatch, ca
             "pat-secret-must-not-leak",
         )
 
-    assert result is None
-    assert "upstream-secret-must-not-leak" not in caplog.text
+    # securityOauthToken 直接作为 access_token 派生，无需 deviceToken/refresh
+    assert result == ("oauth-secret", "refresh-secret")
     assert "pat-secret-must-not-leak" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_qoder_derive_returns_none_when_authenticate_fails(monkeypatch) -> None:
+    class Session:
+        refresh_token = ""
+        security_oauth_token = ""
+
+        def __init__(self, _pat: str) -> None:
+            pass
+
+        async def authenticate(self) -> None:
+            raise QoderError("auth failed", status_code=401)
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(import_support, "QoderSession", Session)
+
+    result = await import_support.derive_qoder_checkin(
+        Settings(admin_key="admin-secret"),
+        "pat-secret",
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_qoder_derive_returns_none_without_security_oauth_token(monkeypatch) -> None:
+    class Session:
+        refresh_token = "refresh-secret"
+        security_oauth_token = ""  # 上游未下发 jt-
+
+        def __init__(self, _pat: str) -> None:
+            pass
+
+        async def authenticate(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(import_support, "QoderSession", Session)
+
+    result = await import_support.derive_qoder_checkin(
+        Settings(admin_key="admin-secret"),
+        "pat-secret",
+    )
+    assert result is None

@@ -16,12 +16,12 @@ describe("LoginPage", () => {
     replace.mockReset();
   });
 
-  it("warns before an administrator uses explicit remote HTTP mode", () => {
+  it("keeps the login screen focused on authentication", () => {
     const wrapper = mount(LoginPage, { global: { plugins: [createPinia()] } });
 
-    expect(wrapper.text()).toContain("受信局域网 HTTP");
-    expect(wrapper.text()).toContain("禁止暴露到公网");
-    expect(wrapper.text()).toContain("密钥不会写入浏览器存储");
+    expect(wrapper.text()).not.toContain("受信局域网 HTTP");
+    expect(wrapper.text()).not.toContain("禁止暴露到公网");
+    expect(wrapper.text()).not.toContain("密钥不会写入浏览器存储");
   });
 
   it("establishes the session without persisting the admin key", async () => {

@@ -39,6 +39,7 @@ const navigationGroups = [
     label: "账号池",
     items: [
       { to: "/accounts", label: "账号", icon: UsersRound },
+      { to: "/credits", label: "积分监控", icon: Coins },
       { to: "/credentials", label: "凭据", icon: BookKey },
     ],
   },

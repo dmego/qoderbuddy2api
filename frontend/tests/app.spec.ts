@@ -22,7 +22,7 @@ describe("AdminShell", () => {
       global: { plugins: [createPinia(), VueQueryPlugin, router] },
     });
 
-    for (const label of ["代理服务", "账号", "凭据", "代理密钥", "模型", "用量", "签到", "设置", "审计"]) {
+    for (const label of ["代理服务", "账号", "积分监控", "凭据", "代理密钥", "模型", "用量", "签到", "设置", "审计"]) {
       expect(wrapper.text()).toContain(label);
     }
     expect(wrapper.text()).toContain("多账号代理控制台");

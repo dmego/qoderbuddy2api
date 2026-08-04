@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from cryptography.fernet import Fernet
@@ -13,6 +14,7 @@ from qb2api.accounts.resolver import CredentialResolver
 from qb2api.accounts.vault import CredentialVault
 from qb2api.checkin.codebuddy_credits import CodeBuddyCreditsUnavailableError
 from qb2api.checkin.metrics import MetricsScheduler
+from qb2api.checkin.metrics_providers import _access_token
 from qb2api.checkin.quota import QoderQuotaClient, QuotaUnavailableError, normalize_quota
 from qb2api.config import Settings
 
@@ -183,6 +185,34 @@ async def test_qoder_quota_is_allowlisted_and_failures_are_stale(metric_context)
 
 
 @pytest.mark.asyncio
+async def test_provider_metrics_collect_when_only_chat_purpose_is_enabled(metric_context):
+    repo, vault, registry, resolver = metric_context
+    await _seed(repo, vault, "qoder", "qd-chat-only", "chat", {"access_token": "qd-token"})
+    await _seed(repo, vault, "codebuddy", "cb-chat-only", "chat", {"access_token": "cb-token"})
+    quota = FakeQuota({"user_quota": {"remaining": 42, "unit": "credits"}})
+    credits = FakeCredits({"total_remaining": 73, "unit": "credits"})
+    scheduler = MetricsScheduler(
+        settings=Settings(metrics_enabled=False),
+        repo=repo,
+        registry=registry,
+        resolver=resolver,
+        qoder_quota=quota,
+        codebuddy_credits=credits,
+    )
+    try:
+        result = await scheduler.refresh_once()
+        snapshots = [row for row in await repo.list_metric_snapshots() if row["metric_kind"] == "quota"]
+        assert result["fresh"] >= 1
+        assert snapshots and snapshots[0]["value"] == {"user_quota": {"remaining": 42, "unit": "credits"}}
+        assert quota.calls == 1
+        points = [row for row in await repo.list_metric_snapshots() if row["metric_kind"] == "points"]
+        assert points and points[0]["value"]["total_remaining"] == 73
+        assert credits.calls == 1
+    finally:
+        await scheduler.stop()
+
+
+@pytest.mark.asyncio
 async def test_refresh_is_single_flight(metric_context):
     repo, vault, registry, resolver = metric_context
     await _seed(repo, vault, "qoder", "qd-1", "checkin", {"access_token": "qd-token"})
@@ -231,3 +261,9 @@ async def test_quota_client_rejects_empty_access_token():
     with pytest.raises(QuotaUnavailableError, match="access credential"):
         await client.fetch("")
     await client.aclose()
+
+
+def test_access_token_rejects_pat_without_exchange():
+    credential = SimpleNamespace(payload={"pat": "qoder-pat"})
+    with pytest.raises(QuotaUnavailableError, match="access token unavailable"):
+        _access_token(credential)

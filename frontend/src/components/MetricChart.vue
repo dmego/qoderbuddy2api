@@ -25,6 +25,15 @@ function render(): void {
   chart ??= echarts.init(chartHost.value);
   chart.setOption({
     animation: false,
+    tooltip: {
+      trigger: "axis",
+      confine: true,
+      axisPointer: { type: "line", lineStyle: { color: accent, opacity: 0.45 } },
+      backgroundColor: token("--surface-raised", "#16161b"),
+      borderColor: line,
+      textStyle: { color: token("--text", "#e4e4e8"), fontSize: 11, fontFamily: token("--mono", "monospace") },
+      formatter: (params: unknown) => formatTooltip(params),
+    },
     grid: { left: 8, right: 8, top: 12, bottom: 22, containLabel: true },
     xAxis: {
       type: "category",
@@ -39,13 +48,25 @@ function render(): void {
     },
     series: [{
       type: "line",
-      smooth: false,
-      symbol: "none",
+      smooth: true,
+      showSymbol: false,
+      symbol: "circle",
+      symbolSize: 6,
       data: props.values,
       lineStyle: { color: accent, width: 1.5 },
       areaStyle: { color: token("--accent-soft", "rgb(232 145 58 / 0.12)") },
+      emphasis: { focus: "series", itemStyle: { color: accent, borderColor: token("--surface", "#101014"), borderWidth: 2 } },
     }],
   });
+}
+
+function formatTooltip(params: unknown): string {
+  const item = Array.isArray(params) ? params[0] : params;
+  if (!item || typeof item !== "object") return "";
+  const point = item as { axisValue?: unknown; value?: unknown };
+  const label = typeof point.axisValue === "string" ? point.axisValue : "";
+  const value = typeof point.value === "number" ? point.value.toLocaleString() : "--";
+  return `<div>${label}</div><strong>${value}</strong>`;
 }
 
 function resize(): void { chart?.resize(); }
@@ -54,4 +75,16 @@ onBeforeUnmount(() => { window.removeEventListener("resize", resize); chart?.dis
 watch(() => [props.labels, props.values], render, { deep: true });
 </script>
 
-<template><div ref="chartHost" class="metric-chart" aria-label="数据趋势图"></div></template>
+<template><div ref="chartHost" class="metric-chart" role="img" aria-label="数据趋势图"></div></template>
+
+<style scoped>
+.metric-chart {
+  width: 100%;
+  height: 320px;
+  min-height: 240px;
+}
+
+@media (max-width: 760px) {
+  .metric-chart { height: 260px; }
+}
+</style>

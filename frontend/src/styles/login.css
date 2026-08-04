@@ -9,11 +9,5 @@
 .login-panel label { color: var(--faint); font-size: 10px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; }
 .login-panel input { width: 100%; min-height: 36px; font-family: var(--mono); }
 .login-panel button { width: 100%; min-height: 38px; margin-top: 8px; }
-.security-note { margin: 20px 0 0; color: var(--faint); font-size: 10px; line-height: 1.6; }
-.transport-warning { display: flex; gap: 11px; margin-top: 20px; padding: 12px; border: 1px solid var(--warn-line); border-radius: var(--radius); color: var(--warn); background: var(--warn-soft); }
-.transport-warning svg { flex: 0 0 auto; margin-top: 1px; }
-.transport-warning strong { display: block; color: var(--warn); font-size: 11px; }
-.transport-warning p { margin: 5px 0 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
-.transport-warning code { color: var(--text); overflow-wrap: anywhere; }
 
 @media (max-width: 480px) { .login-page { padding: 16px; } .login-panel { padding: 20px; } }

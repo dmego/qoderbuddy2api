@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..providers.qoder_auth import QoderSession
 from .codebuddy_credits import CodeBuddyCreditsUnavailableError
 from .quota import QuotaUnavailableError, normalize_quota
 
@@ -19,9 +20,15 @@ class ProviderMetricCollectorMixin:
         purpose: str,
         state: Any,
     ) -> None:
-        if provider == "qoder" and purpose == "checkin":
+        if provider == "qoder":
+            key = (provider, account_id, "quota")
+            if key in state.seen:
+                return
             await self._write_quota_snapshot(account_id, state)
-        elif provider == "codebuddy" and purpose == "checkin":
+        elif provider == "codebuddy":
+            key = (provider, account_id, "points")
+            if key in state.seen:
+                return
             await self._write_credits_snapshot(account_id, state)
 
     async def _write_quota_snapshot(self, account_id: str, state: Any) -> None:
@@ -33,7 +40,7 @@ class ProviderMetricCollectorMixin:
             credential = await self._dependencies.resolver.credential(
                 "qoder", account_id, "checkin"
             )
-            token = _access_token(credential)
+            token = await _qoder_access_token(credential)
             value = normalize_quota(await self._dependencies.qoder_quota.fetch(token))
         except (LookupError, QuotaUnavailableError) as error:
             await self._write_failure(key, state, str(error))
@@ -68,4 +75,24 @@ def _access_token(credential: Any) -> str:
     token = payload.get("access_token") or payload.get("device_token") or payload.get("token")
     if not isinstance(token, str) or not token.strip():
         raise QuotaUnavailableError("access token unavailable")
+    return token.strip()
+
+
+async def _qoder_access_token(credential: Any) -> str:
+    """Resolve a quota bearer token, deriving it from a stored Qoder PAT."""
+    payload = credential.payload
+    token = payload.get("access_token") or payload.get("device_token") or payload.get("token")
+    if isinstance(token, str) and token.strip():
+        return token.strip()
+    pat = payload.get("pat")
+    if not isinstance(pat, str) or not pat.strip():
+        raise QuotaUnavailableError("access token unavailable")
+    session = QoderSession(pat.strip())
+    try:
+        await session.authenticate()
+        token = session.security_oauth_token
+    finally:
+        await session.close()
+    if not isinstance(token, str) or not token.strip():
+        raise QuotaUnavailableError("qoder oauth token unavailable")
     return token.strip()
