@@ -48,6 +48,7 @@ class ProviderMetricCollectorMixin:
         except Exception as error:
             await self._write_failure(key, state, type(error).__name__)
         else:
+            value = _preserve_reward_packages(value, state.previous.get(key, {}).get("value"))
             await self._write(key=key, value=value, status="fresh", state=state)
             self._backoff.pop(self._backoff_key(key), None)
 
@@ -96,6 +97,42 @@ def _access_token(credential: Any) -> str:
     if not isinstance(token, str) or not token.strip():
         raise QuotaUnavailableError("access token unavailable")
     return token.strip()
+
+
+def _preserve_reward_packages(
+    value: dict[str, Any], previous: Any,
+) -> dict[str, Any]:
+    """Retain locally observed Qoder earned packages when upstream omits them."""
+    earned = _reward_packages(previous)
+    if not earned:
+        return value
+    value["packages"] = _merge_packages(value.get("packages"), earned)
+    return value
+
+
+def _reward_packages(previous: Any) -> list[dict[str, Any]]:
+    if not isinstance(previous, dict) or not isinstance(previous.get("packages"), list):
+        return []
+    return [
+        package for package in previous["packages"]
+        if isinstance(package, dict) and _is_reward_package(package)
+    ]
+
+
+def _merge_packages(current: Any, earned: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    packages = [item for item in current if isinstance(item, dict)] if isinstance(current, list) else []
+    keys = {_package_key(item) for item in packages}
+    packages.extend(item for item in earned if _package_key(item) not in keys)
+    return packages
+
+
+def _is_reward_package(package: dict[str, Any]) -> bool:
+    name = str(package.get("name", ""))
+    return "reward" in name.lower() or "签到" in name or "奖励" in name
+
+
+def _package_key(package: dict[str, Any]) -> tuple[Any, ...]:
+    return (package.get("name"), package.get("total"), package.get("remaining"), package.get("expires_at"))
 
 
 async def _qoder_access_token(credential: Any) -> str:

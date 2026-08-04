@@ -130,8 +130,15 @@ def _account_numbers(account: dict[str, Any]) -> tuple[int, int, int, int, int]:
 def _summarize_account(account: dict[str, Any], index: int) -> dict[str, Any]:
     unit = str(account.get("CapacityUnit") or "credits")
     remain, used, size, cycle_remain, cycle_size = _account_numbers(account)
+    # WorkBuddy leaves ExpiredTime empty for active packages. The package's
+    # effective expiry shown in its own usage page is CycleEndTime instead.
     expiry_ms = _epoch_ms(account.get("ExpiredTime"))
-    package = {"name": f"积分包 {index}", "remaining": remain, "used": used, "total": size, "unit": unit}
+    if expiry_ms is None:
+        expiry_ms = _epoch_ms(account.get("CycleEndTime"))
+    package_name = account.get("PackageName") or account.get("ProductName")
+    if not isinstance(package_name, str) or not package_name.strip():
+        package_name = f"积分包 {index}"
+    package = {"name": package_name.strip(), "remaining": remain, "used": used, "total": size, "unit": unit}
     if expiry_ms is not None:
         package["expires_at"] = _epoch_ms_to_iso(expiry_ms)
     return {

@@ -14,7 +14,7 @@ from qb2api.accounts.resolver import CredentialResolver
 from qb2api.accounts.vault import CredentialVault
 from qb2api.checkin.codebuddy_credits import CodeBuddyCreditsUnavailableError
 from qb2api.checkin.metrics import MetricsScheduler
-from qb2api.checkin.metrics_providers import _access_token
+from qb2api.checkin.metrics_providers import _access_token, _preserve_reward_packages
 from qb2api.checkin.quota import QoderQuotaClient, QuotaUnavailableError, normalize_quota
 from qb2api.config import Settings
 
@@ -284,6 +284,15 @@ def test_normalize_quota_preserves_safe_earned_package_expiry():
         "remaining": 100,
         "expires_at": "2026-08-20T07:38:30.449000+00:00",
     }]
+
+
+def test_qoder_refresh_preserves_locally_recorded_reward_packages():
+    value = _preserve_reward_packages(
+        {"user_quota": {"remaining": 300}},
+        {"packages": [{"name": "签到奖励 · 2026-08-04", "remaining": 100, "total": 100}]},
+    )
+
+    assert value["packages"] == [{"name": "签到奖励 · 2026-08-04", "remaining": 100, "total": 100}]
 
 
 @pytest.mark.asyncio

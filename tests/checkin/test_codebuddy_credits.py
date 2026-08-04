@@ -29,6 +29,8 @@ def _body():
                 "Status": 0,
                 "Threshold": 10,
                 "ExpiredTime": "",
+                "CycleEndTime": "2026-08-31 23:59:59",
+                "PackageName": "CodeBuddy个人体验版",
                 "AccountAttributes": [{"Key": "payerUin", "Value": "secret"}],
             },
             {
@@ -44,6 +46,8 @@ def _body():
                 "Status": 0,
                 "Threshold": 0,
                 "ExpiredTime": "1784517058000",
+                "CycleEndTime": "2026-08-20 11:10:58",
+                "PackageName": "CodeBuddy个人版国内运营裂变包",
                 "AccountAttributes": [],
             },
         ]}}},
@@ -64,9 +68,12 @@ def test_normalize_credits_keeps_only_business_fields():
         "lowest_remaining": 0,
         "expires_at": "2026-07-20T03:10:58+00:00",
         "packages": [
-            {"name": "积分包 1", "remaining": 100, "used": 0, "total": 500, "unit": "credits"},
             {
-                "name": "积分包 2", "remaining": 0, "used": 500, "total": 500,
+                "name": "CodeBuddy个人体验版", "remaining": 100, "used": 0, "total": 500,
+                "unit": "credits", "expires_at": "2026-08-31T23:59:59+00:00",
+            },
+            {
+                "name": "CodeBuddy个人版国内运营裂变包", "remaining": 0, "used": 500, "total": 500,
                 "unit": "credits", "expires_at": "2026-07-20T03:10:58+00:00",
             },
         ],

@@ -130,10 +130,36 @@ class CheckinBatchExecutor:
         result.quota_before = before
         result.quota_after = after
         _append_reward_package(after, result)
+        await self._persist_reward_snapshot(target, after)
         result.quota_delta = _quota_delta(before, after)
         result.quota_observed_at = after.get("observed_at") if after else None
         result.quota_change_status = _quota_change_status(result)
         return result
+
+    async def _persist_reward_snapshot(
+        self, target: CheckinTarget, snapshot: dict[str, Any] | None
+    ) -> None:
+        """Keep a claimed Qoder reward visible in the current quota snapshot."""
+        if target.provider != "qoder" or not snapshot:
+            return
+        rows = await self._repo.list_metric_snapshots(target.provider, target.account_id)
+        row = next((item for item in rows if item.get("metric_kind") == "quota"), None)
+        if not row or not isinstance(row.get("value"), dict):
+            return
+        value = dict(row["value"])
+        packages = [item for item in snapshot.get("packages", []) if isinstance(item, dict)]
+        if not packages:
+            return
+        value["packages"] = packages
+        await self._repo.upsert_metric_snapshot(
+            provider=target.provider,
+            account_id=target.account_id,
+            metric_kind="quota",
+            value=value,
+            observed_at=snapshot.get("observed_at"),
+            expires_at=row.get("expires_at"),
+            status="fresh",
+        )
 
     async def _snapshot(self, target: CheckinTarget) -> dict[str, Any] | None:
         rows = await self._repo.list_metric_snapshots(target.provider, target.account_id)

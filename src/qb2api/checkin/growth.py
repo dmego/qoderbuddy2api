@@ -1,6 +1,6 @@
 """WorkBuddy 成长中心只读客户端（WG-GROWTH-01）。
 
-调 /v2/activity/growth/tasks 与 /v2/activity/growth/profile 拉取任务列表与成长档案，
+调 /v2/activity/growth/* 拉取任务、档案、跃地图、连登、抽奖摘要，
 对齐 workbuddy.cn/profile/growth-center 页面只读展示。鉴权复用 codebuddy OAuth
 access_token（Bearer），必须带浏览器请求头（Origin/Referer/User-Agent），否则
 APISIX 网关返回 401。
@@ -20,7 +20,7 @@ class GrowthUnavailableError(RuntimeError):
 
 
 class WorkBuddyGrowthClient:
-    """只读拉取成长中心任务与档案。"""
+    """只读拉取成长中心任务、档案、跃地图与连登。"""
 
     def __init__(
         self,
@@ -40,13 +40,22 @@ class WorkBuddyGrowthClient:
             await self._client.aclose()
 
     async def fetch(self, access_token: str) -> dict[str, Any]:
-        """返回 {profile, tasks}；任一端点失败抛 GrowthUnavailableError。"""
+        """返回 {profile, tasks, heatmap, streak, lottery}；任一端点失败抛错。"""
         if not access_token:
             raise GrowthUnavailableError("access token unavailable")
         headers = self._headers(access_token)
         profile = await self._get("/v2/activity/growth/profile", headers)
         tasks = await self._get("/v2/activity/growth/tasks", headers)
-        return {"profile": _profile(profile), "tasks": [_task(t) for t in _tasks(tasks)]}
+        heatmap = await self._get("/activity/growth/heatmap", headers)
+        streak = await self._get("/activity/growth/streak", headers)
+        lottery = await self._get("/activity/growth/lottery/summary", headers)
+        return {
+            "profile": _profile(profile),
+            "tasks": [_task(t) for t in _tasks(tasks)],
+            "heatmap": _heatmap(heatmap),
+            "streak": _streak(streak),
+            "lottery": _lottery(lottery),
+        }
 
     def _headers(self, access_token: str) -> dict[str, str]:
         return {
@@ -110,4 +119,62 @@ def _task(item: dict[str, Any]) -> dict[str, Any]:
         "locked": item.get("locked"),
         "is_new": item.get("is_new"),
         "icon_url": item.get("icon_url"),
+    }
+
+
+def _heatmap(data: dict[str, Any]) -> dict[str, Any]:
+    cells = data.get("cells")
+    return {
+        "cells": _heatmap_cells(cells),
+        "today": _heatmap_today(data.get("today")),
+        "range_start": _range_field(data.get("range"), "start_date"),
+        "range_end": _range_field(data.get("range"), "end_date"),
+    }
+
+
+def _heatmap_cells(cells: Any) -> list[dict[str, Any]]:
+    if not isinstance(cells, list):
+        return []
+    return [
+        {"date": c.get("date"), "score": c.get("score"), "has_new_buddy": c.get("has_new_buddy")}
+        for c in cells if isinstance(c, dict)
+    ]
+
+
+def _heatmap_today(today: Any) -> dict[str, Any] | None:
+    if not isinstance(today, dict):
+        return None
+    return {
+        "date": today.get("date"),
+        "score": today.get("score"),
+        "is_active": today.get("is_active"),
+        "status_text": today.get("status_text"),
+    }
+
+
+def _range_field(rng: Any, key: str) -> str | None:
+    return rng.get(key) if isinstance(rng, dict) else None
+
+
+def _streak(data: dict[str, Any]) -> dict[str, Any]:
+    streak = data.get("streak")
+    makeup = data.get("makeup_cards")
+    redemption = data.get("redemption_status")
+    return {
+        "days": streak.get("days") if isinstance(streak, dict) else None,
+        "next_tier": streak.get("next_tier") if isinstance(streak, dict) else None,
+        "next_tier_remaining": streak.get("next_tier_remaining") if isinstance(streak, dict) else None,
+        "makeup_balance": makeup.get("balance") if isinstance(makeup, dict) else None,
+        "makeup_max": makeup.get("max") if isinstance(makeup, dict) else None,
+        "remaining_days": redemption.get("remaining_days") if isinstance(redemption, dict) else None,
+        "timezone": data.get("timezone"),
+    }
+
+
+def _lottery(data: dict[str, Any]) -> dict[str, Any]:
+    """抽奖摘要：可用次数、已抽次数。只读，不含抽奖动作。"""
+    return {
+        "available_chances": data.get("available_chances") or data.get("chances"),
+        "total_draws": data.get("total_draws"),
+        "summary": data.get("summary"),
     }
