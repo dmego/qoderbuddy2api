@@ -3,10 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/vue-query";
 import { Activity, ChevronRight, Filter, Plus, RefreshCcw, Search, ShieldCheck, Trash2, X } from "@lucide/vue";
 import { computed, ref, watch } from "vue";
 import { useRouter } from "vue-router";
-
 import { apiRequest } from "@/api/client";
 import AccountImportPanel from "@/components/AccountImportPanel.vue";
-import AccessibleDrawer from "@/components/AccessibleDrawer.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import NotificationRegion from "@/components/NotificationRegion.vue";
 import OperationStatus from "@/components/OperationStatus.vue";
@@ -35,7 +33,6 @@ const source = ref("");
 const statusFilter = ref("");
 const purpose = ref("");
 const showImport = ref(false);
-const selected = ref<Account | null>(null);
 const selection = ref<string[]>([]);
 const pendingConfirm = ref<{ kind: "delete" | "disable" | "refresh" | "probe"; account?: Account } | null>(null);
 const lastOperation = ref<Record<string, unknown> | null>(null);
@@ -48,19 +45,12 @@ const accounts = useQuery({
   staleTime: 15_000,
 });
 const metrics = useQuery({ queryKey: ["account-metrics", provider], queryFn: () => apiRequest<{ snapshots: (Metric & { provider: string; account_id: string })[] }>(appendQuery("/metrics/accounts", { provider: provider.value })), staleTime: 30_000 });
-const selectedMetrics = useQuery({
-  queryKey: ["account-metric-detail", computed(() => selected.value?.provider), computed(() => selected.value?.account_id)],
-  enabled: computed(() => Boolean(selected.value)),
-  queryFn: () => apiRequest<{ snapshots?: Metric[]; metrics?: Metric[] }>(`/metrics/accounts/${encodeURIComponent(selected.value?.provider ?? "")}/${encodeURIComponent(selected.value?.account_id ?? "")}`),
-  staleTime: 30_000,
-});
 
 const action = useMutation({
   mutationFn: ({ account, kind }: { account: Account; kind: "toggle" | "promote" | "delete" | "refresh" | "probe" }) => mutateAccount(account, kind),
   onSuccess: async (result, input) => {
     lastOperation.value = { action: accountActionLabel(input.kind), account_id: input.account.account_id, status: "succeeded", ...asRecord(result) };
     notify(`${accountActionLabel(input.kind)}已完成`, { message: input.account.label, tone: "success" });
-    if (input.kind === "delete") selected.value = null;
     await Promise.all([queryClient.invalidateQueries({ queryKey: ["accounts"] }), queryClient.invalidateQueries({ queryKey: ["account-metrics"] })]);
   },
   onError: (error) => notify("账号操作失败", { message: String(error), tone: "error", timeout: 0 }),
@@ -83,8 +73,7 @@ const batchAction = useMutation({
 
 const mutating = computed(() => action.isPending.value || batchAction.isPending.value);
 const allSelected = computed(() => selectableAccounts().length > 0 && selectableAccounts().every((item) => selection.value.includes(accountKey(item))));
-const detailMetrics = computed(() => selectedMetrics.data.value?.snapshots ?? selectedMetrics.data.value?.metrics ?? (metrics.data.value?.snapshots ?? []).filter((item) => item.provider === selected.value?.provider && item.account_id === selected.value?.account_id));
-watch([cursor, search, provider, source, statusFilter, purpose], () => { selection.value = []; selected.value = null; });
+watch([cursor, search, provider, source, statusFilter, purpose], () => { selection.value = []; });
 
 function mutateAccount(account: Account, kind: "toggle" | "promote" | "delete" | "refresh" | "probe"): Promise<unknown> {
   const base = `/accounts/${encodeURIComponent(account.provider)}/${encodeURIComponent(account.account_id)}`;
@@ -116,14 +105,6 @@ function asRecord(value: unknown): Record<string, unknown> { return typeof value
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function openFullDetail(account: Account): void { void router.push({ name: "account-detail", params: { provider: account.provider, accountId: account.account_id } }); }
 function metricStatus(account: Account): string { const rows = metrics.data.value?.snapshots ?? []; const found = rows.filter((item) => item.provider === account.provider && item.account_id === account.account_id); return account.metrics_status ?? (found.some((item) => item.status === "stale") ? "stale" : found.length ? "fresh" : "unavailable"); }
-function metricSummary(metric: Metric): string {
-  const value = metric.value as { total_remaining?: number; unit?: string } | null;
-  if (metric.metric_kind === "points" && value && typeof value.total_remaining === "number") return `剩余 ${value.total_remaining} ${value.unit ?? "credits"}`;
-  if (metric.metric_kind === "quota" && typeof metric.value?.total_usage_percentage === "number") return `已使用 ${metric.value.total_usage_percentage}%`;
-  if (metric.metric_kind === "points" && metric.status === "unknown") return "接口协议尚未验证";
-  if (metric.metric_kind === "checkin") return String(metric.value?.terminal_outcome ?? "今日尚未执行");
-  return String(metric.value?.status ?? metric.status);
-}
 </script>
 
 <template>
@@ -140,15 +121,13 @@ function metricSummary(metric: Metric): string {
       <PanelHeader title="账号池" :description="`第 ${page} 页 · 环境变量账号只读`"><div class="toolbar"><span v-if="selection.length" class="selection-count">已选 {{ selection.length }}</span><button class="secondary-button compact-button" type="button" :disabled="!selection.length || mutating" @click="requestBatch('refresh')"><RefreshCcw :size="14" />批量刷新</button><button class="secondary-button compact-button" type="button" :disabled="!selection.length || mutating" @click="requestBatch('probe')"><Activity :size="14" />批量探测</button><button class="danger-button compact-button" type="button" :disabled="!selection.length || mutating" @click="requestBatch('disable')">批量停用</button></div></PanelHeader>
       <PaginatedTable aria-label="账号池" :loading="accounts.isPending.value" :error="accounts.isError.value ? `账号读取失败：${accounts.error.value}` : ''" :empty="!currentAccounts().length" empty-title="没有匹配的账号" empty-description="调整筛选条件，或通过上方导入账号。" :stale="accounts.isStale.value" :unavailable="metrics.isError.value" :page="page" :total="accounts.data.value?.total" :can-previous="canPrevious.length > 0" :can-next="Boolean(accounts.data.value?.next_cursor)" @retry="accounts.refetch()" @previous="previous" @next="next(accounts.data.value?.next_cursor)">
         <template #header><tr><th><input type="checkbox" aria-label="选择当前页全部可写账号" :checked="allSelected" :disabled="!selectableAccounts().length" @change="toggleAll" /></th><th>账号</th><th>服务提供方</th><th>用途</th><th>来源</th><th>指标</th><th>状态</th><th>操作</th></tr></template>
-        <tr v-for="account in currentAccounts()" :key="accountKey(account)" :class="{ selected: selected && accountKey(selected) === accountKey(account) }"><td><input type="checkbox" :aria-label="isEnvAccount(account) ? `环境变量账号不可选择 ${account.label}` : `选择 ${account.label}`" :checked="selection.includes(accountKey(account))" :disabled="isEnvAccount(account)" @change="toggleSelection(accountKey(account))" /></td><td><button class="table-link" type="button" @click="selected = account"><strong>{{ account.label }}</strong><small>{{ account.account_id }} · {{ account.masked_identity ?? "无身份掩码" }}</small></button></td><td><span class="provider-mark" :class="`provider-mark--${account.provider}`">{{ account.provider }}</span></td><td><div class="purpose-list"><span v-for="(item, name) in account.purposes" :key="name" class="purpose-chip"><b>{{ statusLabel(String(name)) }}</b><StatePill :value="item.status" /></span><span v-if="!Object.keys(account.purposes).length">未配置</span></div></td><td>{{ statusLabel(account.source) }}<span v-if="account.shadowed" class="text-warning"> · 被覆盖</span></td><td><StatePill :value="metricStatus(account)" /></td><td><StatePill :value="account.enabled ? account.summary_status : 'disabled'" /></td><td><div class="row-actions"><button class="icon-button" type="button" :aria-label="`刷新 ${account.label}`" :title="`刷新 ${account.label}`" :disabled="mutating" @click="requestAction(account, 'refresh')"><RefreshCcw :size="15" /></button><button class="icon-button" type="button" :aria-label="`探测 ${account.label}`" :title="`探测 ${account.label}`" :disabled="mutating" @click="requestAction(account, 'probe')"><Activity :size="15" /></button><button class="icon-button" type="button" :aria-label="isEnvAccount(account) ? `环境变量账号不可停用 ${account.label}` : account.enabled ? `停用 ${account.label}` : `启用 ${account.label}`" :title="account.enabled ? `停用 ${account.label}` : `启用 ${account.label}`" :disabled="isEnvAccount(account) || mutating" @click="requestAction(account, 'toggle')"><ShieldCheck :size="15" /></button><button v-if="account.source === 'env'" class="icon-button" type="button" :aria-label="`提升 ${account.label}`" :title="`提升 ${account.label}`" :disabled="mutating" @click="requestAction(account, 'promote')"><ChevronRight :size="16" /></button><button v-else class="icon-button danger-icon" type="button" :aria-label="`删除 ${account.label}`" :title="`删除 ${account.label}`" :disabled="mutating" @click="requestAction(account, 'delete')"><Trash2 :size="15" /></button></div></td></tr>
+        <tr v-for="account in currentAccounts()" :key="accountKey(account)"><td><input type="checkbox" :aria-label="isEnvAccount(account) ? `环境变量账号不可选择 ${account.label}` : `选择 ${account.label}`" :checked="selection.includes(accountKey(account))" :disabled="isEnvAccount(account)" @change="toggleSelection(accountKey(account))" /></td><td><button class="table-link" type="button" :aria-label="`查看 ${account.label} 详情`" @click="openFullDetail(account)"><strong>{{ account.label }}</strong><small>{{ account.account_id }} · {{ account.masked_identity ?? "无身份掩码" }}</small></button></td><td><span class="provider-mark" :class="`provider-mark--${account.provider}`">{{ account.provider }}</span></td><td><div class="purpose-list"><span v-for="(item, name) in account.purposes" :key="name" class="purpose-chip"><b>{{ statusLabel(String(name)) }}</b><StatePill :value="item.status" /></span><span v-if="!Object.keys(account.purposes).length">未配置</span></div></td><td>{{ statusLabel(account.source) }}<span v-if="account.shadowed" class="text-warning"> · 被覆盖</span></td><td><StatePill :value="metricStatus(account)" /></td><td><StatePill :value="account.enabled ? account.summary_status : 'disabled'" /></td><td><div class="row-actions"><button class="icon-button" type="button" :aria-label="`刷新 ${account.label}`" :title="`刷新 ${account.label}`" :disabled="mutating" @click="requestAction(account, 'refresh')"><RefreshCcw :size="15" /></button><button class="icon-button" type="button" :aria-label="`探测 ${account.label}`" :title="`探测 ${account.label}`" :disabled="mutating" @click="requestAction(account, 'probe')"><Activity :size="15" /></button><button class="icon-button" type="button" :aria-label="isEnvAccount(account) ? `环境变量账号不可停用 ${account.label}` : account.enabled ? `停用 ${account.label}` : `启用 ${account.label}`" :title="account.enabled ? `停用 ${account.label}` : `启用 ${account.label}`" :disabled="isEnvAccount(account) || mutating" @click="requestAction(account, 'toggle')"><ShieldCheck :size="15" /></button><button v-if="account.source === 'env'" class="icon-button" type="button" :aria-label="`提升 ${account.label}`" :title="`提升 ${account.label}`" :disabled="mutating" @click="requestAction(account, 'promote')"><ChevronRight :size="16" /></button><button v-else class="icon-button danger-icon" type="button" :aria-label="`删除 ${account.label}`" :title="`删除 ${account.label}`" :disabled="mutating" @click="requestAction(account, 'delete')"><Trash2 :size="15" /></button></div></td></tr>
       </PaginatedTable>
     </section>
 
     <OperationStatus :operation="lastOperation" />
-
-    <AccessibleDrawer :open="Boolean(selected)" :title="selected?.label ?? '账号详情'" :subtitle="selected ? `${selected.provider} / ${selected.account_id}` : ''" presentation="dialog" close-label="关闭账号详情" @close="selected = null"><template v-if="selected"><dl class="detail-list"><div><dt>来源</dt><dd>{{ statusLabel(selected.source) }}</dd></div><div><dt>身份掩码</dt><dd>{{ selected.masked_identity ?? "--" }}</dd></div><div><dt>总体状态</dt><dd><StatePill :value="selected.summary_status" /></dd></div></dl><h3>用途状态</h3><div class="purpose-cards"><div v-for="(item, name) in selected.purposes" :key="name"><strong>{{ statusLabel(String(name)) }}</strong><StatePill :value="item.status" /><small>{{ statusLabel(item.verification_status) }}<template v-if="item.expires_at"> · 到期 {{ item.expires_at }}</template></small></div></div><div class="drawer-subhead"><h3>Token、配额与签到</h3><button class="icon-button" type="button" aria-label="刷新账号指标" title="刷新账号指标" @click="selectedMetrics.refetch()"><RefreshCcw :size="15" /></button></div><div v-if="selectedMetrics.isPending.value" class="loading-row">正在读取账号指标…</div><div v-else-if="selectedMetrics.isError.value" class="data-state data-state--warning">详细指标暂不可用，可稍后重试。</div><div v-else-if="detailMetrics.length" class="metric-list"><div v-for="metric in detailMetrics" :key="metric.metric_kind"><strong>{{ metric.metric_kind }}</strong><StatePill :value="metric.status" /><span>{{ metricSummary(metric) }}</span><small>采集于 {{ metric.observed_at ?? "--" }}</small></div></div><p v-else class="compact-empty">尚未采集账号指标。</p><div class="form-actions"><button type="button" :disabled="mutating" @click="requestAction(selected, 'refresh')"><RefreshCcw :size="15" />刷新账号</button><button class="secondary-button" type="button" :disabled="mutating" @click="requestAction(selected, 'probe')"><Activity :size="15" />安全探测</button><button class="secondary-button" type="button" @click="openFullDetail(selected)">查看完整详情</button></div></template></AccessibleDrawer>
-
     <ConfirmDialog :open="Boolean(pendingConfirm)" :title="pendingConfirm?.account ? `${pendingConfirm.kind === 'delete' ? '删除' : '停用'} ${pendingConfirm.account.label}？` : `批量${accountActionLabel(pendingConfirm?.kind ?? '')}？`" :description="pendingConfirm?.kind === 'delete' ? '这会撤销持久化账号及其代理与签到用途，操作不可撤销。' : pendingConfirm?.account ? '停用后该账号不会再参与新的代理或签到调度。' : `将对当前选中的 ${selection.length} 个账号逐一执行，失败不会阻止其他账号。`" :confirm-label="pendingConfirm?.kind === 'delete' ? '确认删除' : '确认执行'" :tone="pendingConfirm?.kind === 'delete' || pendingConfirm?.kind === 'disable' ? 'danger' : 'default'" :busy="mutating" @cancel="pendingConfirm = null" @confirm="confirmPending" />
+
     <NotificationRegion :notifications="notifications" @dismiss="dismiss" />
   </section>
 </template>

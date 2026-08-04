@@ -35,6 +35,9 @@ const draftChat = ref(false);
 const draftCheckin = ref(false);
 const pending = ref<DetailAction | null>(null);
 const lastOperation = ref<Record<string, unknown> | null>(null);
+const eventsPage = ref(1);
+const checkinPage = ref(1);
+const listPageSize = 10;
 const { notifications, notify, dismiss } = useNotifications();
 
 const account = useQuery({ queryKey: ["account-detail", provider, accountId], queryFn: () => apiRequest<Account>(base.value), staleTime: 15_000 });
@@ -44,7 +47,7 @@ const credentials = useQuery({ queryKey: ["account-credentials", provider, accou
 } });
 const metrics = useQuery({ queryKey: ["account-metrics", provider, accountId], queryFn: () => apiRequest<{ snapshots: Metric[] }>(`/metrics/accounts/${encodeURIComponent(provider.value)}/${encodeURIComponent(accountId.value)}`) });
 const pointsHistory = useQuery({ queryKey: ["account-metric-history", provider, accountId], queryFn: () => apiRequest<{ rows: MetricHistoryRow[] }>(`/metrics/accounts/${encodeURIComponent(provider.value)}/${encodeURIComponent(accountId.value)}/history/points?limit=500`), staleTime: 30_000 });
-const events = useQuery({ queryKey: ["account-events", provider, accountId], queryFn: () => apiRequest<{ events: RequestEvent[] }>(`/usage/events?limit=10&provider=${encodeURIComponent(provider.value)}&account_id=${encodeURIComponent(accountId.value)}`) });
+const events = useQuery({ queryKey: ["account-events", provider, accountId], queryFn: () => apiRequest<{ events: RequestEvent[] }>(`/usage/events?limit=100&provider=${encodeURIComponent(provider.value)}&account_id=${encodeURIComponent(accountId.value)}`) });
 const checkin = useQuery({ queryKey: ["account-checkin", provider, accountId], queryFn: () => accountCheckinHistory(provider.value, accountId.value) });
 
 watch(() => account.data.value, (value) => {
@@ -54,6 +57,7 @@ watch(() => account.data.value, (value) => {
   draftChat.value = value.purposes.chat?.enabled ?? false;
   draftCheckin.value = value.purposes.checkin?.enabled ?? false;
 }, { immediate: true });
+watch([() => events.data.value?.events.length, () => checkin.data.value?.length], () => { eventsPage.value = 1; checkinPage.value = 1; });
 
 const action = useMutation({
   mutationFn: (kind: DetailAction) => executeAction(kind),
@@ -82,6 +86,11 @@ const action = useMutation({
 
 const isEnv = computed(() => account.data.value?.source === "env");
 const canWrite = computed(() => !isEnv.value && !action.isPending.value);
+const visibleEvents = computed(() => (events.data.value?.events ?? []).slice((eventsPage.value - 1) * listPageSize, eventsPage.value * listPageSize));
+const eventPageCount = computed(() => Math.max(1, Math.ceil((events.data.value?.events.length ?? 0) / listPageSize)));
+const visibleCheckins = computed(() => (checkin.data.value ?? []).slice((checkinPage.value - 1) * listPageSize, checkinPage.value * listPageSize));
+const checkinPageCount = computed(() => Math.max(1, Math.ceil((checkin.data.value?.length ?? 0) / listPageSize)));
+const metricRows = computed(() => (metrics.data.value?.snapshots ?? []).map((metric) => metricRow(metric)));
 
 function executeAction(kind: DetailAction): Promise<unknown> {
   if (kind === "save") return apiRequest(base.value, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(saveBody()) });
@@ -110,16 +119,42 @@ function checkinErrorHint(code: string | null | undefined): string | null {
   if (code === "checkin_failed") return null;
   return code ?? null;
 }
-function metricValue(metric: Metric): string {
-  const value = metric.value as { unit?: string; total_remaining?: number; total_used?: number; total_capacity?: number; activities?: { model?: string; tag?: string; limit?: number; used?: number; remaining?: number }[] } | null;
-  if (metric.metric_kind === "points" && value && typeof value.total_remaining === "number") {
-    return `剩余 ${value.total_remaining} ${value.unit ?? "credits"}（已用 ${value.total_used ?? 0} / 总 ${value.total_capacity ?? 0}）`;
+type MetricValue = {
+  unit?: string;
+  total_remaining?: number;
+  total_used?: number;
+  total_capacity?: number;
+  total_usage_percentage?: number;
+  user_quota?: QuotaDetail;
+  add_on_quota?: QuotaDetail;
+  activities?: { model?: string; tag?: string; limit?: number; used?: number; remaining?: number }[];
+};
+type QuotaDetail = { total?: number; used?: number; remaining?: number; percentage?: number; unit?: string; cap?: number; available?: number };
+type MetricRow = { title: string; status: string; primary: string; secondary: string; details: string[] };
+function metricRow(metric: Metric): MetricRow {
+  const value = metric.value as MetricValue | null;
+  if (metric.metric_kind === "points" && value) return { title: "积分", status: metric.status, primary: typeof value.total_remaining === "number" ? `${value.total_remaining.toLocaleString()} ${value.unit ?? "credits"}` : "未知", secondary: typeof value.total_capacity === "number" ? `已用 ${value.total_used ?? 0} / 总额 ${value.total_capacity}` : "暂无额度明细", details: [metric.observed_at ?? "未记录采集时间"] };
+  if (metric.metric_kind === "quota" && value) {
+    const quotaDetails = [
+      ["用户配额", value.user_quota],
+      ["附加配额", value.add_on_quota],
+    ].filter(([, detail]) => detail).map(([label, detail]) => `${label} · ${quotaSummary(detail as QuotaDetail)}`);
+    return { title: "配额", status: metric.status, primary: typeof value.total_usage_percentage === "number" ? `已使用 ${value.total_usage_percentage}%` : quotaDetails.length ? "已返回配额" : "未知", secondary: quotaDetails.length ? "按配额包拆分展示" : "暂无额度明细", details: [...quotaDetails, metric.observed_at ?? "未记录采集时间"] };
   }
-  if (metric.metric_kind === "activity" && value && Array.isArray(value.activities)) {
-    if (!value.activities.length) return "当前无免费模型活动";
-    return value.activities.map((a) => `${a.model ?? "?"}: 剩 ${a.remaining ?? 0}/${a.limit ?? 0}（tag ${a.tag ?? "-"}）`).join("；");
-  }
-  return metric.value ? JSON.stringify(metric.value) : "尚无可用数据";
+  if (metric.metric_kind === "activity" && value && Array.isArray(value.activities)) return { title: "活动配额", status: metric.status, primary: `${value.activities.length} 个模型`, secondary: "免费活动剩余量", details: value.activities.map((activity) => `${activity.model ?? "未知模型"} · 剩余 ${activity.remaining ?? "--"}/${activity.limit ?? "--"}${activity.tag ? ` · ${activity.tag}` : ""}`) };
+  return { title: statusLabel(metric.metric_kind), status: metric.status, primary: metric.value ? "已采集" : "无数据", secondary: "该指标暂无可读字段", details: [metric.observed_at ?? "未记录采集时间"] };
+}
+function quotaSummary(detail: QuotaDetail): string {
+  const remaining = detail.remaining ?? detail.available;
+  const total = detail.total ?? detail.cap;
+  const usage = typeof detail.percentage === "number" ? ` · 已使用 ${detail.percentage}%` : "";
+  if (remaining !== undefined && total !== undefined) return `剩余 ${remaining} / ${total}${detail.unit ? ` ${detail.unit}` : ""}${usage}`;
+  if (remaining !== undefined) return `剩余 ${remaining}${detail.unit ? ` ${detail.unit}` : ""}${usage}`;
+  return usage ? usage.slice(3) : "已返回";
+}
+function setListPage(kind: "events" | "checkin", delta: number): void {
+  if (kind === "events") eventsPage.value = Math.min(eventPageCount.value, Math.max(1, eventsPage.value + delta));
+  else checkinPage.value = Math.min(checkinPageCount.value, Math.max(1, checkinPage.value + delta));
 }
 const creditsChart = computed(() => {
   const rows = pointsHistory.data.value?.rows ?? [];
@@ -136,7 +171,7 @@ const creditsChart = computed(() => {
 function setPurpose(name: string, event: Event): void { if (name === "chat") draftChat.value = (event.target as HTMLInputElement).checked; else draftCheckin.value = (event.target as HTMLInputElement).checked; }
 
 async function accountCheckinHistory(selectedProvider: string, selectedAccountId: string): Promise<CheckinAttempt[]> {
-  const runs = await apiRequest<{ runs: { run_id: string }[] }>("/checkin/runs?limit=20");
+  const runs = await apiRequest<{ runs: { run_id: string }[] }>("/checkin/runs?limit=100");
   const details = await Promise.all(runs.runs.map(async ({ run_id }) => apiRequest<{ attempts: CheckinAttempt[] }>(`/checkin/runs/${encodeURIComponent(run_id)}`)));
   return details.flatMap((item) => item.attempts).filter((item) => item.provider === selectedProvider && item.account_id === selectedAccountId);
 }
@@ -151,9 +186,9 @@ async function accountCheckinHistory(selectedProvider: string, selectedAccountId
       <section class="account-summary-grid"><div class="account-summary-item"><span>来源</span><strong>{{ statusLabel(account.data.value.source) }}</strong></div><div class="account-summary-item"><span>身份</span><strong class="mono">{{ account.data.value.masked_identity ?? "--" }}</strong></div><div class="account-summary-item"><span>总体状态</span><StatePill :value="account.data.value.summary_status" /></div><div class="account-summary-item"><span>最近更新</span><strong class="mono">{{ account.data.value.updated_at ?? "--" }}</strong></div></section>
       <section class="data-panel account-actions-panel"><PanelHeader title="账号操作" /><div class="form-actions"><button type="button" :disabled="action.isPending.value" @click="requestAction('refresh')"><RefreshCcw :size="16" />刷新</button><button class="secondary-button" type="button" :disabled="action.isPending.value" @click="requestAction('probe')"><Activity :size="16" />探测</button><button class="secondary-button" type="button" :disabled="action.isPending.value" @click="requestAction('verify')"><BadgeCheck :size="16" />验证签到</button><button v-if="provider === 'qoder' && !isEnv" class="secondary-button" type="button" :disabled="action.isPending.value" @click="action.mutate('rederive')"><RotateCcw :size="16" />重新派生</button><button v-if="isEnv" class="secondary-button" type="button" :disabled="action.isPending.value" @click="requestAction('promote')">提升账号</button><button v-else class="secondary-button" type="button" :disabled="action.isPending.value" @click="reauthorize"><KeyRound :size="16" />重新授权</button><button v-if="!isEnv" class="danger-button" type="button" :disabled="action.isPending.value" @click="requestAction('delete')"><Trash2 :size="16" />删除</button></div></section>
       <section class="data-panel detail-section"><PanelHeader title="用途与路由" /><div class="form-grid"><label>显示名称<input v-model="draftLabel" :disabled="!canWrite" aria-label="账号显示名称" /></label><label class="inline-check"><input v-model="draftEnabled" type="checkbox" :disabled="!canWrite" />账号启用</label><label v-for="name in ['chat', 'checkin']" :key="name" class="inline-check"><input :checked="name === 'chat' ? draftChat : draftCheckin" type="checkbox" :disabled="!canWrite || !account.data.value.purposes[name]" @change="setPurpose(name, $event)" /><span>{{ statusLabel(name) }}</span><StatePill v-if="account.data.value.purposes[name]" :value="account.data.value.purposes[name].status" /></label></div><div class="purpose-cards"><div v-for="(item, name) in account.data.value.purposes" :key="name"><strong>{{ statusLabel(String(name)) }}</strong><StatePill :value="item.verification_status" /><small>到期 {{ item.expires_at ?? "未设置" }} · 验证 {{ item.verified_at ?? "尚未验证" }}<template v-if="item.last_error"> · {{ item.last_error }}</template></small></div></div><div class="form-actions detail-save"><button type="button" :disabled="!canWrite" @click="requestAction('save')"><ShieldCheck :size="16" />保存设置</button></div></section>
-      <div class="detail-main-grid"><section class="data-panel detail-section"><PanelHeader title="积分与配额" /><div v-if="metrics.isPending.value" class="loading-row fixed-empty">正在读取指标…</div><div v-else-if="!metrics.data.value?.snapshots.length" class="compact-empty fixed-empty">尚未采集指标。</div><div v-else class="metric-list"><div v-for="metric in metrics.data.value.snapshots" :key="metric.metric_kind"><strong>{{ metric.metric_kind }}</strong><StatePill :value="metric.status" /><span>{{ metricValue(metric) }}</span><small>{{ metric.observed_at ?? "--" }}</small></div></div></section><section class="data-panel detail-section"><PanelHeader title="凭据元数据" /><div v-if="credentials.isPending.value" class="loading-row fixed-empty">正在读取凭据…</div><div v-else-if="!credentials.data.value?.length" class="compact-empty fixed-empty">尚未保存凭据。</div><div v-else class="metric-list"><div v-for="item in credentials.data.value" :key="item.purpose"><strong>{{ statusLabel(item.purpose) }} · {{ item.mode }}</strong><StatePill :value="item.has_refresh_token ? 'refresh' : 'static'" /><span>版本 v{{ item.credential_version }} · 到期 {{ item.expires_at ?? "未设置" }}</span><small>{{ item.updated_at }}</small></div></div></section></div>
+      <div class="detail-main-grid"><section class="data-panel detail-section"><PanelHeader title="积分与配额" /><div v-if="metrics.isPending.value" class="loading-row fixed-empty">正在读取指标…</div><div v-else-if="!metricRows.length" class="compact-empty fixed-empty">尚未采集指标。</div><div v-else class="metric-list metric-list--compact"><div v-for="row in metricRows" :key="row.title"><strong>{{ row.title }}</strong><StatePill :value="row.status" /><span class="metric-primary">{{ row.primary }}</span><small>{{ row.secondary }}</small><small v-for="detail in row.details" :key="detail">{{ detail }}</small></div></div></section><section class="data-panel detail-section"><PanelHeader title="凭据元数据" /><div v-if="credentials.isPending.value" class="loading-row fixed-empty">正在读取凭据…</div><div v-else-if="!credentials.data.value?.length" class="compact-empty fixed-empty">尚未保存凭据。</div><div v-else class="metric-list metric-list--compact"><div v-for="item in credentials.data.value" :key="item.purpose"><strong>{{ statusLabel(item.purpose) }} · {{ item.mode }}</strong><StatePill :value="item.has_refresh_token ? 'refresh' : 'static'" /><span>版本 v{{ item.credential_version }} · 到期 {{ item.expires_at ?? "未设置" }}</span><small>{{ item.updated_at }}</small></div></div></section></div>
       <section class="data-panel detail-section trend-section"><PanelHeader title="积分趋势" /><div v-if="pointsHistory.isPending.value" class="loading-row trend-empty">正在读取趋势…</div><div v-else-if="pointsHistory.isError.value" class="data-state data-state--error trend-empty">积分历史读取失败。<button class="secondary-button compact-button" type="button" @click="pointsHistory.refetch()">重试</button></div><div v-else-if="!creditsChart.labels.length" class="compact-empty trend-empty">尚未采集积分历史。</div><MetricChart v-else :labels="creditsChart.labels" :values="creditsChart.values" /></section>
-      <div class="detail-main-grid"><section class="data-panel detail-section"><PanelHeader title="最近请求" /><div v-if="events.isPending.value" class="loading-row fixed-empty">正在读取请求…</div><div v-else-if="!events.data.value?.events.length" class="compact-empty fixed-empty">尚无请求事件。</div><div v-else class="metric-list"><div v-for="event in events.data.value.events" :key="event.event_id"><strong>{{ event.model_id ?? "未知模型" }}</strong><StatePill :value="event.status" /><span>{{ event.latency_ms ?? "--" }} ms<template v-if="event.error_code"> · {{ event.error_code }}</template></span><small>{{ event.started_at ?? "--" }}</small></div></div></section><section class="data-panel detail-section"><PanelHeader title="签到历史" /><div v-if="checkin.isPending.value" class="loading-row fixed-empty">正在读取签到…</div><div v-else-if="!checkin.data.value?.length" class="compact-empty fixed-empty">尚无签到记录。</div><div v-else class="metric-list"><div v-for="(item, index) in checkin.data.value" :key="`${item.finished_at}:${index}`"><strong>每日签到</strong><StatePill :value="item.outcome" /><span>{{ checkinErrorHint(item.error_code) ?? "已完成" }}</span><small>{{ item.finished_at ?? "--" }}</small></div></div></section></div>
+      <div class="detail-main-grid"><section class="data-panel detail-section paged-section"><PanelHeader title="最近请求" /><div v-if="events.isPending.value" class="loading-row fixed-empty">正在读取请求…</div><div v-else-if="!events.data.value?.events.length" class="compact-empty fixed-empty">尚无请求事件。</div><template v-else><div class="metric-list metric-list--compact paged-list"><div v-for="event in visibleEvents" :key="event.event_id"><strong>{{ event.model_id ?? "未知模型" }}</strong><StatePill :value="event.status" /><span>{{ event.latency_ms ?? "--" }} ms<template v-if="event.error_code"> · {{ event.error_code }}</template></span><small>{{ event.started_at ?? "--" }}</small></div></div><div class="list-pagination"><span>第 {{ eventsPage }} / {{ eventPageCount }} 页</span><div><button class="secondary-button compact-button" type="button" :disabled="eventsPage <= 1" @click="setListPage('events', -1)">上一页</button><button class="secondary-button compact-button" type="button" :disabled="eventsPage >= eventPageCount" @click="setListPage('events', 1)">下一页</button></div></div></template></section><section class="data-panel detail-section paged-section"><PanelHeader title="签到历史" /><div v-if="checkin.isPending.value" class="loading-row fixed-empty">正在读取签到…</div><div v-else-if="!checkin.data.value?.length" class="compact-empty fixed-empty">尚无签到记录。</div><template v-else><div class="metric-list metric-list--compact paged-list"><div v-for="(item, index) in visibleCheckins" :key="`${item.finished_at}:${index}`"><strong>每日签到</strong><StatePill :value="item.outcome" /><span>{{ checkinErrorHint(item.error_code) ?? "已完成" }}</span><small>{{ item.finished_at ?? "--" }}</small></div></div><div class="list-pagination"><span>第 {{ checkinPage }} / {{ checkinPageCount }} 页</span><div><button class="secondary-button compact-button" type="button" :disabled="checkinPage <= 1" @click="setListPage('checkin', -1)">上一页</button><button class="secondary-button compact-button" type="button" :disabled="checkinPage >= checkinPageCount" @click="setListPage('checkin', 1)">下一页</button></div></div></template></section></div>
     </template>
     <OperationStatus :operation="lastOperation" />
     <ConfirmDialog :open="Boolean(pending)" :title="pending === 'delete' ? '删除这个账号？' : pending === 'verify' ? '验证并启用签到？' : '停用这个账号？'" :description="pending === 'delete' ? '账号的持久凭据和用途记录将被删除，操作不可撤销。' : pending === 'verify' ? '系统将使用当前账号的签到凭据或已登录 Chat 凭据发送一次每日签到请求；未签到时可能立即领取当天积分。' : '停用后该账号不会参与新的代理或签到调度。'" :confirm-label="pending === 'delete' ? '确认删除' : pending === 'verify' ? '确认并验证' : '确认停用'" :tone="pending === 'delete' ? 'danger' : 'default'" :verification-text="pending === 'delete' ? 'DELETE' : ''" :busy="action.isPending.value" @cancel="pending = null" @confirm="confirmPending" />

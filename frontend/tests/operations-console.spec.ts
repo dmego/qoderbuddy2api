@@ -205,6 +205,7 @@ function buttonWithText(wrapper: VueWrapper, text: string) {
 }
 
 async function confirmDialog(): Promise<void> {
+  await flushPromises();
   const button = document.querySelector<HTMLButtonElement>(".dialog-actions button:not(.secondary-button)");
   if (!button) throw new Error("Confirmation button not found");
   button.click(); await flushPromises();

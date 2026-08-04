@@ -39,12 +39,9 @@ describe("AccountsPage", () => {
     });
 
     await flushPromises();
-    await wrapper.find(".table-link").trigger("click");
-    await flushPromises();
-
-    expect(document.body.textContent).toContain("已使用 37%");
-    expect(document.body.textContent).toContain("接口协议尚未验证");
     expect(document.body.textContent).not.toContain("protocol_not_verified");
+    expect(wrapper.find(".detail-drawer").exists()).toBe(false);
+    expect(wrapper.get(".table-link").attributes("aria-label")).toBe("查看 研发账号 详情");
   });
 
   it("keeps env accounts read-only and reports per-account batch failures", async () => {
@@ -72,6 +69,7 @@ describe("AccountsPage", () => {
     await wrapper.get('input[aria-label="选择 失败账号"]').setValue(true);
     const batchProbe = wrapper.findAll("button").find((button) => button.text().includes("批量探测"));
     await batchProbe?.trigger("click");
+    await flushPromises();
     document.querySelector<HTMLButtonElement>(".dialog-actions button:not(.secondary-button)")?.click();
     await flushPromises();
 
@@ -87,6 +85,7 @@ describe("AccountsPage", () => {
     await flushPromises();
     const batchDisable = wrapper.findAll("button").find((button) => button.text().includes("批量停用"));
     await batchDisable?.trigger("click");
+    await flushPromises();
     document.querySelector<HTMLButtonElement>(".dialog-actions button:not(.secondary-button)")?.click();
     await flushPromises();
 

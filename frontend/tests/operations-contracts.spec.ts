@@ -108,17 +108,8 @@ describe("operations API contracts", () => {
     await buttonWithText(wrapper, "下一页").trigger("click");
     await flushPromises();
     expect(calls).toContain("/api/admin/accounts?limit=20&cursor=account-next&query=%E7%A0%94%E5%8F%91&provider=qoder&status=action_required&purpose=chat");
-    const trigger = wrapper.get(".table-link");
-    (trigger.element as HTMLElement).focus();
-    await trigger.trigger("click");
-    await flushPromises();
-    const accountDialog = document.querySelector<HTMLElement>(".detail-drawer--dialog");
-    expect(accountDialog).not.toBeNull();
-    expect(accountDialog?.getAttribute("role")).toBe("dialog");
-    expect(document.querySelector<HTMLButtonElement>("button[aria-label=\"关闭账号详情\"]")).not.toBeNull();
-    accountDialog?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    await flushPromises();
-    expect(document.activeElement).toBe(trigger.element);
+    expect(wrapper.get(".table-link").attributes("aria-label")).toBe("查看 研发账号 详情");
+    expect(document.querySelector(".detail-drawer")).toBeNull();
     wrapper.unmount();
   });
 

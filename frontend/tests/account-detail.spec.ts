@@ -56,4 +56,31 @@ describe("AccountDetailPage", () => {
     expect(calls).toContainEqual({ url: "/api/admin/accounts/codebuddy/cb-main/verify-checkin", method: "POST" });
     wrapper.unmount();
   });
+
+  it("renders structured metrics and paginates detail histories", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/credentials")) return response({ credentials: [] });
+      if (url.includes("/metrics/accounts/")) return response({ snapshots: [{ metric_kind: "quota", status: "fresh", observed_at: "2026-08-04T10:00:00Z", value: { total_usage_percentage: 20, user_quota: { remaining: 80, total: 100, unit: "credits" } } }] });
+      if (url.includes("/usage/events")) return response({ events: Array.from({ length: 11 }, (_, index) => ({ event_id: `event-${index + 1}`, model_id: `model-${index + 1}`, status: "succeeded", latency_ms: index + 1, started_at: "2026-08-04T10:00:00Z" })) });
+      if (url.includes("/checkin/runs")) return response({ runs: [] });
+      return response(account);
+    }));
+    const wrapper = mount(AccountDetailPage, {
+      attachTo: document.body,
+      global: { plugins: [createPinia(), VueQueryPlugin] },
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("已使用 20%");
+    expect(wrapper.text()).toContain("用户配额 · 剩余 80 / 100 credits");
+    expect(wrapper.text()).not.toContain("total_usage_percentage");
+    expect(wrapper.text()).toContain("model-1");
+    expect(wrapper.text()).not.toContain("model-11");
+
+    await wrapper.findAll("button").find((button) => button.text() === "下一页")?.trigger("click");
+    expect(wrapper.text()).toContain("model-11");
+    expect(wrapper.text()).not.toMatch(/model-1(?:\s|成功)/);
+    wrapper.unmount();
+  });
 });
