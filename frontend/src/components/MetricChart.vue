@@ -80,11 +80,11 @@ watch(() => [props.labels, props.values], render, { deep: true });
 <style scoped>
 .metric-chart {
   width: 100%;
-  height: 320px;
-  min-height: 240px;
+  height: 280px;
+  min-height: 280px;
 }
 
 @media (max-width: 760px) {
-  .metric-chart { height: 260px; }
+  .metric-chart { height: 240px; min-height: 240px; }
 }
 </style>

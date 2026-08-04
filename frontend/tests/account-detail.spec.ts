@@ -42,6 +42,10 @@ describe("AccountDetailPage", () => {
       global: { plugins: [createPinia(), VueQueryPlugin] },
     });
     await flushPromises();
+    expect(wrapper.find(".account-summary-grid").exists()).toBe(true);
+    expect(wrapper.find(".detail-main-grid").exists()).toBe(true);
+    expect(wrapper.find(".trend-section").exists()).toBe(true);
+    expect(wrapper.text()).not.toContain("账号、凭据、指标与签到活动均按用途隔离");
 
     await wrapper.findAll("button").find((button) => button.text().includes("验证签到"))?.trigger("click");
     expect(document.body.textContent).toContain("可能立即领取当天积分");

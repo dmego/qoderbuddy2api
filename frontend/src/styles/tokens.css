@@ -36,14 +36,20 @@
   /* 英文与数字走等宽，中文自动回退到黑体 */
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   --sans: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
-  --font: var(--mono), var(--sans);
+  --font: var(--sans);
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-md: 14px;
+  --text-lg: 15px;
+  --text-xl: 22px;
 
   /* 终端不用圆角，2px 只为消除锯齿 */
   --radius: 2px;
   /* 所有交互控件共用一个高度，按钮与 input/select 才能对齐 */
-  --control-h: 34px;
-  --control-h-sm: 29px;
-  --overlay: 0 0 0 1px var(--line-strong), 0 16px 48px rgb(0 0 0 / 0.6);
+  --control-h: 36px;
+  --control-h-sm: 32px;
+  --touch-size: 40px;
+  --overlay: 0 0 0 1px var(--line-strong), 0 8px 24px rgb(0 0 0 / 0.48);
 
   color: var(--text);
   background: var(--canvas);
@@ -71,7 +77,7 @@ input, select, textarea {
   outline: 0;
   color: var(--text);
   background: var(--canvas);
-  font-size: 12px;
+  font-size: var(--text-md);
 }
 textarea { padding: 8px 10px; line-height: 1.6; }
 input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-line); }

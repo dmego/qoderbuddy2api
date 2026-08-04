@@ -7,9 +7,11 @@ const props = withDefaults(defineProps<{
   title: string;
   subtitle?: string;
   closeLabel?: string;
+  presentation?: "drawer" | "dialog";
 }>(), {
   subtitle: "",
   closeLabel: "关闭详情",
+  presentation: "dialog",
 });
 const emit = defineEmits<{ close: [] }>();
 const panel = ref<HTMLElement | null>(null);
@@ -52,8 +54,8 @@ function focusableElements(): HTMLElement[] {
 
 <template>
   <Teleport to="body">
-    <div v-if="open" class="drawer-backdrop" @mousedown.self="close">
-      <section ref="panel" class="detail-drawer data-panel" role="dialog" aria-modal="true" :aria-labelledby="titleId" @keydown.esc="close" @keydown="trapFocus">
+    <div v-if="open" class="drawer-backdrop" :class="{ 'drawer-backdrop--dialog': presentation === 'dialog' }" @mousedown.self="close">
+      <section ref="panel" class="detail-drawer data-panel" :class="{ 'detail-drawer--dialog': presentation === 'dialog' }" role="dialog" aria-modal="true" :aria-labelledby="titleId" @keydown.esc="close" @keydown="trapFocus">
         <div class="drawer-heading">
           <div><h2 :id="titleId">{{ title }}</h2><p v-if="subtitle" class="mono">{{ subtitle }}</p></div>
           <button class="icon-button drawer-close" type="button" :aria-label="closeLabel" :title="closeLabel" @click="close"><X :size="16" /></button>

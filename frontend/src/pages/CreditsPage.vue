@@ -178,13 +178,13 @@ async function refreshView(): Promise<void> { await refreshData(); notify("ç§¯åˆ
 </template>
 
 <style scoped>
-.refresh-control { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; }
+.refresh-control { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: var(--text-xs); }
 .refresh-control select { min-height: var(--control-h); width: 100px; }
 .summary-date { font-size: 16px; }
 .value-positive { color: var(--ok) !important; }
 .value-negative { color: var(--err) !important; }
 .credits-table td { vertical-align: middle; }
-.credits-table td small { display: block; margin-top: 3px; color: var(--faint); font-size: 10px; }
+.credits-table td small { display: block; margin-top: 4px; color: var(--faint); font-size: var(--text-xs); }
 .credits-table tr { cursor: pointer; }
 .credit-value { color: var(--text); font-family: var(--mono); font-variant-numeric: tabular-nums; }
 @media (max-width: 760px) { .refresh-control { width: 100%; justify-content: space-between; } .refresh-control select { flex: 1; } }
