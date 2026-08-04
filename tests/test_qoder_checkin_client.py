@@ -33,6 +33,19 @@ async def test_qoder_status_claimed_today():
 
 
 @pytest.mark.asyncio
+async def test_qoder_claim_extracts_reward_expiry():
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: _json_response(
+                200, {"result": "CLAIMED", "rewardCredits": 5, "expiresAt": 1787211510449}, request
+            )
+        )
+    ) as http:
+        result = await QoderCheckinClient(client=http).claim(access_token="acc")
+    assert result.reward_expires_at == "2026-08-20T07:38:30.449000+00:00"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("body", [{"status": "SOMETHING_NEW"}, {}, "not-json"])
 async def test_qoder_unknown_success_status_is_not_verified(body):
     async with httpx.AsyncClient(

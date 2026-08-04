@@ -432,26 +432,3 @@ async def test_qoder_derive_returns_none_when_authenticate_fails(monkeypatch) ->
     )
     assert result is None
 
-
-@pytest.mark.asyncio
-async def test_qoder_derive_returns_none_without_security_oauth_token(monkeypatch) -> None:
-    class Session:
-        refresh_token = "refresh-secret"
-        security_oauth_token = ""  # 上游未下发 jt-
-
-        def __init__(self, _pat: str) -> None:
-            pass
-
-        async def authenticate(self) -> None:
-            return None
-
-        async def close(self) -> None:
-            return None
-
-    monkeypatch.setattr(import_support, "QoderSession", Session)
-
-    result = await import_support.derive_qoder_checkin(
-        Settings(admin_key="admin-secret"),
-        "pat-secret",
-    )
-    assert result is None

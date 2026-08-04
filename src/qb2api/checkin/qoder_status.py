@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -33,6 +34,7 @@ class _ResponseContext:
     body: dict[str, Any] | None
     request_id: str | None
     reward: float | None
+    reward_expires_at: str | None
 
 
 def classify_status(
@@ -155,6 +157,7 @@ def _result(
         request_id=context.request_id,
         message=message if message is not None else extract_message(context.body),
         reward_credits=context.reward,
+        reward_expires_at=context.reward_expires_at,
         raw_status=raw_status,
     )
 
@@ -172,6 +175,7 @@ def _context(
         body=body,
         request_id=extract_request_id(body, headers),
         reward=_extract_reward(body),
+        reward_expires_at=_extract_reward_expiry(body),
     )
 
 
@@ -212,6 +216,44 @@ def _extract_reward(body: dict[str, Any] | None) -> float | None:
             if isinstance(value, (int, float)):
                 return float(value)
     return None
+
+
+def _extract_reward_expiry(body: dict[str, Any] | None) -> str | None:
+    if not body:
+        return None
+    for source in (body, body.get("data")):
+        if not isinstance(source, dict):
+            continue
+        for key in ("expiresAt", "expires_at", "rewardExpiresAt", "reward_expires_at"):
+            value = source.get(key)
+            normalized = _normalize_expiry(value)
+            if normalized:
+                return normalized
+    return None
+
+
+def _normalize_expiry(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return _epoch_to_iso(value)
+    text = str(value).strip()
+    if text.isdigit():
+        return _epoch_to_iso(int(text))
+    candidate = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError:
+        return None
+    return (parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)).isoformat()
+
+
+def _epoch_to_iso(value: int | float) -> str | None:
+    seconds = value / 1000 if value > 10_000_000_000 else value
+    try:
+        return datetime.fromtimestamp(seconds, tz=UTC).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _secret_value(

@@ -214,6 +214,39 @@ async def rederive_checkin(
     return {"status": "ok", "account": published_view(state, provider, account_id)}
 
 
+@router.get("/accounts/{provider}/{account_id}/growth")
+async def growth_overview(provider: str, account_id: str, request: Request) -> dict[str, Any]:
+    """实时拉取 WorkBuddy 成长中心任务与档案（只读）。"""
+    await require_admin(request)
+    state = admin_state(request)
+    if find_account_view(state, provider, account_id) is None:
+        raise HTTPException(status_code=404, detail="account_not_found")
+    if provider != "codebuddy":
+        raise HTTPException(status_code=400, detail="unsupported_provider")
+    try:
+        credential = await state.credential_resolver.credential("codebuddy", account_id, "checkin")
+    except LookupError:
+        try:
+            credential = await state.credential_resolver.credential("codebuddy", account_id, "chat")
+        except LookupError:
+            raise HTTPException(status_code=400, detail="credential_missing")
+    token = credential.payload.get("access_token") or credential.payload.get("token")
+    if not isinstance(token, str) or not token.strip():
+        raise HTTPException(status_code=400, detail="access_token_missing")
+    from qb2api.checkin.growth import GrowthUnavailableError, WorkBuddyGrowthClient
+    client = WorkBuddyGrowthClient(
+        base_url=state.settings.codebuddy_checkin_base,
+        timeout=float(state.settings.checkin_request_timeout_seconds),
+    )
+    try:
+        result = await client.fetch(token)
+    except GrowthUnavailableError as error:
+        raise HTTPException(status_code=502, detail=f"growth_unavailable:{error}") from error
+    finally:
+        await client.aclose()
+    return result
+
+
 @router.post("/accounts/{provider}/{account_id}/refresh")
 async def refresh_account(provider: str, account_id: str, request: Request) -> dict[str, Any]:
     await require_admin(request)

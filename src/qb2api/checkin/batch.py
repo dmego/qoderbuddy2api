@@ -43,6 +43,12 @@ def redact_result(result: CheckInResult) -> dict[str, Any]:
         "request_id": result.request_id,
         "message": result.message,
         "reward_credits": result.reward_credits,
+        "reward_expires_at": result.reward_expires_at,
+        "quota_before": result.quota_before,
+        "quota_after": result.quota_after,
+        "quota_delta": result.quota_delta,
+        "quota_observed_at": result.quota_observed_at,
+        "quota_change_status": result.quota_change_status,
     }
 
 

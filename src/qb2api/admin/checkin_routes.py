@@ -140,6 +140,13 @@ def _attempt_view(item: dict[str, Any]) -> dict[str, Any]:
         "attempts": item.get("attempts", 0),
         "finished_at": item.get("finished_at"),
         "error_code": str(error_code) if error_code is not None else None,
+        "reward_credits": item.get("reward_credits"),
+        "reward_expires_at": item.get("reward_expires_at"),
+        "quota_before": item.get("quota_before"),
+        "quota_after": item.get("quota_after"),
+        "quota_delta": item.get("quota_delta"),
+        "quota_observed_at": item.get("quota_observed_at"),
+        "quota_change_status": item.get("quota_change_status"),
     }
 
 

@@ -86,19 +86,22 @@ def _aggregate_credits(accounts: list[dict[str, Any]]) -> dict[str, Any]:
     lowest: int | None = None
     unit = ""
     expires: list[int] = []
+    packages: list[dict[str, Any]] = []
     for account in accounts:
         if not isinstance(account, dict):
             continue
-        unit = unit or str(account.get("CapacityUnit") or "")
-        remain, used, size, cycle_remain, cycle_size = _account_numbers(account)
-        total_remaining += remain
-        total_used += used
-        total_capacity += size
-        cycle_remaining += cycle_remain
-        cycle_capacity += cycle_size
-        depleted += int(remain <= 0)
-        lowest = remain if lowest is None else min(lowest, remain)
-        _collect_expiry(expires, account)
+        summary = _summarize_account(account, len(packages) + 1)
+        unit = unit or summary["unit"]
+        total_remaining += summary["remaining"]
+        total_used += summary["used"]
+        total_capacity += summary["total"]
+        cycle_remaining += summary["cycle_remaining"]
+        cycle_capacity += summary["cycle_capacity"]
+        depleted += int(summary["remaining"] <= 0)
+        lowest = summary["remaining"] if lowest is None else min(lowest, summary["remaining"])
+        if summary["expiry_ms"] is not None:
+            expires.append(summary["expiry_ms"])
+        packages.append(summary["package"])
     return {
         "unit": unit or "credits",
         "total_remaining": total_remaining,
@@ -110,6 +113,7 @@ def _aggregate_credits(accounts: list[dict[str, Any]]) -> dict[str, Any]:
         "depleted_packages": depleted,
         "lowest_remaining": lowest if lowest is not None else 0,
         "expires_at": _epoch_ms_to_iso(min(expires)) if expires else None,
+        "packages": packages,
     }
 
 
@@ -123,10 +127,23 @@ def _account_numbers(account: dict[str, Any]) -> tuple[int, int, int, int, int]:
     )
 
 
-def _collect_expiry(expires: list[int], account: dict[str, Any]) -> None:
-    epoch_ms = _epoch_ms(account.get("ExpiredTime"))
-    if epoch_ms is not None:
-        expires.append(epoch_ms)
+def _summarize_account(account: dict[str, Any], index: int) -> dict[str, Any]:
+    unit = str(account.get("CapacityUnit") or "credits")
+    remain, used, size, cycle_remain, cycle_size = _account_numbers(account)
+    expiry_ms = _epoch_ms(account.get("ExpiredTime"))
+    package = {"name": f"积分包 {index}", "remaining": remain, "used": used, "total": size, "unit": unit}
+    if expiry_ms is not None:
+        package["expires_at"] = _epoch_ms_to_iso(expiry_ms)
+    return {
+        "unit": unit,
+        "remaining": remain,
+        "used": used,
+        "total": size,
+        "cycle_remaining": cycle_remain,
+        "cycle_capacity": cycle_size,
+        "expiry_ms": expiry_ms,
+        "package": package,
+    }
 
 
 def _number(value: Any) -> int:

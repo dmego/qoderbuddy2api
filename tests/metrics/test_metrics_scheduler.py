@@ -273,6 +273,19 @@ def test_normalize_quota_drops_identity_and_unknown_fields():
     }
 
 
+def test_normalize_quota_preserves_safe_earned_package_expiry():
+    value = normalize_quota({
+        "earnedPackages": [
+            {"title": "签到奖励", "credits": 100, "expiresAt": 1787211510449, "secret": "drop"}
+        ]
+    })
+    assert value["packages"] == [{
+        "name": "签到奖励",
+        "remaining": 100,
+        "expires_at": "2026-08-20T07:38:30.449000+00:00",
+    }]
+
+
 @pytest.mark.asyncio
 async def test_quota_client_rejects_empty_access_token():
     client = QoderQuotaClient(client=None)

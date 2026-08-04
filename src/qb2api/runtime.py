@@ -140,6 +140,8 @@ class RuntimeServices:
             registry=self.account_registry,
             resolver=self.credential_resolver,
         )
+        if self.checkin_service is not None:
+            self.checkin_service.set_metrics_refresher(self.metrics_scheduler.refresh_once)
         self.metrics_scheduler.start()
 
     async def refresh_accounts(self) -> None:

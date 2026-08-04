@@ -63,6 +63,13 @@ def test_normalize_credits_keeps_only_business_fields():
         "depleted_packages": 1,
         "lowest_remaining": 0,
         "expires_at": "2026-07-20T03:10:58+00:00",
+        "packages": [
+            {"name": "积分包 1", "remaining": 100, "used": 0, "total": 500, "unit": "credits"},
+            {
+                "name": "积分包 2", "remaining": 0, "used": 500, "total": 500,
+                "unit": "credits", "expires_at": "2026-07-20T03:10:58+00:00",
+            },
+        ],
     }
     dumped = str(value)
     assert "secret" not in dumped

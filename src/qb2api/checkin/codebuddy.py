@@ -223,6 +223,7 @@ class WorkBuddyClient:
                 request_id=rid,
                 message=extract_message(body) or "already checked in (status)",
                 raw_status=str(body.get("status") or body.get("state") or "") or None,
+                reward_credits=_extract_reward(body),
             )
         return None
 
@@ -314,6 +315,7 @@ class WorkBuddyClient:
                 business_code=business_code,
                 request_id=request_id,
                 message=message or "already checked in today",
+                reward_credits=_extract_reward(body),
             )
         if response.is_success:
             return CheckInResult(
@@ -324,6 +326,7 @@ class WorkBuddyClient:
                 business_code=business_code,
                 request_id=request_id,
                 message=message,
+                reward_credits=_extract_reward(body),
             )
         return classify_http_error(
             provider=self.provider,
@@ -332,6 +335,22 @@ class WorkBuddyClient:
             body=body,
             request_id=request_id,
         )
+
+
+def _extract_reward(body: dict[str, Any] | None) -> float | None:
+    if not isinstance(body, dict):
+        return None
+    sources = [body]
+    for key in ("data", "Data", "response", "Response"):
+        value = body.get(key)
+        if isinstance(value, dict):
+            sources.append(value)
+    for source in sources:
+        for key in ("rewardCredits", "reward_credits", "reward", "credits"):
+            value = source.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return float(value)
+    return None
 
 
 # Alias used in design text.

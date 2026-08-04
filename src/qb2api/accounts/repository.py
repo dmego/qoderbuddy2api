@@ -82,6 +82,16 @@ class AccountRepository(
                 "missing_token_count",
                 "INTEGER NOT NULL DEFAULT 0",
             )
+            for column, definition in (
+                ("reward_credits", "REAL"),
+                ("reward_expires_at", "TEXT"),
+                ("quota_before_json", "TEXT"),
+                ("quota_after_json", "TEXT"),
+                ("quota_delta_json", "TEXT"),
+                ("quota_observed_at", "TEXT"),
+                ("quota_change_status", "TEXT"),
+            ):
+                await self._ensure_column("checkin_attempts", column, definition)
             await self.db.execute(
                 "INSERT INTO schema_meta(key, value) VALUES('schema_version', '5') "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value"

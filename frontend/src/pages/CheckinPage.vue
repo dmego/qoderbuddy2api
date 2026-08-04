@@ -20,7 +20,7 @@ type SchedulerStatus = { catch_up_decision?: string; active_run_id?: string; las
 type MetricsStatus = { enabled: boolean; running: boolean; refresh_in_progress: boolean; last_error?: string; backoff: { metric: string; attempts: number; retry_at: string }[] };
 type CheckinStatus = { enabled: boolean; running: boolean; local_date: string; timezone: string; checkin_at: string; next_run_at?: string; active_run_id?: string; scheduler?: SchedulerStatus; metrics?: MetricsStatus; eligible_accounts: Account[]; daily_states: DailyState[] };
 type CheckinRun = { run_id: string; started_at: string; finished_at?: string; status: string; trigger: string; attempt_count: number; successful_count: number };
-type CheckinAttempt = { provider: string; account_id: string; outcome?: string; http_status?: number; attempts: number; finished_at?: string; error_code?: string };
+type CheckinAttempt = { provider: string; account_id: string; outcome?: string; http_status?: number; attempts: number; finished_at?: string; error_code?: string; reward_credits?: number | null; reward_expires_at?: string | null; quota_change_status?: string | null; quota_delta?: { packages?: { name?: string; delta?: number }[] } | null };
 type RunPage = { runs: CheckinRun[]; next_cursor?: string | null; total?: number };
 
 const queryClient = useQueryClient();
@@ -61,6 +61,22 @@ function toggleVisible(): void { const nextValue = !allVisibleSelected.value; vi
 function dailyOutcome(account: Account): string { return (status.data.value?.daily_states ?? []).find((item) => item.provider === account.provider && item.account_id === account.account_id)?.terminal_outcome ?? "pending"; }
 function clearAccountFilters(): void { accountSearch.value = ""; accountProvider.value = ""; accountStatus.value = ""; }
 function confirmExecution(): void { confirmRun.value = false; run.mutate(); }
+function attemptStatus(attempt: CheckinAttempt): string {
+  if (attempt.quota_change_status === "claimed_balance_increased") return "刚刚领取成功";
+  if (attempt.quota_change_status === "claimed_balance_unchanged") return "已领取，余额未变化";
+  if (attempt.quota_change_status === "claimed_balance_pending") return "已领取，余额待刷新";
+  if (attempt.quota_change_status === "already_checked_in") return "今日已签到";
+  return attempt.error_code ?? "--";
+}
+function attemptReward(attempt: CheckinAttempt): string {
+  const reward = typeof attempt.reward_credits === "number" ? `奖励 ${attempt.reward_credits} credits` : "未返回奖励";
+  if (!attempt.reward_expires_at) return reward;
+  const date = new Date(attempt.reward_expires_at);
+  return Number.isNaN(date.getTime()) ? reward : `${reward} · 到期 ${date.toLocaleString("zh-CN")}`;
+}
+function attemptDelta(attempt: CheckinAttempt): string {
+  return (attempt.quota_delta?.packages ?? []).filter((item) => typeof item.delta === "number").map((item) => `${item.name ?? "配额包"} ${item.delta! >= 0 ? "+" : ""}${item.delta}`).join(" · ") || "余额差值未知";
+}
 </script>
 
 <template>
@@ -85,13 +101,9 @@ function confirmExecution(): void { confirmRun.value = false; run.mutate(); }
     <AccessibleDrawer :open="Boolean(selectedRunId)" title="批次明细" :subtitle="selectedRunId ?? ''" close-label="关闭批次详情" @close="selectedRunId = null">
       <div v-if="runDetail.isPending.value" class="loading-row">正在读取脱敏尝试记录…</div><div v-else-if="runDetail.isError.value" class="data-state data-state--error">批次明细读取失败。<button class="secondary-button compact-button" type="button" @click="runDetail.refetch()">重试</button></div><div v-else-if="!runDetail.data.value?.attempts.length" class="compact-empty">该批次没有账号尝试记录。</div><div v-else class="table-wrap">
         <table>
-          <thead><tr><th>账号</th><th>结果</th><th>HTTP</th><th>尝试</th><th>错误代码</th></tr></thead><tbody>
+          <thead><tr><th>账号</th><th>结果</th><th>奖励</th><th>余额变化</th><th>HTTP</th><th>尝试</th></tr></thead><tbody>
             <tr v-for="attempt in runDetail.data.value?.attempts ?? []" :key="`${attempt.provider}:${attempt.account_id}`">
-              <td>{{ attempt.provider }}<small>{{ attempt.account_id }}</small></td><td><StatePill :value="attempt.outcome" /></td><td>{{ attempt.http_status ?? "--" }}</td><td>{{ attempt.attempts }}</td><td>
-                {{
-                  attempt.error_code === "10001" ? "今日已完成" : (attempt.error_code ?? "--")
-                }}
-              </td>
+              <td>{{ attempt.provider }}<small>{{ attempt.account_id }}</small></td><td><StatePill :value="attempt.outcome" /><small>{{ attemptStatus(attempt) }}</small></td><td>{{ attemptReward(attempt) }}</td><td>{{ attemptDelta(attempt) }}</td><td>{{ attempt.http_status ?? "--" }}</td><td>{{ attempt.attempts }}</td>
             </tr>
           </tbody>
         </table>

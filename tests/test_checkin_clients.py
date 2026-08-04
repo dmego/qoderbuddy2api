@@ -29,7 +29,7 @@ async def test_workbuddy_claim_success_without_status_preflight():
         calls.append((request.method, request.url.path))
         assert request.headers.get("Authorization") == "Bearer tok-a"
         assert request.content == b"{}"
-        return _json_response(200, {"code": 0, "msg": "ok", "requestId": "r1"}, request)
+        return _json_response(200, {"code": 0, "msg": "ok", "requestId": "r1", "rewardCredits": 100}, request)
 
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(handler), base_url="https://www.workbuddy.cn"
@@ -41,6 +41,7 @@ async def test_workbuddy_claim_success_without_status_preflight():
     assert result.outcome == CheckInOutcome.CLAIMED
     assert result.request_id == "r1"
     assert result.ok
+    assert result.reward_credits == 100
     assert calls == [("POST", "/billing/meter/daily-checkin")]
 
 

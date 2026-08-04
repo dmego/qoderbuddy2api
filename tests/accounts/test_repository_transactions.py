@@ -109,6 +109,7 @@ async def test_attempt_and_daily_state_roll_back_together(tmp_path) -> None:
                 provider="codebuddy",
                 account_id="cb-main",
                 outcome="CLAIMED",
+                reward_expires_at="2026-08-05T00:00:00+00:00",
             )
             await repository.set_checkin_daily_state(
                 provider="codebuddy",
@@ -125,6 +126,33 @@ async def test_attempt_and_daily_state_roll_back_together(tmp_path) -> None:
         "codebuddy", "cb-main", "2026-07-22", "Asia/Shanghai"
     )
     assert state is None
+    await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_checkin_attempt_persists_reward_and_quota_details(tmp_path) -> None:
+    repository = AccountRepository(str(tmp_path / "accounts.sqlite3"))
+    await repository.connect()
+    await repository.migrate()
+    await repository.create_checkin_run(
+        run_id="run-1", local_date="2026-07-22", timezone="Asia/Shanghai"
+    )
+    await repository.upsert_checkin_attempt(
+        run_id="run-1", provider="qoder", account_id="qd-main",
+        outcome="CLAIMED", reward_credits=100,
+        reward_expires_at="2026-08-05T00:00:00+00:00",
+        quota_before={"packages": [{"name": "user", "remaining": 0}]},
+        quota_after={"packages": [{"name": "user", "remaining": 100}]},
+        quota_delta={"packages": [{"name": "user", "delta": 100}]},
+        quota_observed_at="2026-07-22T10:00:00+00:00",
+    )
+    attempt = (await repository.list_checkin_attempts("run-1"))[0]
+    assert attempt["reward_credits"] == 100
+    assert attempt["reward_expires_at"] == "2026-08-05T00:00:00+00:00"
+    assert attempt["quota_before"] == {"packages": [{"name": "user", "remaining": 0}]}
+    assert attempt["quota_after"]["packages"][0]["remaining"] == 100
+    assert attempt["quota_delta"]["packages"][0]["delta"] == 100
+    assert attempt["quota_observed_at"] == "2026-07-22T10:00:00+00:00"
     await repository.close()
 
 

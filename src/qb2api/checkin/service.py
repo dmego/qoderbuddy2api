@@ -68,6 +68,9 @@ class CheckinService:
         self._active_context: RunContext | None = None
         self._active_task: asyncio.Task[CheckinBatchResult] | None = None
 
+    def set_metrics_refresher(self, callback: Any) -> None:
+        self._batch_executor.set_metrics_refresher(callback)
+
     @property
     def is_running(self) -> bool:
         return self._running

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from .schema import now_iso
@@ -114,6 +115,13 @@ class CheckinRepositoryMixin:
         redacted_error: str | None = None,
         started_at: str | None = None,
         finished_at: str | None = None,
+        reward_credits: float | None = None,
+        reward_expires_at: str | None = None,
+        quota_before: dict[str, Any] | None = None,
+        quota_after: dict[str, Any] | None = None,
+        quota_delta: dict[str, Any] | None = None,
+        quota_observed_at: str | None = None,
+        quota_change_status: str | None = None,
     ) -> None:
         now = now_iso()
         values = (
@@ -128,6 +136,13 @@ class CheckinRepositoryMixin:
             started_at or now,
             finished_at or now,
             redacted_error,
+            reward_credits,
+            reward_expires_at,
+            _json(quota_before),
+            _json(quota_after),
+            _json(quota_delta),
+            quota_observed_at,
+            quota_change_status,
         )
         async with self._operation(write=True) as db:
             await db.execute(_UPSERT_ATTEMPT, values)
@@ -142,7 +157,7 @@ class CheckinRepositoryMixin:
                 (run_id,),
             )
             rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+        return [_attempt_row(row) for row in rows]
 
     async def get_checkin_run(self, run_id: str) -> dict[str, Any] | None:
         async with self._operation() as db:
@@ -235,8 +250,9 @@ ON CONFLICT(provider, account_id, local_date, timezone) DO UPDATE SET
 _UPSERT_ATTEMPT = """
 INSERT INTO checkin_attempts (
     run_id, provider, account_id, outcome, http_status, business_code,
-    request_id, attempts, started_at, finished_at, redacted_error
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    request_id, attempts, started_at, finished_at, redacted_error, reward_credits,
+    reward_expires_at, quota_before_json, quota_after_json, quota_delta_json, quota_observed_at, quota_change_status
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(run_id, provider, account_id) DO UPDATE SET
     outcome=excluded.outcome,
     http_status=excluded.http_status,
@@ -244,5 +260,32 @@ ON CONFLICT(run_id, provider, account_id) DO UPDATE SET
     request_id=excluded.request_id,
     attempts=excluded.attempts,
     finished_at=excluded.finished_at,
-    redacted_error=excluded.redacted_error
+    redacted_error=excluded.redacted_error,
+    reward_credits=excluded.reward_credits,
+    reward_expires_at=excluded.reward_expires_at,
+    quota_before_json=excluded.quota_before_json,
+    quota_after_json=excluded.quota_after_json,
+    quota_delta_json=excluded.quota_delta_json,
+    quota_observed_at=excluded.quota_observed_at,
+    quota_change_status=excluded.quota_change_status
 """
+
+
+def _json(value: dict[str, Any] | None) -> str | None:
+    return json.dumps(value, ensure_ascii=False) if value is not None else None
+
+
+def _attempt_row(row: Any) -> dict[str, Any]:
+    result = dict(row)
+    fields = (
+        ("quota_before_json", "quota_before"),
+        ("quota_after_json", "quota_after"),
+        ("quota_delta_json", "quota_delta"),
+    )
+    for source, target in fields:
+        value = result.pop(source, None)
+        try:
+            result[target] = json.loads(value) if value else None
+        except (TypeError, json.JSONDecodeError):
+            result[target] = None
+    return result

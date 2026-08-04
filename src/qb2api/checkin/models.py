@@ -41,6 +41,12 @@ class CheckInResult:
     request_id: str | None = None
     message: str | None = None
     reward_credits: float | None = None
+    reward_expires_at: str | None = None
+    quota_before: dict[str, Any] | None = None
+    quota_after: dict[str, Any] | None = None
+    quota_delta: dict[str, Any] | None = None
+    quota_observed_at: str | None = None
+    quota_change_status: str | None = None
     raw_status: str | None = None  # upstream status string, e.g. CLAIMED_TODAY
     extra: dict[str, Any] = field(default_factory=dict)
 

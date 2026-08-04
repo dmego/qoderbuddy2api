@@ -95,6 +95,13 @@ CREATE TABLE IF NOT EXISTS checkin_attempts (
     started_at TEXT,
     finished_at TEXT,
     redacted_error TEXT,
+    reward_credits REAL,
+    reward_expires_at TEXT,
+    quota_before_json TEXT,
+    quota_after_json TEXT,
+    quota_delta_json TEXT,
+    quota_observed_at TEXT,
+    quota_change_status TEXT,
     PRIMARY KEY (run_id, provider, account_id),
     FOREIGN KEY (run_id) REFERENCES checkin_runs(run_id) ON DELETE CASCADE
 );
