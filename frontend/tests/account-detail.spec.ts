@@ -75,6 +75,8 @@ describe("AccountDetailPage", () => {
     expect(wrapper.text()).toContain("已使用 20%");
     expect(wrapper.text()).toContain("用户配额 · 剩余 80 / 100 credits");
     expect(wrapper.text()).not.toContain("total_usage_percentage");
+    expect(wrapper.text()).not.toContain("该指标暂无可读字段");
+    expect(wrapper.text()).toContain("无需验证");
     expect(wrapper.text()).toContain("model-1");
     expect(wrapper.text()).not.toContain("model-11");
 

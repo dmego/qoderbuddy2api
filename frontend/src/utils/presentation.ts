@@ -40,6 +40,8 @@ const statusLabels: Record<string, string> = {
   env: "环境变量",
   import: "导入",
   oauth: "OAuth 登录",
+  not_required: "无需验证",
+  unverified: "未验证",
 };
 
 export function statusLabel(value: string | boolean | null | undefined): string {
