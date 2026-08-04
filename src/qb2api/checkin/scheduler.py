@@ -169,6 +169,10 @@ class CheckinScheduler:
             self._catch_up_decision = "outside_window"
             logger.info("checkin catch-up skipped: outside window")
             return
+        if not await self._has_pending_targets():
+            self._catch_up_decision = "already_complete"
+            logger.info("checkin catch-up skipped: all targets already terminal")
+            return
         j = jitter_seconds(
             configuration.jitter_min_seconds,
             configuration.jitter_max_seconds,
@@ -180,6 +184,12 @@ class CheckinScheduler:
             return
         await self._launch_batch("catch_up")
         self._catch_up_decision = "started"
+
+    async def _has_pending_targets(self) -> bool:
+        checker = getattr(self._service, "has_pending_targets", None)
+        if checker is None:
+            return True
+        return bool(await checker())
 
     async def _launch_batch(self, trigger: str) -> None:
         start_batch = getattr(self._service, "start_batch", None)

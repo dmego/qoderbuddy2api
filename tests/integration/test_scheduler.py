@@ -14,9 +14,14 @@ from qb2api.config import Settings
 class _Service:
     def __init__(self) -> None:
         self.calls: list[dict] = []
+        self.pending = True
+        self.active_run_id = None
 
     async def run_batch(self, **values):
         self.calls.append(values)
+
+    async def has_pending_targets(self) -> bool:
+        return self.pending
 
 
 def test_disabled_scheduler_does_not_create_task() -> None:
@@ -85,3 +90,28 @@ async def test_catch_up_runs_once_inside_window(monkeypatch) -> None:
     assert service.calls == [
         {"trigger": "catch_up", "skip_already_done": True}
     ]
+
+
+@pytest.mark.asyncio
+async def test_catch_up_skips_when_all_targets_are_terminal(monkeypatch) -> None:
+    timezone = "Asia/Shanghai"
+    now = datetime.now(ZoneInfo(timezone))
+    planned = now - timedelta(minutes=1)
+    settings = Settings(
+        checkin_enabled=True,
+        checkin_catch_up=True,
+        checkin_catch_up_window_hours=1,
+        checkin_jitter_min_seconds=0,
+        checkin_jitter_max_seconds=0,
+        checkin_at=planned.strftime("%H:%M"),
+        checkin_timezone=timezone,
+    )
+    service = _Service()
+    service.pending = False
+    scheduler = CheckinScheduler(service, settings)
+    monkeypatch.setattr("qb2api.checkin.scheduler.jitter_seconds", lambda *_args: 0)
+
+    await scheduler._maybe_catch_up()  # noqa: SLF001
+
+    assert scheduler.status_snapshot()["catch_up_decision"] == "already_complete"
+    assert service.calls == []

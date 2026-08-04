@@ -123,6 +123,22 @@ class CheckinService:
             "last_run": batch_view(self._last_run),
         }
 
+    async def has_pending_targets(self) -> bool:
+        """Return whether at least one enabled account still needs today's check-in."""
+        targets = self._batch_executor.resolve_targets("catch_up", None)
+        if not targets:
+            return False
+        local_date = self.local_date_str()
+        timezone = self._settings.checkin_timezone
+        for target in targets:
+            state = await self._repo.get_checkin_daily_state(
+                target.provider, target.account_id, local_date, timezone
+            )
+            terminal = state.get("terminal_outcome") if state else None
+            if terminal not in {"CLAIMED", "ALREADY_CHECKED_IN"}:
+                return True
+        return False
+
     async def run_batch(
         self,
         *,
