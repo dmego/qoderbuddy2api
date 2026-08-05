@@ -15,6 +15,7 @@ import {
   Menu,
   Power,
   Settings,
+  Sprout,
   UsersRound,
   LogOut,
   X,
@@ -53,7 +54,10 @@ const navigationGroups = [
   },
   {
     label: "自动化",
-    items: [{ to: "/checkin", label: "签到", icon: CheckCircle2 }],
+    items: [
+      { to: "/checkin", label: "签到", icon: CheckCircle2 },
+      { to: "/growth", label: "成长中心", icon: Sprout },
+    ],
   },
   {
     label: "治理",
