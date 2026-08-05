@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useMutation, useQuery, useQueryClient } from "@tanstack/vue-query";
 import {
-  CalendarDays, Dice5, Gift, Globe, MapPin, PawPrint,
+  CalendarDays, CheckCircle, ChevronDown, ChevronUp, Dice5, Gift, Globe, MapPin, PawPrint,
   Play, RefreshCcw, Sparkles, Sprout, Trophy,
 } from "@lucide/vue";
 import { computed, ref, watch } from "vue";
@@ -48,6 +48,7 @@ const accounts = useQuery({
 });
 
 const codebuddyAccounts = computed(() => accounts.data.value?.accounts ?? []);
+const effectiveAccountKey = computed(() => selectedAccountKey.value || (codebuddyAccounts.value[0] ? `${codebuddyAccounts.value[0].provider}:${codebuddyAccounts.value[0].account_id}` : ""));
 
 watch(codebuddyAccounts, (list) => {
   if (!selectedAccountKey.value && list.length) {
@@ -55,7 +56,7 @@ watch(codebuddyAccounts, (list) => {
   }
 }, { immediate: true });
 
-const selectedParts = computed(() => selectedAccountKey.value.split(":"));
+const selectedParts = computed(() => effectiveAccountKey.value.split(":"));
 const provider = computed(() => selectedParts.value[0] || "codebuddy");
 const accountId = computed(() => selectedParts.value[1] || "");
 const base = computed(() => `/accounts/${encodeURIComponent(provider.value)}/${encodeURIComponent(accountId.value)}`);
@@ -76,11 +77,11 @@ const history = useQuery({
 
 const settings = useQuery({
   queryKey: ["growth-settings"],
-  queryFn: () => apiRequest<{ items: { key: string; value: unknown }[] }>("/settings"),
+  queryFn: () => apiRequest<{ settings: { key: string; value: unknown }[] }>("/settings"),
   staleTime: 30_000,
 });
 
-const settingValue = (key: string) => settings.data.value?.items.find((i) => i.key === key)?.value;
+const settingValue = (key: string) => settings.data.value?.settings.find((i) => i.key === key)?.value;
 
 const stepConfigs = computed(() => [
   { key: "tasks" as StepKey, label: "任务自动化", icon: Sparkles, enabled: Boolean(settingValue("growth.auto_tasks")) },
@@ -116,6 +117,10 @@ const heatmapGrid = computed(() => {
   for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
   return { weeks };
 });
+
+const activeTasks = computed(() => (growth.data.value?.tasks ?? []).filter((t) => taskStatus(t) !== "completed"));
+const completedTasks = computed(() => (growth.data.value?.tasks ?? []).filter((t) => taskStatus(t) === "completed"));
+const showCompleted = ref(false);
 
 function cellLevel(cell: HeatmapCell): number {
   const s = cell.score ?? 0;
@@ -277,7 +282,7 @@ function navigateToAccount(): void {
           <PanelHeader title="成长任务" description="实时拉取 WorkBuddy 成长计划任务状态。" />
           <div v-if="!growth.data.value.tasks?.length" class="compact-empty">暂无成长任务。</div>
           <div v-else class="growth-task-list">
-            <div v-for="task in growth.data.value.tasks" :key="task.task_code" class="growth-task" :class="`growth-task--${taskStatus(task)}`">
+            <div v-for="task in activeTasks" :key="task.task_code" class="growth-task" :class="`growth-task--${taskStatus(task)}`">
               <div class="growth-task-icon"><component :is="task.locked ? Globe : Sparkles" :size="16" /></div>
               <div class="growth-task-body">
                 <strong>{{ task.title ?? task.task_code }}<span v-if="task.is_new" class="badge-new">NEW</span></strong>
@@ -292,6 +297,23 @@ function navigateToAccount(): void {
                 </span>
               </div>
             </div>
+            <button v-if="completedTasks.length" class="growth-task-collapse" type="button" @click="showCompleted = !showCompleted">
+              <ChevronDown v-if="!showCompleted" :size="14" /><ChevronUp v-else :size="14" />
+              {{ showCompleted ? '收起' : '展开' }}已完成任务 ({{ completedTasks.length }})
+            </button>
+            <template v-if="showCompleted">
+              <div v-for="task in completedTasks" :key="task.task_code" class="growth-task growth-task--completed">
+                <div class="growth-task-icon"><CheckCircle :size="16" /></div>
+                <div class="growth-task-body">
+                  <strong>{{ task.title ?? task.task_code }}</strong>
+                  <span class="growth-task-meta">
+                    <StatePill value="completed" />
+                    <span class="task-label">已完成</span>
+                    <template v-if="task.reward_credit">· 奖励 {{ task.reward_credit }} 积分</template>
+                  </span>
+                </div>
+              </div>
+            </template>
           </div>
         </section>
 
@@ -362,6 +384,8 @@ function navigateToAccount(): void {
 .automation-meta small { color: var(--faint); font-size: 10px; }
 .automation-card-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 14px; border-top: 1px solid var(--line); }
 .growth-task-list { display: grid; gap: 0; }
+.growth-task-collapse { display: flex; align-items: center; justify-content: center; gap: 5px; padding: 8px 14px; border: 0; border-top: 1px solid var(--line); background: var(--surface-raised); color: var(--muted); font-size: 11px; }
+.growth-task-collapse:hover { color: var(--accent); }
 .growth-task { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 10px; align-items: start; min-height: 56px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
 .growth-task:last-child { border-bottom: 0; }
 .growth-task-icon { display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-muted); color: var(--accent); }

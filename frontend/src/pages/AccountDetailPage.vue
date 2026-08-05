@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useMutation, useQuery, useQueryClient } from "@tanstack/vue-query";
-import { Activity, ArrowLeft, BadgeCheck, ExternalLink, KeyRound, RefreshCcw, ShieldCheck, Trash2, RotateCcw } from "@lucide/vue";
+import { Activity, ArrowLeft, BadgeCheck, KeyRound, RefreshCcw, ShieldCheck, Trash2, RotateCcw } from "@lucide/vue";
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
@@ -15,7 +15,7 @@ import { statusLabel } from "@/utils/presentation";
 
 type Purpose = { enabled: boolean; status: string; verification_status: string; expires_at?: string; verified_at?: string; last_error?: string };
 type Account = { provider: string; account_id: string; label: string; source: string; enabled: boolean; summary_status: string; masked_identity?: string; created_at?: string; updated_at?: string; purposes: Record<string, Purpose> };
-type Credential = { provider: string; account_id: string; purpose: string; mode: string; credential_version: number; expires_at?: string; has_refresh_token: boolean; updated_at: string };
+
 type RequestEvent = { event_id: string; model_id?: string; status: string; latency_ms?: number; started_at?: string; error_code?: string };
 type CreditPackage = { name?: string; remaining?: number; total?: number; used?: number; available?: number; cap?: number; unit?: string; expires_at?: string };
 type CheckinAttempt = { provider: string; account_id: string; outcome: string; finished_at?: string; error_code?: string; reward_credits?: number | null; reward_expires_at?: string | null; quota_after?: { packages?: CreditPackage[] } | null; quota_delta?: { packages?: { name?: string; delta?: number }[] } | null; quota_change_status?: string | null };
@@ -40,10 +40,6 @@ const { notifications, notify, dismiss } = useNotifications();
 const isEnv = computed(() => account.data.value?.source === "env");
 
 const account = useQuery({ queryKey: ["account-detail", provider, accountId], queryFn: () => apiRequest<Account>(base.value), staleTime: 15_000 });
-const credentials = useQuery({ queryKey: ["account-credentials", provider, accountId], queryFn: async () => {
-  const result = await apiRequest<{ credentials: Credential[] }>(`/credentials?provider=${encodeURIComponent(provider.value)}`);
-  return result.credentials.filter((item) => item.account_id === accountId.value);
-} });
 const events = useQuery({ queryKey: ["account-events", provider, accountId], queryFn: () => apiRequest<{ events: RequestEvent[] }>(`/usage/events?limit=100&provider=${encodeURIComponent(provider.value)}&account_id=${encodeURIComponent(accountId.value)}`) });
 const checkin = useQuery({ queryKey: ["account-checkin", provider, accountId], queryFn: () => accountCheckinHistory(provider.value, accountId.value) });
 
@@ -76,7 +72,7 @@ const action = useMutation({
     if (kind === "delete") { await router.replace({ name: "accounts" }); return; }
     const promoted = (result as { account?: Account }).account;
     if (kind === "promote" && promoted) await router.replace({ name: "account-detail", params: { provider: promoted.provider, accountId: promoted.account_id } });
-    await Promise.all([account.refetch(), credentials.refetch(), events.refetch(), checkin.refetch(), queryClient.invalidateQueries({ queryKey: ["accounts"] })]);
+    await Promise.all([account.refetch(), events.refetch(), checkin.refetch(), queryClient.invalidateQueries({ queryKey: ["accounts"] })]);
   },
   onError: (error) => notify("账号操作失败", { message: String(error), tone: "error", timeout: 0 }),
 });
@@ -159,7 +155,6 @@ async function accountCheckinHistory(selectedProvider: string, selectedAccountId
       <section class="account-summary-grid"><div class="account-summary-item"><span>来源</span><strong>{{ statusLabel(account.data.value.source) }}</strong></div><div class="account-summary-item"><span>身份</span><strong class="mono">{{ account.data.value.masked_identity ?? "--" }}</strong></div><div class="account-summary-item"><span>总体状态</span><StatePill :value="account.data.value.summary_status" /></div><div class="account-summary-item"><span>最近更新</span><strong class="mono">{{ account.data.value.updated_at ?? "--" }}</strong></div></section>
       <section class="data-panel account-actions-panel"><PanelHeader title="账号操作" /><div class="form-actions"><button type="button" :disabled="action.isPending.value" @click="requestAction('refresh')"><RefreshCcw :size="16" />刷新</button><button class="secondary-button" type="button" :disabled="action.isPending.value" @click="requestAction('probe')"><Activity :size="16" />探测</button><button class="secondary-button" type="button" :disabled="action.isPending.value" @click="requestAction('verify')"><BadgeCheck :size="16" />验证签到</button><button v-if="provider === 'qoder' && !isEnv" class="secondary-button" type="button" :disabled="action.isPending.value" @click="action.mutate('rederive')"><RotateCcw :size="16" />重新派生</button><button v-if="isEnv" class="secondary-button" type="button" :disabled="action.isPending.value" @click="requestAction('promote')">提升账号</button><button v-else class="secondary-button" type="button" :disabled="action.isPending.value" @click="reauthorize"><KeyRound :size="16" />重新授权</button><button v-if="!isEnv" class="danger-button" type="button" :disabled="action.isPending.value" @click="requestAction('delete')"><Trash2 :size="16" />删除</button></div></section>
       <section class="data-panel detail-section"><PanelHeader title="用途与路由" /><div class="form-grid"><label>显示名称<input v-model="draftLabel" :disabled="!canWrite" aria-label="账号显示名称" /></label><label class="inline-check"><input v-model="draftEnabled" type="checkbox" :disabled="!canWrite" />账号启用</label><label v-for="name in ['chat', 'checkin']" :key="name" class="inline-check"><input :checked="name === 'chat' ? draftChat : draftCheckin" type="checkbox" :disabled="!canWrite || !account.data.value.purposes[name]" @change="setPurpose(name, $event)" /><span>{{ statusLabel(name) }}</span><StatePill v-if="account.data.value.purposes[name]" :value="account.data.value.purposes[name].status" /></label></div><div class="purpose-cards"><div v-for="(item, name) in account.data.value.purposes" :key="name"><strong>{{ statusLabel(String(name)) }}</strong><StatePill :value="item.verification_status" /><small>到期 {{ item.expires_at ?? "未设置" }} · 验证 {{ item.verified_at ?? "尚未验证" }}<template v-if="item.last_error"> · {{ item.last_error }}</template></small></div></div><div class="form-actions detail-save"><button type="button" :disabled="!canWrite" @click="requestAction('save')"><ShieldCheck :size="16" />保存设置</button></div></section>
-      <div class="detail-main-grid"><section class="data-panel detail-section"><PanelHeader title="凭据元数据" /><div v-if="credentials.isPending.value" class="loading-row fixed-empty">正在读取凭据…</div><div v-else-if="!credentials.data.value?.length" class="compact-empty fixed-empty">尚未保存凭据。</div><div v-else class="metric-list metric-list--compact"><div v-for="item in credentials.data.value" :key="item.purpose"><strong>{{ statusLabel(item.purpose) }} · {{ item.mode }}</strong><StatePill :value="item.has_refresh_token ? 'refresh' : 'static'" /><span>版本 v{{ item.credential_version }} · 到期 {{ item.expires_at ?? "未设置" }}</span><small>{{ item.updated_at }}</small></div></div></section><section class="data-panel detail-section"><PanelHeader title="相关页面" /><div class="metric-list metric-list--compact"><button class="table-link detail-link" type="button" @click="router.push({ name: 'credits', query: { account: `${provider}:${accountId}` } })"><ExternalLink :size="16" /><div><strong>积分明细</strong><small>查看积分包详情与变化趋势</small></div></button><button v-if="provider === 'codebuddy' && !isEnv" class="table-link detail-link" type="button" @click="router.push({ name: 'growth', query: { account: `${provider}:${accountId}` } })"><ExternalLink :size="16" /><div><strong>成长中心</strong><small>任务 · 连登 · 抽奖 · 旅行 · 兑换</small></div></button></div></section></div>
       <div class="detail-main-grid"><section class="data-panel detail-section paged-section"><PanelHeader title="最近请求" /><div v-if="events.isPending.value" class="loading-row fixed-empty">正在读取请求…</div><div v-else-if="!events.data.value?.events.length" class="compact-empty fixed-empty">尚无请求事件。</div><template v-else><div class="metric-list metric-list--compact paged-list"><div v-for="event in visibleEvents" :key="event.event_id"><strong>{{ event.model_id ?? "未知模型" }}</strong><StatePill :value="event.status" /><span>{{ event.latency_ms ?? "--" }} ms<template v-if="event.error_code"> · {{ event.error_code }}</template></span><small>{{ event.started_at ?? "--" }}</small></div></div><div class="list-pagination"><span>第 {{ eventsPage }} / {{ eventPageCount }} 页</span><div><button class="secondary-button compact-button" type="button" :disabled="eventsPage <= 1" @click="setListPage('events', -1)">上一页</button><button class="secondary-button compact-button" type="button" :disabled="eventsPage >= eventPageCount" @click="setListPage('events', 1)">下一页</button></div></div></template></section><section class="data-panel detail-section paged-section"><PanelHeader title="签到历史" /><div v-if="checkin.isPending.value" class="loading-row fixed-empty">正在读取签到…</div><div v-else-if="!checkin.data.value?.length" class="compact-empty fixed-empty">尚无签到记录。</div><template v-else><div class="metric-list metric-list--compact paged-list"><div v-for="(item, index) in visibleCheckins" :key="`${item.finished_at}:${index}`"><strong>每日签到</strong><StatePill :value="item.outcome" /><span>{{ checkinQuotaHint(item) }}</span><small>{{ checkinReward(item) }}<template v-if="checkinDelta(item)"> · {{ checkinDelta(item) }}</template> · {{ item.finished_at ?? "--" }}</small></div></div><div class="list-pagination"><span>第 {{ checkinPage }} / {{ checkinPageCount }} 页</span><div><button class="secondary-button compact-button" type="button" :disabled="checkinPage <= 1" @click="setListPage('checkin', -1)">上一页</button><button class="secondary-button compact-button" type="button" :disabled="checkinPage >= checkinPageCount" @click="setListPage('checkin', 1)">下一页</button></div></div></template></section></div>
     </template>
     <OperationStatus :operation="lastOperation" />
@@ -204,11 +199,6 @@ async function accountCheckinHistory(selectedProvider: string, selectedAccountId
 .account-detail-page .metric-list--compact > div { min-height: 44px; padding: 7px 14px; }
 .account-detail-page .metric-list--compact > div > strong { font-size: var(--text-sm); }
 .account-detail-page .metric-list--compact span, .account-detail-page .metric-list--compact small { font-size: 11px; }
-.detail-link { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 8px 14px; width: 100%; text-align: left; }
-.detail-link svg { color: var(--accent); flex-shrink: 0; }
-.detail-link div { display: grid; gap: 2px; min-width: 0; }
-.detail-link strong { font-size: var(--text-sm); color: var(--text); }
-.detail-link small { color: var(--muted); font-size: 11px; }
 @media (max-width: 900px) {
   .account-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .account-summary-item:nth-child(2) { border-right: 0; }

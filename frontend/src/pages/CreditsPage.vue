@@ -165,27 +165,6 @@ function clearFilters(): void { provider.value = ""; accountSearch.value = ""; s
 async function refreshData(): Promise<void> { await Promise.all([accounts.refetch(), metrics.refetch(), histories.refetch()]); }
 async function refreshView(): Promise<void> { await refreshData(); notify("积分视图已刷新", { tone: "info" }); }
 
-const selectedMetric = computed(() => {
-  if (!selectedAccount.value) return null;
-  const [p, aid] = selectedAccount.value.split(":");
-  return metrics.data.value?.snapshots?.find((m) => m.provider === p && m.account_id === aid) ?? null;
-});
-const creditPackages = computed<CreditPackage[]>(() => {
-  const value = selectedMetric.value?.value as MetricValue | null | undefined;
-  if (!value) return [];
-  const providerName = selectedAccount.value.split(":")[0];
-  if (providerName === "qoder") {
-    const quota = value;
-    const packages: CreditPackage[] = [
-      ...(quota.packages ?? []).filter((item) => !isQuotaSummaryPackage(item.name)),
-      ...(quota.user_quota ? [{ name: "用户积分", ...quota.user_quota }] : []),
-      ...(quota.add_on_quota ? [{ name: "附加积分", ...quota.add_on_quota }] : []),
-      ...(quota.org_resource_package ? [{ name: "组织积分", ...quota.org_resource_package }] : []),
-    ];
-    return dedupePackages(packages);
-  }
-  return dedupePackages(value.packages ?? []);
-});
 function isQuotaSummaryPackage(name?: string): boolean { return ["user_quota", "add_on_quota", "org_resource_package"].includes(name ?? ""); }
 function dedupePackages(packages: CreditPackage[]): CreditPackage[] {
   const seen = new Set<string>();
@@ -202,6 +181,47 @@ function formatExpiry(expiresAt?: string): string | null {
   const d = new Date(expiresAt);
   return Number.isNaN(d.getTime()) ? null : d.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
+
+// 积分明细弹窗
+const detailAccount = ref("");
+const detailPage = ref(1);
+const detailPageSize = 8;
+const detailVisible = computed(() => Boolean(detailAccount.value));
+const detailMetric = computed(() => {
+  if (!detailAccount.value) return null;
+  const [p, aid] = detailAccount.value.split(":");
+  return metrics.data.value?.snapshots?.find((m) => m.provider === p && m.account_id === aid) ?? null;
+});
+const detailPackages = computed<CreditPackage[]>(() => {
+  const value = detailMetric.value?.value as MetricValue | null | undefined;
+  if (!value) return [];
+  const providerName = detailAccount.value.split(":")[0];
+  if (providerName === "qoder") {
+    const quota = value;
+    return dedupePackages([
+      ...(quota.packages ?? []).filter((item) => !isQuotaSummaryPackage(item.name)),
+      ...(quota.user_quota ? [{ name: "用户积分", ...quota.user_quota }] : []),
+      ...(quota.add_on_quota ? [{ name: "附加积分", ...quota.add_on_quota }] : []),
+      ...(quota.org_resource_package ? [{ name: "组织积分", ...quota.org_resource_package }] : []),
+    ]);
+  }
+  return dedupePackages(value.packages ?? []);
+});
+const detailPageCount = computed(() => Math.max(1, Math.ceil(detailPackages.value.length / detailPageSize)));
+const detailVisiblePackages = computed(() => detailPackages.value.slice((detailPage.value - 1) * detailPageSize, detailPage.value * detailPageSize));
+const detailAccountLabel = computed(() => {
+  const [p, aid] = detailAccount.value.split(":");
+  const item = accounts.data.value?.accounts.find((a) => a.provider === p && a.account_id === aid);
+  return item?.label ?? detailAccount.value;
+});
+function openDetail(key: string): void {
+  detailAccount.value = key;
+  detailPage.value = 1;
+}
+function closeDetail(): void { detailAccount.value = ""; }
+function setDetailPage(delta: number): void {
+  detailPage.value = Math.min(detailPageCount.value, Math.max(1, detailPage.value + delta));
+}
 </script>
 
 <template>
@@ -215,7 +235,19 @@ function formatExpiry(expiresAt?: string): string | null {
 
     <section class="data-panel"><PanelHeader title="积分变化曲线" :description="`${selectedAccount ? accountLabel(selectedAccount) : '全部账号汇总'} · ${chart.values.length} 个有效采样点`" /><div v-if="histories.isPending.value" class="loading-row">正在读取积分历史…</div><div v-else-if="histories.isError.value" class="data-state data-state--error">积分历史读取失败。<button class="secondary-button compact-button" type="button" @click="histories.refetch()">重试</button></div><div v-else-if="!chart.labels.length" class="compact-empty">当前筛选时间内没有可用积分采样点。</div><MetricChart v-else :labels="chart.labels" :values="chart.values" /></section>
 
-    <section class="data-panel"><PanelHeader title="账号积分" :description="`${currentRows.length} 个账号 · 最近快照`" /><div v-if="accounts.isPending.value || metrics.isPending.value" class="loading-row">正在读取账号积分…</div><div v-else-if="!currentRows.length" class="compact-empty">没有匹配的账号。</div><template v-else><div class="table-wrap"><table class="data-table credits-table"><thead><tr><th>账号</th><th>服务商</th><th>当前积分</th><th>窗口变化</th><th>采集时间</th><th>状态</th></tr></thead><tbody><template v-for="row in currentRows" :key="`${row.account.provider}:${row.account.account_id}`"><tr :class="{ selected: selectedAccount === `${row.account.provider}:${row.account.account_id}` }" @click="selectedAccount = `${row.account.provider}:${row.account.account_id}`"><td><button class="table-link" type="button"><strong>{{ row.account.label }}</strong><small>{{ row.account.account_id }} · {{ row.account.masked_identity ?? '无身份掩码' }}</small></button></td><td><span class="provider-mark" :class="`provider-mark--${row.account.provider}`">{{ row.account.provider }}</span></td><td><strong class="credit-value">{{ formatNumber(row.total) }}</strong><small>{{ row.unit }}</small></td><td :class="row.change !== null && row.change < 0 ? 'value-negative' : 'value-positive'"><span v-if="row.change !== null">{{ row.change < 0 ? '↓' : '↑' }} {{ formatChange(row.change) }}</span><span v-else>--</span></td><td>{{ row.observedAt ? row.observedAt.slice(5, 16).replace('T', ' ') : '--' }}</td><td><StatePill :value="row.status" /></td></tr><tr v-if="selectedAccount === `${row.account.provider}:${row.account.account_id}`" class="credits-detail-row"><td colspan="6"><div v-if="!creditPackages.length" class="compact-empty">尚无积分包明细。</div><div v-else class="table-wrap credits-detail-wrap"><table class="data-table credits-detail-table"><thead><tr><th>名称</th><th>总量</th><th>已用</th><th>剩余</th><th>到期</th></tr></thead><tbody><tr v-for="(item, index) in creditPackages" :key="`${item.name}-${index}`"><td><strong>{{ item.name ?? `积分包 ${index + 1}` }}</strong></td><td>{{ formatPackageAmount(item.total ?? item.cap) }}<small>{{ item.unit ?? "credits" }}</small></td><td>{{ formatPackageAmount(item.used) }}</td><td>{{ formatPackageAmount(item.remaining ?? item.available) }}</td><td>{{ formatExpiry(item.expires_at) ?? "--" }}</td></tr></tbody></table></div></td></tr></template></tbody></table></div></template></section>
+    <section class="data-panel"><PanelHeader title="账号积分" :description="`${currentRows.length} 个账号 · 最近快照`" /><div v-if="accounts.isPending.value || metrics.isPending.value" class="loading-row">正在读取账号积分…</div><div v-else-if="!currentRows.length" class="compact-empty">没有匹配的账号。</div><div v-else class="table-wrap"><table class="data-table credits-table"><thead><tr><th>账号</th><th>服务商</th><th>当前积分</th><th>窗口变化</th><th>采集时间</th><th>状态</th></tr></thead><tbody><tr v-for="row in currentRows" :key="`${row.account.provider}:${row.account.account_id}`" :class="{ selected: selectedAccount === `${row.account.provider}:${row.account.account_id}` }" @click="selectedAccount = `${row.account.provider}:${row.account.account_id}`"><td><button class="table-link" type="button" @click.stop="openDetail(`${row.account.provider}:${row.account.account_id}`)"><strong>{{ row.account.label }}</strong><small>{{ row.account.account_id }} · {{ row.account.masked_identity ?? '无身份掩码' }}</small></button></td><td><span class="provider-mark" :class="`provider-mark--${row.account.provider}`">{{ row.account.provider }}</span></td><td><strong class="credit-value">{{ formatNumber(row.total) }}</strong><small>{{ row.unit }}</small></td><td :class="row.change !== null && row.change < 0 ? 'value-negative' : 'value-positive'"><span v-if="row.change !== null">{{ row.change < 0 ? '↓' : '↑' }} {{ formatChange(row.change) }}</span><span v-else>--</span></td><td>{{ row.observedAt ? row.observedAt.slice(5, 16).replace('T', ' ') : '--' }}</td><td><StatePill :value="row.status" /></td></tr></tbody></table></div></section>
+
+    <div v-if="detailVisible" class="credits-detail-modal" role="dialog" aria-modal="true" aria-label="积分明细">
+      <div class="credits-detail-backdrop" @click="closeDetail" />
+      <div class="credits-detail-dialog">
+        <header class="credits-detail-header"><h2>{{ detailAccountLabel }} · 积分明细</h2><button class="icon-button" type="button" aria-label="关闭" @click="closeDetail"><X :size="18" /></button></header>
+        <div class="credits-detail-body">
+          <div v-if="!detailPackages.length" class="compact-empty">尚无积分包明细。</div>
+          <div v-else class="table-wrap"><table class="data-table credits-detail-table"><thead><tr><th>名称</th><th>总量</th><th>已用</th><th>剩余</th><th>到期</th></tr></thead><tbody><tr v-for="(item, index) in detailVisiblePackages" :key="`${item.name}-${index}`"><td><strong>{{ item.name ?? `积分包 ${index + 1}` }}</strong></td><td>{{ formatPackageAmount(item.total ?? item.cap) }}<small>{{ item.unit ?? "credits" }}</small></td><td>{{ formatPackageAmount(item.used) }}</td><td>{{ formatPackageAmount(item.remaining ?? item.available) }}</td><td>{{ formatExpiry(item.expires_at) ?? "--" }}</td></tr></tbody></table></div>
+          <div v-if="detailPackages.length" class="list-pagination"><span>第 {{ detailPage }} / {{ detailPageCount }} 页 · 共 {{ detailPackages.length }} 包</span><div><button class="secondary-button compact-button" type="button" :disabled="detailPage <= 1" @click="setDetailPage(-1)">上一页</button><button class="secondary-button compact-button" type="button" :disabled="detailPage >= detailPageCount" @click="setDetailPage(1)">下一页</button></div></div>
+        </div>
+      </div>
+    </div>
 
     <OperationStatus :operation="lastOperation" />
     <NotificationRegion :notifications="notifications" @dismiss="dismiss" />
@@ -232,10 +264,14 @@ function formatExpiry(expiresAt?: string): string | null {
 .credits-table td small { display: block; margin-top: 4px; color: var(--faint); font-size: var(--text-xs); }
 .credits-table tr { cursor: pointer; }
 .credit-value { color: var(--text); font-family: var(--mono); font-variant-numeric: tabular-nums; }
-.credits-detail-row td { padding: 0 !important; background: var(--surface-raised); border-top: 0; }
-.credits-detail-wrap { padding: 8px 14px 12px; }
-.credits-detail-table { min-width: 480px; }
-.credits-detail-table th, .credits-detail-table td { padding: 7px 12px; font-size: 11px; white-space: nowrap; }
+.credits-detail-modal { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; }
+.credits-detail-backdrop { position: absolute; inset: 0; background: rgb(0 0 0 / 0.6); }
+.credits-detail-dialog { position: relative; width: min(720px, 92vw); max-height: 80vh; display: flex; flex-direction: column; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--surface); box-shadow: var(--overlay); }
+.credits-detail-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: var(--surface-raised); }
+.credits-detail-header h2 { margin: 0; font-size: var(--text-md); font-weight: 600; }
+.credits-detail-body { flex: 1; overflow-y: auto; padding: 12px 18px 14px; }
+.credits-detail-table { min-width: 520px; }
+.credits-detail-table th, .credits-detail-table td { padding: 8px 12px; font-size: 11px; white-space: nowrap; }
 .credits-detail-table th { color: var(--muted); font-size: 10px; font-weight: 600; letter-spacing: .02em; }
 .credits-detail-table td strong { color: var(--text); font-size: 12px; font-weight: 600; }
 .credits-detail-table td small { display: block; margin-top: 2px; color: var(--faint); font-size: 10px; }
