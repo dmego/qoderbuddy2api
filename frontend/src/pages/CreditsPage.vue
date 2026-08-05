@@ -187,11 +187,14 @@ const detailAccount = ref("");
 const detailPage = ref(1);
 const detailPageSize = 8;
 const detailVisible = computed(() => Boolean(detailAccount.value));
-const detailMetric = computed(() => {
-  if (!detailAccount.value) return null;
-  const [p, aid] = detailAccount.value.split(":");
-  return metrics.data.value?.snapshots?.find((m) => m.provider === p && m.account_id === aid) ?? null;
-});
+function findPackagesMetric(key: string): Metric | null {
+  if (!key) return null;
+  const [p, aid] = key.split(":");
+  const snaps = metrics.data.value?.snapshots ?? [];
+  const kind = p === "qoder" ? "quota" : "points";
+  return snaps.find((m) => m.provider === p && m.account_id === aid && m.metric_kind === kind) ?? null;
+}
+const detailMetric = computed(() => findPackagesMetric(detailAccount.value));
 const detailPackages = computed<CreditPackage[]>(() => {
   const value = detailMetric.value?.value as MetricValue | null | undefined;
   if (!value) return [];

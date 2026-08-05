@@ -103,12 +103,16 @@ class GrowthAutomation:
             return {"status": "failed", "detail": "invalid_tasks"}
         tasks = [task for task in tasks if isinstance(task, dict)]
         accepted = await self._accept_pending(token, tasks)
-        claimed = await self._claim_completed(token, tasks)
+        claimed, total_credits = await self._claim_completed(token, tasks)
+        detail = f"接受 {accepted} 个任务，领取 {claimed} 个奖励"
+        if total_credits:
+            detail += f"，获得 {total_credits} 积分"
         return {
             "status": "completed",
             "accepted": accepted,
             "claimed": claimed,
-            "detail": f"接受 {accepted} 个任务，领取 {claimed} 个奖励",
+            "reward_credits": total_credits,
+            "detail": detail,
         }
 
     async def _accept_pending(self, token: str, tasks: list[dict[str, Any]]) -> int:
@@ -123,37 +127,47 @@ class GrowthAutomation:
         except GrowthUnavailableError:
             return 0
 
-    async def _claim_completed(self, token: str, tasks: list[dict[str, Any]]) -> int:
+    async def _claim_completed(self, token: str, tasks: list[dict[str, Any]]) -> tuple[int, int]:
         claimed = 0
+        total_credits = 0
         for task in tasks:
             if not _task_done(task) or not task.get("has_reward"):
+                continue
+            if _reward_already_claimed(task):
                 continue
             code = task.get("task_code")
             if not code:
                 continue
             try:
-                await self._client.claim_task(token, code)
+                result = await self._client.claim_task(token, code)
                 claimed += 1
+                total_credits += _extract_credits(result, task.get("reward_credit"))
             except GrowthUnavailableError:
                 continue
-        return claimed
+        return claimed, total_credits
 
     async def _step_lottery(self, token: str, overview: dict[str, Any]) -> dict[str, Any]:
         chances = (overview.get("lottery") or {}).get("available_chances") or 0
         if not chances:
             return {"status": "no_chances", "drawn": 0, "available": 0, "detail": "暂无抽奖次数"}
         drawn = 0
+        total_credits = 0
         for _ in range(min(chances, 10)):
             try:
-                await self._client.lottery_draw(token)
+                result = await self._client.lottery_draw(token)
                 drawn += 1
+                total_credits += _extract_credits(result)
             except GrowthUnavailableError:
                 break
+        detail = f"抽奖 {drawn}/{chances} 次"
+        if total_credits:
+            detail += f"，获得 {total_credits} 积分"
         return {
             "status": "completed",
             "drawn": drawn,
             "available": chances,
-            "detail": f"抽奖 {drawn}/{chances} 次",
+            "reward_credits": total_credits,
+            "detail": detail,
         }
 
     async def _step_travel(self, token: str) -> dict[str, Any]:
@@ -172,8 +186,12 @@ class GrowthAutomation:
 
     async def _claim_travel(self, token: str) -> dict[str, Any]:
         try:
-            await self._client.travel_claim(token)
-            return {"status": "completed", "detail": "旅行已结束，已领取奖励"}
+            result = await self._client.travel_claim(token)
+            total_credits = _extract_credits(result)
+            detail = "旅行已结束，已领取奖励"
+            if total_credits:
+                detail += f"，获得 {total_credits} 积分"
+            return {"status": "completed", "reward_credits": total_credits, "detail": detail}
         except GrowthUnavailableError as error:
             return {"status": "failed", "detail": f"claim_failed:{error}"}
 
@@ -245,3 +263,27 @@ def _task_done(task: dict[str, Any]) -> bool:
     if isinstance(current, (int, float)) and isinstance(target, (int, float)):
         return current >= target
     return False
+
+
+def _reward_already_claimed(task: dict[str, Any]) -> bool:
+    if task.get("reward_claimed") or task.get("claimed") or task.get("is_claimed"):
+        return True
+    receive_status = task.get("receive_status")
+    return receive_status in ("claimed", "received")
+
+
+def _extract_credits(result: dict[str, Any], fallback: Any = None) -> int:
+    """从 WorkBuddy API 响应中提取获得的积分数量。"""
+    for key in ("reward_credit", "credits", "credit", "reward_credits", "amount"):
+        value = result.get(key)
+        if isinstance(value, (int, float)) and value > 0:
+            return int(value)
+    reward = result.get("reward")
+    if isinstance(reward, dict):
+        for key in ("credit", "credits", "amount"):
+            value = reward.get(key)
+            if isinstance(value, (int, float)) and value > 0:
+                return int(value)
+    if isinstance(fallback, (int, float)) and fallback > 0:
+        return int(fallback)
+    return 0

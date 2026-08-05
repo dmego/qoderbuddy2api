@@ -159,6 +159,7 @@ class RuntimeServices:
             registry=self.account_registry,
             resolver=self.credential_resolver,
             repo=self.account_repo,
+            metrics_refresh=self.metrics_scheduler.refresh_once if self.metrics_scheduler else None,
         )
         self.growth_scheduler.start()
 

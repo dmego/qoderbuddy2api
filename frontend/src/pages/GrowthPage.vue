@@ -16,7 +16,7 @@ import { useNotifications } from "@/composables/useNotifications";
 type Account = { provider: string; account_id: string; label: string; source: string };
 type AccountPage = { accounts: Account[]; next_cursor?: string | null };
 type GrowthProfile = { level?: number | null; completed?: number | null; total?: number | null; max_level?: boolean | null };
-type GrowthTask = { task_code?: string; title?: string; task_desc?: string; task_type?: string; tag?: string; accept_status?: string; progress_current?: number | null; progress_target?: number | null; reward_credit?: number | null; reward_energy?: number | null; has_reward?: boolean | null; locked?: boolean | null; is_new?: boolean | null; icon_url?: string | null };
+type GrowthTask = { task_code?: string; title?: string; task_desc?: string; task_type?: string; tag?: string; accept_status?: string; progress_current?: number | null; progress_target?: number | null; reward_credit?: number | null; reward_energy?: number | null; has_reward?: boolean | null; reward_claimed?: boolean | null; claimed?: boolean | null; is_claimed?: boolean | null; receive_status?: string; locked?: boolean | null; is_new?: boolean | null; icon_url?: string | null };
 type HeatmapCell = { date?: string; score?: number | null; has_new_buddy?: boolean | null };
 type GrowthOverview = { profile: GrowthProfile; tasks: GrowthTask[]; heatmap: { cells: HeatmapCell[]; today?: { date?: string; score?: number | null; is_active?: boolean | null; status_text?: string } | null; range_start?: string | null; range_end?: string | null }; streak: { days?: number | null; next_tier?: string | null; next_tier_remaining?: number | null; makeup_balance?: number | null; makeup_max?: number | null; remaining_days?: number | null; timezone?: string | null }; lottery: { available_chances?: number | null; total_draws?: number | null } };
 type StepKey = "tasks" | "lottery" | "travel" | "redeem" | "buddy_open";
@@ -138,6 +138,7 @@ function cellTitle(cell: HeatmapCell): string {
 
 function taskStatus(task: GrowthTask): string {
   if (task.locked) return "locked";
+  if (task.reward_claimed || task.claimed || task.is_claimed || task.receive_status === "claimed" || task.receive_status === "received") return "completed";
   if (task.has_reward) return "claimable";
   const c = task.progress_current, t = task.progress_target;
   if (typeof c === "number" && typeof t === "number" && c >= t) return "completed";

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from qb2api.config import Settings
 
@@ -35,12 +35,14 @@ class GrowthScheduler:
         registry: AccountRegistry,
         resolver: CredentialResolver,
         repo: AccountRepository,
+        metrics_refresh: Any = None,
     ) -> None:
         self._settings = settings
         self._automation = automation
         self._registry = registry
         self._resolver = resolver
         self._repo = repo
+        self._metrics_refresh = metrics_refresh
         self._task: asyncio.Task | None = None
         self._stopped = asyncio.Event()
         self._running = False
@@ -128,6 +130,7 @@ class GrowthScheduler:
             )
             return
         await self._persist_log(provider, account_id, "scheduler", result)
+        await self._maybe_refresh_metrics(provider, account_id, result)
         logger.info(
             "growth scheduler completed %s/%s: %s",
             provider, account_id, result,
@@ -156,5 +159,27 @@ class GrowthScheduler:
         except Exception:
             logger.warning(
                 "growth log persist failed %s/%s",
+                provider, account_id, exc_info=True,
+            )
+
+    async def _maybe_refresh_metrics(self, provider: str, account_id: str, results: dict) -> None:
+        if self._metrics_refresh is None:
+            return
+        earned = sum(
+            (step.get("reward_credits") or 0)
+            for step in results.values()
+            if isinstance(step, dict)
+        )
+        if not earned:
+            return
+        try:
+            await self._metrics_refresh()
+            logger.info(
+                "growth metrics refreshed %s/%s after %d credits earned",
+                provider, account_id, earned,
+            )
+        except Exception:
+            logger.warning(
+                "growth metrics refresh failed %s/%s",
                 provider, account_id, exc_info=True,
             )

@@ -251,6 +251,7 @@ async def growth_execute(provider: str, account_id: str, request: Request) -> di
         provider=provider, account_id=account_id,
         triggered_by="manual", results=result,
     )
+    await _refresh_growth_metrics(state, provider, account_id, result)
     return {"status": "ok", "result": result}
 
 
@@ -269,10 +270,12 @@ async def growth_run_step(
         result = await automation.run_step(token, step)
     finally:
         await automation.close()
+    results = {step: result}
     await state.account_repo.insert_growth_log(
         provider=provider, account_id=account_id,
-        triggered_by=f"manual:{step}", results={step: result},
+        triggered_by=f"manual:{step}", results=results,
     )
+    await _refresh_growth_metrics(state, provider, account_id, results)
     return {"status": "ok", "step": step, "result": result}
 
 
@@ -298,6 +301,23 @@ def _validate_growth_account(state: Any, provider: str, account_id: str) -> None
         raise HTTPException(status_code=400, detail="env_account_read_only")
     if find_account_view(state, provider, account_id) is None:
         raise HTTPException(status_code=404, detail="account_not_found")
+
+
+async def _refresh_growth_metrics(state: Any, provider: str, account_id: str, results: dict) -> None:
+    scheduler = getattr(state, "metrics_scheduler", None)
+    if scheduler is None:
+        return
+    earned = sum(
+        (step.get("reward_credits") or 0)
+        for step in results.values()
+        if isinstance(step, dict)
+    )
+    if not earned:
+        return
+    try:
+        await scheduler.refresh_once()
+    except Exception:
+        pass
 
 
 async def _resolve_codebuddy_token(state: Any, provider: str, account_id: str) -> str:
