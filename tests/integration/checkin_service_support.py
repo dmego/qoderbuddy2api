@@ -89,7 +89,6 @@ def service(
     codebuddy_enabled: bool,
     qoder_enabled: bool,
     retry_limit: int = 0,
-    growth_automation=None,
 ) -> CheckinService:
     settings = Settings(
         checkin_enabled=True,
@@ -107,7 +106,6 @@ def service(
         vault=vault,
         workbuddy=workbuddy,
         qoder=qoder,
-        growth_automation=growth_automation,
     )
 
 

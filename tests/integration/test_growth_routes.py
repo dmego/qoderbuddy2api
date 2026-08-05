@@ -102,7 +102,11 @@ async def test_growth_execute_runs_automation_for_manual_account(admin_context, 
 
         async def run(self, token):
             calls.append(token)
-            return {"tasks": "skipped"}
+            return {"tasks": {"status": "skipped", "detail": "未启用"}}
+
+        async def run_step(self, token, step):
+            calls.append(f"{token}:{step}")
+            return {"status": "completed", "detail": "ok"}
 
         async def close(self):
             return None
@@ -118,7 +122,48 @@ async def test_growth_execute_runs_automation_for_manual_account(admin_context, 
 
     assert response.status_code == 200
     assert calls == ["execute-token"]
-    assert response.json()["result"] == {"tasks": "skipped"}
+    assert response.json()["result"]["tasks"]["status"] == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_growth_run_step_executes_single_step(admin_context, monkeypatch) -> None:
+    app, repository, vault, registry = admin_context
+    account_id = "cb-growth-step"
+    await repository.upsert_account(
+        provider="codebuddy", account_id=account_id, label=account_id,
+        source="manual", enabled=True,
+    )
+    await repository.upsert_credential(
+        provider="codebuddy", account_id=account_id, purpose="chat", mode="bearer",
+        encrypted_payload=vault.encrypt({"access_token": "step-token"}),
+    )
+    await registry.rebuild()
+
+    class FakeAutomation:
+        def __init__(self, *, settings):
+            pass
+
+        async def run_step(self, token, step):
+            assert token == "step-token"
+            assert step == "lottery"
+            return {"status": "no_chances", "detail": "暂无抽奖次数"}
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(automation_mod, "GrowthAutomation", FakeAutomation)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://test"
+    ) as client:
+        response = await client.post(
+            f"/api/admin/accounts/codebuddy/{account_id}/growth/run/lottery",
+            headers=_headers(), json={},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["step"] == "lottery"
+    assert body["result"]["status"] == "no_chances"
 
 
 @pytest.mark.asyncio

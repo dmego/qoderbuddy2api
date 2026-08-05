@@ -236,13 +236,10 @@ async def growth_overview(provider: str, account_id: str, request: Request) -> d
 
 @router.post("/accounts/{provider}/{account_id}/growth/execute")
 async def growth_execute(provider: str, account_id: str, request: Request) -> dict[str, Any]:
-    """手动触发一次成长中心自动化（accept/claim/lottery/travel/redeem）。"""
+    """手动触发一次成长中心自动化（执行所有已启用步骤）。"""
     await require_admin(request)
     state = admin_state(request)
-    if provider != "codebuddy":
-        raise HTTPException(status_code=400, detail="unsupported_provider")
-    if state.account_registry.is_env_account(provider, account_id):
-        raise HTTPException(status_code=400, detail="env_account_read_only")
+    _validate_growth_account(state, provider, account_id)
     token = await _resolve_codebuddy_token(state, provider, account_id)
     from qb2api.checkin.growth_automation import GrowthAutomation
     automation = GrowthAutomation(settings=state.settings)
@@ -250,7 +247,57 @@ async def growth_execute(provider: str, account_id: str, request: Request) -> di
         result = await automation.run(token)
     finally:
         await automation.close()
+    await state.account_repo.insert_growth_log(
+        provider=provider, account_id=account_id,
+        triggered_by="manual", results=result,
+    )
     return {"status": "ok", "result": result}
+
+
+@router.post("/accounts/{provider}/{account_id}/growth/run/{step}")
+async def growth_run_step(
+    provider: str, account_id: str, step: str, request: Request,
+) -> dict[str, Any]:
+    """手动触发单个成长中心自动化步骤。"""
+    await require_admin(request)
+    state = admin_state(request)
+    _validate_growth_account(state, provider, account_id)
+    token = await _resolve_codebuddy_token(state, provider, account_id)
+    from qb2api.checkin.growth_automation import GrowthAutomation
+    automation = GrowthAutomation(settings=state.settings)
+    try:
+        result = await automation.run_step(token, step)
+    finally:
+        await automation.close()
+    await state.account_repo.insert_growth_log(
+        provider=provider, account_id=account_id,
+        triggered_by=f"manual:{step}", results={step: result},
+    )
+    return {"status": "ok", "step": step, "result": result}
+
+
+@router.get("/accounts/{provider}/{account_id}/growth/history")
+async def growth_history(
+    provider: str, account_id: str, request: Request,
+) -> dict[str, Any]:
+    """查询某账号最近的成长自动化执行记录。"""
+    await require_admin(request)
+    state = admin_state(request)
+    if find_account_view(state, provider, account_id) is None:
+        raise HTTPException(status_code=404, detail="account_not_found")
+    logs = await state.account_repo.list_growth_logs(
+        provider=provider, account_id=account_id, limit=20,
+    )
+    return {"logs": logs}
+
+
+def _validate_growth_account(state: Any, provider: str, account_id: str) -> None:
+    if provider != "codebuddy":
+        raise HTTPException(status_code=400, detail="unsupported_provider")
+    if state.account_registry.is_env_account(provider, account_id):
+        raise HTTPException(status_code=400, detail="env_account_read_only")
+    if find_account_view(state, provider, account_id) is None:
+        raise HTTPException(status_code=404, detail="account_not_found")
 
 
 async def _resolve_codebuddy_token(state: Any, provider: str, account_id: str) -> str:

@@ -157,6 +157,8 @@ def _observability_values() -> dict[str, object]:
         "growth_auto_redeem": _env_bool("GROWTH_AUTO_REDEEM", True),
         "growth_redeem_tier": os.getenv("GROWTH_REDEEM_TIER", "28d"),
         "growth_auto_buddy_open": _env_bool("GROWTH_AUTO_BUDDY_OPEN", False),
+        "growth_scheduler_enabled": _env_bool("GROWTH_SCHEDULER_ENABLED", True),
+        "growth_scheduler_interval_seconds": _env_int("GROWTH_SCHEDULER_INTERVAL_SECONDS", 1800),
     }
 
 
@@ -254,6 +256,8 @@ class Settings:
     growth_auto_redeem: bool = True
     growth_redeem_tier: str = "28d"
     growth_auto_buddy_open: bool = False
+    growth_scheduler_enabled: bool = True
+    growth_scheduler_interval_seconds: int = 1800
 
     @property
     def api_key(self) -> str | None:

@@ -18,6 +18,7 @@ from .repo_catalog import CatalogRepositoryMixin
 from .repo_checkin import CheckinRepositoryMixin
 from .repo_control import ControlRepositoryMixin
 from .repo_credentials import CredentialRepositoryMixin, CredentialVersionConflict
+from .repo_growth_log import GrowthLogMixin
 from .repo_metric_history import MetricHistoryRepositoryMixin
 from .repo_metric_refresh import MetricRefreshRepositoryMixin
 from .repo_proxy_keys import ProxyKeyRepositoryMixin
@@ -41,6 +42,7 @@ class AccountRepository(
     CheckinRepositoryMixin,
     SessionRepositoryMixin,
     TelemetryRepositoryMixin,
+    GrowthLogMixin,
 ):
     """Own one SQLite connection and serialize every database operation."""
 

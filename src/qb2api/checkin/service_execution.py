@@ -36,14 +36,12 @@ class CheckinBatchExecutor:
         registry: AccountRegistry,
         executor: CheckinExecutor,
         metrics_refresh: Callable[[], Awaitable[Any]] | None = None,
-        growth_runner: Callable[[CheckinTarget], Awaitable[dict[str, str]]] | None = None,
     ) -> None:
         self._settings = settings
         self._repo = repo
         self._registry = registry
         self._executor = executor
         self._metrics_refresh = metrics_refresh
-        self._growth_runner = growth_runner
 
     def set_metrics_refresher(self, callback: Callable[[], Awaitable[Any]] | None) -> None:
         self._metrics_refresh = callback
@@ -60,25 +58,8 @@ class CheckinBatchExecutor:
         selected.sort(key=lambda item: (item.provider != "codebuddy", item.account_id))
         for target in selected:
             result, attempts = await self._execute_one(context, target, skip_already_done)
-            if (
-                trigger in {"scheduler", "catch_up"}
-                and result.outcome in SUCCESS_OUTCOMES
-                and self._growth_runner is not None
-                and target.provider == "codebuddy"
-            ):
-                await self._run_growth(target)
             context.results.append(redact_result(result))
             await self._persist_result(context, result, attempts)
-
-    async def _run_growth(self, target: CheckinTarget) -> None:
-        try:
-            result = await self._growth_runner(target)
-            logger.info("growth automation completed %s/%s: %s", target.provider, target.account_id, result)
-        except Exception as error:
-            logger.warning(
-                "growth automation isolated %s/%s: %s",
-                target.provider, target.account_id, type(error).__name__,
-            )
 
     def resolve_targets(
         self,

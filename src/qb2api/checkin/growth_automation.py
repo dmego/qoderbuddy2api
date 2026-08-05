@@ -1,8 +1,8 @@
-"""Growth automation orchestrator — runs after check-in, each step guarded by prerequisites.
+"""Growth automation orchestrator - independent steps, structured results.
 
-Default-on for tasks/lottery/travel/redeem, off for buddy_open. Each step is
-independent: a prerequisite miss is a silent skip, not an error. Redeem tier
-(default 28d) is configurable via runtime settings.
+Each step returns a structured dict with status + detail + optional metrics.
+Steps are independent: a prerequisite miss is a silent skip, not an error.
+Redeem tier (default 28d) is configurable via runtime settings.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from .growth import GrowthUnavailableError, WorkBuddyGrowthClient
 logger = logging.getLogger("qb2api.checkin.growth_automation")
 
 _REDEEM_DAYS = {"7d": 7, "14d": 14, "28d": 28}
+_STEP_KEYS = ("tasks", "lottery", "travel", "redeem", "buddy_open")
 
 
 class GrowthAutomation:
@@ -40,16 +41,10 @@ class GrowthAutomation:
             await self._client.aclose()
 
     async def run(self, access_token: str) -> dict[str, Any]:
-        """Execute all enabled steps. Returns per-step status; never raises."""
-        results: dict[str, str] = {
-            "tasks": "skipped", "lottery": "skipped",
-            "travel": "skipped", "redeem": "skipped",
-            "buddy_open": "skipped",
-        }
+        """执行所有已启用步骤，返回结构化结果。"""
+        results: dict[str, Any] = {key: _skipped() for key in _STEP_KEYS}
         if not access_token:
             return {**results, "error": "access_token_missing"}
-        if not self._enabled():
-            return results
         try:
             overview = await self._client.fetch(access_token)
         except Exception as error:
@@ -76,28 +71,45 @@ class GrowthAutomation:
             )
         return results
 
-    def _enabled(self) -> bool:
-        return any((
-            self._settings.growth_auto_tasks, self._settings.growth_auto_lottery,
-            self._settings.growth_auto_travel, self._settings.growth_auto_redeem,
-            self._settings.growth_auto_buddy_open,
-        ))
+    async def run_step(self, access_token: str, step: str) -> dict[str, Any]:
+        """只执行单个步骤，返回该步骤的结构化结果。"""
+        if step not in _STEP_KEYS:
+            return {"status": "failed", "detail": f"unknown_step:{step}"}
+        if not access_token:
+            return {"status": "failed", "detail": "access_token_missing"}
+        try:
+            overview = await self._client.fetch(access_token)
+        except Exception as error:
+            return {"status": "failed", "detail": f"fetch_failed:{type(error).__name__}"}
+        handlers: dict[str, Callable[[], Awaitable[dict[str, Any]]]] = {
+            "tasks": lambda: self._step_tasks(access_token, overview),
+            "lottery": lambda: self._step_lottery(access_token, overview),
+            "travel": lambda: self._step_travel(access_token),
+            "redeem": lambda: self._step_redeem(access_token),
+            "buddy_open": lambda: self._step_buddy_open(access_token),
+        }
+        return await self._guard(handlers[step])
 
-    async def _guard(self, operation: Callable[[], Awaitable[str]]) -> str:
+    async def _guard(self, operation: Callable[[], Awaitable[dict[str, Any]]]) -> dict[str, Any]:
         try:
             return await operation()
         except Exception as error:
             logger.warning("growth automation step failed: %s", type(error).__name__)
-            return f"failed:{type(error).__name__}"
+            return {"status": "failed", "detail": f"error:{type(error).__name__}"}
 
-    async def _step_tasks(self, token: str, overview: dict[str, Any]) -> str:
+    async def _step_tasks(self, token: str, overview: dict[str, Any]) -> dict[str, Any]:
         tasks = overview.get("tasks", [])
         if not isinstance(tasks, list):
-            return "invalid_tasks"
+            return {"status": "failed", "detail": "invalid_tasks"}
         tasks = [task for task in tasks if isinstance(task, dict)]
         accepted = await self._accept_pending(token, tasks)
         claimed = await self._claim_completed(token, tasks)
-        return f"accepted:{accepted} claimed:{claimed}"
+        return {
+            "status": "completed",
+            "accepted": accepted,
+            "claimed": claimed,
+            "detail": f"接受 {accepted} 个任务，领取 {claimed} 个奖励",
+        }
 
     async def _accept_pending(self, token: str, tasks: list[dict[str, Any]]) -> int:
         pending = [t["task_code"] for t in tasks
@@ -126,10 +138,10 @@ class GrowthAutomation:
                 continue
         return claimed
 
-    async def _step_lottery(self, token: str, overview: dict[str, Any]) -> str:
+    async def _step_lottery(self, token: str, overview: dict[str, Any]) -> dict[str, Any]:
         chances = (overview.get("lottery") or {}).get("available_chances") or 0
         if not chances:
-            return "no_chances"
+            return {"status": "no_chances", "drawn": 0, "available": 0, "detail": "暂无抽奖次数"}
         drawn = 0
         for _ in range(min(chances, 10)):
             try:
@@ -137,78 +149,94 @@ class GrowthAutomation:
                 drawn += 1
             except GrowthUnavailableError:
                 break
-        return f"drawn:{drawn}/{chances}"
+        return {
+            "status": "completed",
+            "drawn": drawn,
+            "available": chances,
+            "detail": f"抽奖 {drawn}/{chances} 次",
+        }
 
-    async def _step_travel(self, token: str) -> str:
+    async def _step_travel(self, token: str) -> dict[str, Any]:
         try:
             status = await self._client.travel_status(token)
         except GrowthUnavailableError as error:
-            return f"status_failed:{error}"
+            return {"status": "failed", "detail": f"status_failed:{error}"}
         state = status.get("state")
         if state == "arrived":
             return await self._claim_travel(token)
         if state == "traveling":
-            return "still_traveling"
-        return await self._depart_travel(token) if status.get("daily_limit_reached") is False else "daily_limit_reached"
+            return {"status": "skipped", "detail": "Buddy 正在旅行中"}
+        if status.get("daily_limit_reached") is False:
+            return await self._depart_travel(token)
+        return {"status": "daily_limit_reached", "detail": "今日旅行次数已用完"}
 
-    async def _claim_travel(self, token: str) -> str:
+    async def _claim_travel(self, token: str) -> dict[str, Any]:
         try:
             await self._client.travel_claim(token)
-            return "claimed"
+            return {"status": "completed", "detail": "旅行已结束，已领取奖励"}
         except GrowthUnavailableError as error:
-            return f"claim_failed:{error}"
+            return {"status": "failed", "detail": f"claim_failed:{error}"}
 
-    async def _depart_travel(self, token: str) -> str:
+    async def _depart_travel(self, token: str) -> dict[str, Any]:
         try:
             config = await self._client.travel_config(token)
             locations = config.get("locations") or []
             if not locations:
-                return "no_locations"
+                return {"status": "skipped", "detail": "暂无可用旅行地点"}
             first = locations[0]
             location_id = first.get("id") if isinstance(first, dict) else None
             if not isinstance(location_id, int):
-                return "invalid_location"
+                return {"status": "failed", "detail": "invalid_location"}
             await self._client.travel_depart(token, location_id)
-            return "departed"
+            return {"status": "completed", "detail": f"Buddy 已出发前往 {first.get('name', '未知地点')}"}
         except GrowthUnavailableError as error:
-            return f"depart_failed:{error}"
+            return {"status": "failed", "detail": f"depart_failed:{error}"}
 
-    async def _step_redeem(self, token: str) -> str:
+    async def _step_redeem(self, token: str) -> dict[str, Any]:
         tier = self._settings.growth_redeem_tier
         if tier == "off":
-            return "disabled"
+            return {"status": "skipped", "detail": "兑换已关闭"}
         required = _REDEEM_DAYS.get(tier)
         if not required:
-            return f"unknown_tier:{tier}"
+            return {"status": "failed", "detail": f"unknown_tier:{tier}"}
         try:
             summary = await self._client.redeem_summary(token)
         except GrowthUnavailableError as error:
-            return f"summary_failed:{error}"
+            return {"status": "failed", "detail": f"summary_failed:{error}"}
         remaining = summary.get("remaining_days") or 0
         if remaining < required:
-            return f"insufficient:{remaining}/{required}"
+            return {
+                "status": "insufficient",
+                "remaining_days": remaining,
+                "required_days": required,
+                "detail": f"连登 {remaining}/{required} 天，还差 {required - remaining} 天",
+            }
         tier_status_key = {"7d": "starter_status", "14d": "advanced_status", "28d": "legendary_status"}[tier]
         if summary.get(tier_status_key) == "unlocked":
             try:
                 await self._client.redeem(token, tier)
-                return f"redeemed:{tier}"
+                return {"status": "completed", "tier": tier, "detail": f"已兑换 {tier} 档奖励"}
             except GrowthUnavailableError as error:
-                return f"redeem_failed:{error}"
-        return f"locked:{tier}"
+                return {"status": "failed", "detail": f"redeem_failed:{error}"}
+        return {"status": "skipped", "detail": f"档位 {tier} 尚未解锁"}
 
-    async def _step_buddy_open(self, token: str) -> str:
+    async def _step_buddy_open(self, token: str) -> dict[str, Any]:
         try:
             quota = await self._client.buddy_quota(token)
         except GrowthUnavailableError as error:
-            return f"quota_failed:{error}"
+            return {"status": "failed", "detail": f"quota_failed:{error}"}
         affordable = quota.get("affordable") or 0
         if not affordable:
-            return "not_affordable"
+            return {"status": "skipped", "detail": "能量不足，无法抽取 Buddy"}
         try:
             await self._client.buddy_open(token, count=min(affordable, quota.get("max_open_count") or 1))
-            return f"opened:{affordable}"
+            return {"status": "completed", "opened": affordable, "detail": f"抽取了 {affordable} 个 Buddy"}
         except GrowthUnavailableError as error:
-            return f"open_failed:{error}"
+            return {"status": "failed", "detail": f"open_failed:{error}"}
+
+
+def _skipped() -> dict[str, Any]:
+    return {"status": "skipped", "detail": "未启用"}
 
 
 def _task_done(task: dict[str, Any]) -> bool:

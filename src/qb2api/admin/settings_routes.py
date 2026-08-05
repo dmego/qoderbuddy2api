@@ -42,6 +42,8 @@ SETTING_SCHEMA: dict[str, dict[str, Any]] = {
     "growth.auto_redeem": {"default": True, "apply_mode": "immediate", "type": bool},
     "growth.redeem_tier": {"default": "28d", "apply_mode": "immediate", "type": str},
     "growth.auto_buddy_open": {"default": False, "apply_mode": "immediate", "type": bool},
+    "growth.scheduler_enabled": {"default": True, "apply_mode": "immediate", "type": bool},
+    "growth.scheduler_interval_seconds": {"default": 1800, "apply_mode": "immediate", "type": int, "min": 600},
 }
 
 
