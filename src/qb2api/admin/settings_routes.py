@@ -36,6 +36,12 @@ SETTING_SCHEMA: dict[str, dict[str, Any]] = {
     "monitoring.metrics_interval_seconds": {"default": 900, "apply_mode": "immediate", "type": int},
     "usage.rollup_interval_seconds": {"default": 60, "apply_mode": "immediate", "type": int},
     "usage.detail_retention_days": {"default": 90, "apply_mode": "immediate", "type": int},
+    "growth.auto_tasks": {"default": True, "apply_mode": "immediate", "type": bool},
+    "growth.auto_lottery": {"default": True, "apply_mode": "immediate", "type": bool},
+    "growth.auto_travel": {"default": True, "apply_mode": "immediate", "type": bool},
+    "growth.auto_redeem": {"default": True, "apply_mode": "immediate", "type": bool},
+    "growth.redeem_tier": {"default": "28d", "apply_mode": "immediate", "type": str},
+    "growth.auto_buddy_open": {"default": False, "apply_mode": "immediate", "type": bool},
 }
 
 

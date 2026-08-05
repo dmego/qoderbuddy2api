@@ -8,6 +8,7 @@ APISIX 网关返回 401。
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 import httpx
@@ -80,6 +81,91 @@ class WorkBuddyGrowthClient:
             raise GrowthUnavailableError("upstream_error")
         data = body.get("data")
         return data if isinstance(data, dict) else {}
+
+    async def _post(self, path: str, headers: dict[str, str], body: dict[str, Any] | None = None) -> dict[str, Any]:
+        try:
+            response = await self._client.post(
+                f"{self.base_url}{path}", headers=headers, json=body or {},
+            )
+        except httpx.HTTPError as error:
+            raise GrowthUnavailableError(f"transport:{type(error).__name__}") from error
+        resp_body = parse_json_body(response.text)
+        if response.status_code == 401:
+            raise GrowthUnavailableError("auth_rejected")
+        if not 200 <= response.status_code < 300:
+            raise GrowthUnavailableError(f"http:{response.status_code}")
+        if not isinstance(resp_body, dict) or resp_body.get("code") not in (0, "0"):
+            raise GrowthUnavailableError("upstream_error")
+        data = resp_body.get("data")
+        return data if isinstance(data, dict) else {}
+
+    async def accept_tasks(self, access_token: str, task_codes: list[str]) -> dict[str, Any]:
+        return await self._post(
+            "/activity/growth/tasks/accept", self._headers(access_token),
+            {"task_codes": task_codes},
+        )
+
+    async def claim_task(self, access_token: str, task_code: str) -> dict[str, Any]:
+        return await self._post(
+            f"/activity/growth/tasks/{task_code}/claim", self._headers(access_token),
+        )
+
+    async def lottery_draw(self, access_token: str) -> dict[str, Any]:
+        token = f"draw-{uuid.uuid4()}"
+        return await self._post(
+            "/activity/growth/lottery/draw", self._headers(access_token),
+            {"client_token": token},
+        )
+
+    async def travel_depart(self, access_token: str, location_id: int) -> dict[str, Any]:
+        return await self._post(
+            "/activity/growth/buddy/travel/depart", self._headers(access_token),
+            {"location_id": location_id},
+        )
+
+    async def travel_claim(self, access_token: str) -> dict[str, Any]:
+        return await self._post(
+            "/activity/growth/buddy/travel/claim", self._headers(access_token),
+        )
+
+    async def redeem(self, access_token: str, tier: str) -> dict[str, Any]:
+        token = f"redeem-{tier}-{uuid.uuid4()}"
+        return await self._post(
+            "/activity/growth/redeem", self._headers(access_token),
+            {"tier": tier, "client_token": token},
+        )
+
+    async def buddy_open(self, access_token: str, count: int = 1) -> dict[str, Any]:
+        return await self._post(
+            "/activity/growth/buddy/open", self._headers(access_token),
+            {"count": count},
+        )
+
+    async def makeup_use(self, access_token: str, target_date: str) -> dict[str, Any]:
+        return await self._post(
+            "/activity/growth/makeup-cards/use", self._headers(access_token),
+            {"target_date": target_date},
+        )
+
+    async def travel_status(self, access_token: str) -> dict[str, Any]:
+        return await self._get(
+            "/activity/growth/buddy/travel/status", self._headers(access_token),
+        )
+
+    async def travel_config(self, access_token: str) -> dict[str, Any]:
+        return await self._get(
+            "/activity/growth/buddy/travel/config", self._headers(access_token),
+        )
+
+    async def redeem_summary(self, access_token: str) -> dict[str, Any]:
+        return await self._get(
+            "/activity/growth/redeem/summary", self._headers(access_token),
+        )
+
+    async def buddy_quota(self, access_token: str) -> dict[str, Any]:
+        return await self._get(
+            "/activity/growth/buddy/quota", self._headers(access_token),
+        )
 
 
 def _profile(data: dict[str, Any]) -> dict[str, Any]:

@@ -151,6 +151,12 @@ def _observability_values() -> dict[str, object]:
         "log_requests": _env_bool("QB2API_LOG_REQUESTS", True),
         "log_dir": os.getenv("QB2API_LOG_DIR", "./logs"),
         "model_config_path": os.getenv("QB2API_MODEL_CONFIG", "./config/models.json"),
+        "growth_auto_tasks": _env_bool("GROWTH_AUTO_TASKS", True),
+        "growth_auto_lottery": _env_bool("GROWTH_AUTO_LOTTERY", True),
+        "growth_auto_travel": _env_bool("GROWTH_AUTO_TRAVEL", True),
+        "growth_auto_redeem": _env_bool("GROWTH_AUTO_REDEEM", True),
+        "growth_redeem_tier": os.getenv("GROWTH_REDEEM_TIER", "28d"),
+        "growth_auto_buddy_open": _env_bool("GROWTH_AUTO_BUDDY_OPEN", False),
     }
 
 
@@ -240,6 +246,14 @@ class Settings:
 
     # Model config
     model_config_path: str = "./config/models.json"
+
+    # Growth automation (WorkBuddy 成长中心自动化)
+    growth_auto_tasks: bool = True
+    growth_auto_lottery: bool = True
+    growth_auto_travel: bool = True
+    growth_auto_redeem: bool = True
+    growth_redeem_tier: str = "28d"
+    growth_auto_buddy_open: bool = False
 
     @property
     def api_key(self) -> str | None:

@@ -219,20 +219,7 @@ async def growth_overview(provider: str, account_id: str, request: Request) -> d
     """实时拉取 WorkBuddy 成长中心任务与档案（只读）。"""
     await require_admin(request)
     state = admin_state(request)
-    if find_account_view(state, provider, account_id) is None:
-        raise HTTPException(status_code=404, detail="account_not_found")
-    if provider != "codebuddy":
-        raise HTTPException(status_code=400, detail="unsupported_provider")
-    try:
-        credential = await state.credential_resolver.credential("codebuddy", account_id, "checkin")
-    except LookupError:
-        try:
-            credential = await state.credential_resolver.credential("codebuddy", account_id, "chat")
-        except LookupError:
-            raise HTTPException(status_code=400, detail="credential_missing")
-    token = credential.payload.get("access_token") or credential.payload.get("token")
-    if not isinstance(token, str) or not token.strip():
-        raise HTTPException(status_code=400, detail="access_token_missing")
+    token = await _resolve_codebuddy_token(state, provider, account_id)
     from qb2api.checkin.growth import GrowthUnavailableError, WorkBuddyGrowthClient
     client = WorkBuddyGrowthClient(
         base_url=state.settings.codebuddy_checkin_base,
@@ -245,6 +232,45 @@ async def growth_overview(provider: str, account_id: str, request: Request) -> d
     finally:
         await client.aclose()
     return result
+
+
+@router.post("/accounts/{provider}/{account_id}/growth/execute")
+async def growth_execute(provider: str, account_id: str, request: Request) -> dict[str, Any]:
+    """手动触发一次成长中心自动化（accept/claim/lottery/travel/redeem）。"""
+    await require_admin(request)
+    state = admin_state(request)
+    if provider != "codebuddy":
+        raise HTTPException(status_code=400, detail="unsupported_provider")
+    if state.account_registry.is_env_account(provider, account_id):
+        raise HTTPException(status_code=400, detail="env_account_read_only")
+    token = await _resolve_codebuddy_token(state, provider, account_id)
+    from qb2api.checkin.growth_automation import GrowthAutomation
+    automation = GrowthAutomation(settings=state.settings)
+    try:
+        result = await automation.run(token)
+    finally:
+        await automation.close()
+    return {"status": "ok", "result": result}
+
+
+async def _resolve_codebuddy_token(state: Any, provider: str, account_id: str) -> str:
+    if find_account_view(state, provider, account_id) is None:
+        raise HTTPException(status_code=404, detail="account_not_found")
+    if provider != "codebuddy":
+        raise HTTPException(status_code=400, detail="unsupported_provider")
+    token = None
+    for purpose in ("checkin", "chat"):
+        try:
+            credential = await state.credential_resolver.credential("codebuddy", account_id, purpose)
+        except LookupError:
+            continue
+        candidate = credential.payload.get("access_token") or credential.payload.get("token")
+        if isinstance(candidate, str) and candidate.strip():
+            token = candidate
+            break
+    if not isinstance(token, str) or not token.strip():
+        raise HTTPException(status_code=400, detail="access_token_missing")
+    return token
 
 
 @router.post("/accounts/{provider}/{account_id}/refresh")

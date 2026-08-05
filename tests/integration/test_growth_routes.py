@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from qb2api.checkin import growth as growth_mod
+from qb2api.checkin import growth_automation as automation_mod
 
 
 def _headers() -> dict[str, str]:
@@ -78,3 +79,59 @@ async def test_growth_overview_rejects_non_codebuddy_provider(admin_context) -> 
         )
     assert response.status_code == 400
     assert response.json()["detail"] == "unsupported_provider"
+
+
+@pytest.mark.asyncio
+async def test_growth_execute_runs_automation_for_manual_account(admin_context, monkeypatch) -> None:
+    app, repository, vault, registry = admin_context
+    account_id = "cb-growth-execute"
+    await repository.upsert_account(
+        provider="codebuddy", account_id=account_id, label=account_id,
+        source="manual", enabled=True,
+    )
+    await repository.upsert_credential(
+        provider="codebuddy", account_id=account_id, purpose="chat", mode="bearer",
+        encrypted_payload=vault.encrypt({"access_token": "execute-token"}),
+    )
+    await registry.rebuild()
+    calls: list[str] = []
+
+    class FakeAutomation:
+        def __init__(self, *, settings):
+            assert settings is app.state.settings
+
+        async def run(self, token):
+            calls.append(token)
+            return {"tasks": "skipped"}
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(automation_mod, "GrowthAutomation", FakeAutomation)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://test"
+    ) as client:
+        response = await client.post(
+            f"/api/admin/accounts/codebuddy/{account_id}/growth/execute",
+            headers=_headers(), json={},
+        )
+
+    assert response.status_code == 200
+    assert calls == ["execute-token"]
+    assert response.json()["result"] == {"tasks": "skipped"}
+
+
+@pytest.mark.asyncio
+async def test_growth_execute_rejects_env_account(admin_context) -> None:
+    app, _repository, _vault, registry = admin_context
+    registry.set_env_tokens(codebuddy_tokens=["env-token"])
+    await registry.rebuild()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://test"
+    ) as client:
+        response = await client.post(
+            "/api/admin/accounts/codebuddy/cb-env-0/growth/execute",
+            headers=_headers(), json={},
+        )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "env_account_read_only"

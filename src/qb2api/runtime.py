@@ -11,6 +11,7 @@ from .admin.backup import BackupService
 from .admin.sessions import AdminSessionStore
 from .auth.codebuddy_oauth import CodeBuddyOAuthClient
 from .auth.flows import FlowStore
+from .checkin.growth_automation import GrowthAutomation
 from .checkin.metrics import MetricsScheduler
 from .checkin.scheduler import CheckinScheduler
 from .checkin.service import CheckinService
@@ -127,6 +128,7 @@ class RuntimeServices:
             registry=self.account_registry,
             resolver=self.credential_resolver,
             vault=self.credential_vault,
+            growth_automation=GrowthAutomation(settings=self.settings),
         )
         self.checkin_scheduler = CheckinScheduler(self.checkin_service, self.settings)
         self.checkin_scheduler.start()

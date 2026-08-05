@@ -20,6 +20,8 @@ _RANGE_RULES = {
     "checkin.retry_limit": (0, 10, "checkin retry limit must be between 0 and 10"),
 }
 
+_REDEEM_TIERS = frozenset({"7d", "14d", "28d", "off"})
+
 
 def _validate_range(key: str, value: Any) -> None:
     rule = _RANGE_RULES.get(key)
@@ -49,6 +51,12 @@ class SettingsApplier:
         "monitoring.metrics_history_retention_days": "metrics_history_retention_days",
         "usage.rollup_interval_seconds": "usage_rollup_interval_seconds",
         "usage.detail_retention_days": "usage_detail_retention_days",
+        "growth.auto_tasks": "growth_auto_tasks",
+        "growth.auto_lottery": "growth_auto_lottery",
+        "growth.auto_travel": "growth_auto_travel",
+        "growth.auto_redeem": "growth_auto_redeem",
+        "growth.redeem_tier": "growth_redeem_tier",
+        "growth.auto_buddy_open": "growth_auto_buddy_open",
     }
     _SCHEDULER_KEYS = frozenset(
         {
@@ -73,6 +81,8 @@ class SettingsApplier:
             parse_checkin_at(value)
         if key == "checkin.timezone":
             ZoneInfo(value)
+        if key == "growth.redeem_tier" and value not in _REDEEM_TIERS:
+            raise ValueError("growth.redeem_tier must be 7d, 14d, 28d, or off")
         _validate_range(key, value)
 
     @classmethod
