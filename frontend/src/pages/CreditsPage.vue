@@ -17,6 +17,13 @@ type Metric = { provider: string; account_id: string; metric_kind: string; statu
 type HistoryRow = { observed_at: string; status: string; value: Record<string, unknown> | null };
 type HistoryResult = { key: string; provider: string; account_id: string; rows: HistoryRow[]; error?: string };
 type Preset = "24h" | "7d" | "30d" | "custom";
+type QuotaDetail = { total?: number; used?: number; remaining?: number; available?: number; percentage?: number; unit?: string; cap?: number; expires_at?: string };
+type CreditPackage = { name?: string; remaining?: number; total?: number; used?: number; available?: number; cap?: number; unit?: string; expires_at?: string };
+type MetricValue = {
+  unit?: string; total_remaining?: number; expires_at?: string;
+  packages?: CreditPackage[];
+  user_quota?: QuotaDetail; add_on_quota?: QuotaDetail; org_resource_package?: QuotaDetail;
+};
 
 const provider = ref("");
 const accountSearch = ref("");
@@ -157,6 +164,44 @@ function accountLabel(key: string): string { const item = accounts.data.value?.a
 function clearFilters(): void { provider.value = ""; accountSearch.value = ""; selectedAccount.value = ""; preset.value = "7d"; customFrom.value = ""; customTo.value = ""; }
 async function refreshData(): Promise<void> { await Promise.all([accounts.refetch(), metrics.refetch(), histories.refetch()]); }
 async function refreshView(): Promise<void> { await refreshData(); notify("积分视图已刷新", { tone: "info" }); }
+
+const selectedMetric = computed(() => {
+  if (!selectedAccount.value) return null;
+  const [p, aid] = selectedAccount.value.split(":");
+  return metrics.data.value?.snapshots?.find((m) => m.provider === p && m.account_id === aid) ?? null;
+});
+const creditPackages = computed<CreditPackage[]>(() => {
+  const value = selectedMetric.value?.value as MetricValue | null | undefined;
+  if (!value) return [];
+  const providerName = selectedAccount.value.split(":")[0];
+  if (providerName === "qoder") {
+    const quota = value;
+    const packages: CreditPackage[] = [
+      ...(quota.packages ?? []).filter((item) => !isQuotaSummaryPackage(item.name)),
+      ...(quota.user_quota ? [{ name: "用户积分", ...quota.user_quota }] : []),
+      ...(quota.add_on_quota ? [{ name: "附加积分", ...quota.add_on_quota }] : []),
+      ...(quota.org_resource_package ? [{ name: "组织积分", ...quota.org_resource_package }] : []),
+    ];
+    return dedupePackages(packages);
+  }
+  return dedupePackages(value.packages ?? []);
+});
+function isQuotaSummaryPackage(name?: string): boolean { return ["user_quota", "add_on_quota", "org_resource_package"].includes(name ?? ""); }
+function dedupePackages(packages: CreditPackage[]): CreditPackage[] {
+  const seen = new Set<string>();
+  return packages.filter((item) => {
+    const key = [item.name, item.total, item.used, item.remaining, item.expires_at].join("|");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+function formatPackageAmount(value?: number): string { return typeof value === "number" ? value.toLocaleString() : "--"; }
+function formatExpiry(expiresAt?: string): string | null {
+  if (!expiresAt) return null;
+  const d = new Date(expiresAt);
+  return Number.isNaN(d.getTime()) ? null : d.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
 </script>
 
 <template>
@@ -170,7 +215,7 @@ async function refreshView(): Promise<void> { await refreshData(); notify("积�
 
     <section class="data-panel"><PanelHeader title="积分变化曲线" :description="`${selectedAccount ? accountLabel(selectedAccount) : '全部账号汇总'} · ${chart.values.length} 个有效采样点`" /><div v-if="histories.isPending.value" class="loading-row">正在读取积分历史…</div><div v-else-if="histories.isError.value" class="data-state data-state--error">积分历史读取失败。<button class="secondary-button compact-button" type="button" @click="histories.refetch()">重试</button></div><div v-else-if="!chart.labels.length" class="compact-empty">当前筛选时间内没有可用积分采样点。</div><MetricChart v-else :labels="chart.labels" :values="chart.values" /></section>
 
-    <section class="data-panel"><PanelHeader title="账号积分" :description="`${currentRows.length} 个账号 · 最近快照`" /><div v-if="accounts.isPending.value || metrics.isPending.value" class="loading-row">正在读取账号积分…</div><div v-else-if="!currentRows.length" class="compact-empty">没有匹配的账号。</div><div v-else class="table-wrap"><table class="data-table credits-table"><thead><tr><th>账号</th><th>服务商</th><th>当前积分</th><th>窗口变化</th><th>采集时间</th><th>状态</th></tr></thead><tbody><tr v-for="row in currentRows" :key="`${row.account.provider}:${row.account.account_id}`" :class="{ selected: selectedAccount === `${row.account.provider}:${row.account.account_id}` }" @click="selectedAccount = `${row.account.provider}:${row.account.account_id}`"><td><button class="table-link" type="button"><strong>{{ row.account.label }}</strong><small>{{ row.account.account_id }} · {{ row.account.masked_identity ?? '无身份掩码' }}</small></button></td><td><span class="provider-mark" :class="`provider-mark--${row.account.provider}`">{{ row.account.provider }}</span></td><td><strong class="credit-value">{{ formatNumber(row.total) }}</strong><small>{{ row.unit }}</small></td><td :class="row.change !== null && row.change < 0 ? 'value-negative' : 'value-positive'"><span v-if="row.change !== null">{{ row.change < 0 ? '↓' : '↑' }} {{ formatChange(row.change) }}</span><span v-else>--</span></td><td>{{ row.observedAt ? row.observedAt.slice(5, 16).replace('T', ' ') : '--' }}</td><td><StatePill :value="row.status" /></td></tr></tbody></table></div></section>
+    <section class="data-panel"><PanelHeader title="账号积分" :description="`${currentRows.length} 个账号 · 最近快照`" /><div v-if="accounts.isPending.value || metrics.isPending.value" class="loading-row">正在读取账号积分…</div><div v-else-if="!currentRows.length" class="compact-empty">没有匹配的账号。</div><template v-else><div class="table-wrap"><table class="data-table credits-table"><thead><tr><th>账号</th><th>服务商</th><th>当前积分</th><th>窗口变化</th><th>采集时间</th><th>状态</th></tr></thead><tbody><template v-for="row in currentRows" :key="`${row.account.provider}:${row.account.account_id}`"><tr :class="{ selected: selectedAccount === `${row.account.provider}:${row.account.account_id}` }" @click="selectedAccount = `${row.account.provider}:${row.account.account_id}`"><td><button class="table-link" type="button"><strong>{{ row.account.label }}</strong><small>{{ row.account.account_id }} · {{ row.account.masked_identity ?? '无身份掩码' }}</small></button></td><td><span class="provider-mark" :class="`provider-mark--${row.account.provider}`">{{ row.account.provider }}</span></td><td><strong class="credit-value">{{ formatNumber(row.total) }}</strong><small>{{ row.unit }}</small></td><td :class="row.change !== null && row.change < 0 ? 'value-negative' : 'value-positive'"><span v-if="row.change !== null">{{ row.change < 0 ? '↓' : '↑' }} {{ formatChange(row.change) }}</span><span v-else>--</span></td><td>{{ row.observedAt ? row.observedAt.slice(5, 16).replace('T', ' ') : '--' }}</td><td><StatePill :value="row.status" /></td></tr><tr v-if="selectedAccount === `${row.account.provider}:${row.account.account_id}`" class="credits-detail-row"><td colspan="6"><div v-if="!creditPackages.length" class="compact-empty">尚无积分包明细。</div><div v-else class="table-wrap credits-detail-wrap"><table class="data-table credits-detail-table"><thead><tr><th>名称</th><th>总量</th><th>已用</th><th>剩余</th><th>到期</th></tr></thead><tbody><tr v-for="(item, index) in creditPackages" :key="`${item.name}-${index}`"><td><strong>{{ item.name ?? `积分包 ${index + 1}` }}</strong></td><td>{{ formatPackageAmount(item.total ?? item.cap) }}<small>{{ item.unit ?? "credits" }}</small></td><td>{{ formatPackageAmount(item.used) }}</td><td>{{ formatPackageAmount(item.remaining ?? item.available) }}</td><td>{{ formatExpiry(item.expires_at) ?? "--" }}</td></tr></tbody></table></div></td></tr></template></tbody></table></div></template></section>
 
     <OperationStatus :operation="lastOperation" />
     <NotificationRegion :notifications="notifications" @dismiss="dismiss" />
@@ -187,5 +232,12 @@ async function refreshView(): Promise<void> { await refreshData(); notify("积�
 .credits-table td small { display: block; margin-top: 4px; color: var(--faint); font-size: var(--text-xs); }
 .credits-table tr { cursor: pointer; }
 .credit-value { color: var(--text); font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.credits-detail-row td { padding: 0 !important; background: var(--surface-raised); border-top: 0; }
+.credits-detail-wrap { padding: 8px 14px 12px; }
+.credits-detail-table { min-width: 480px; }
+.credits-detail-table th, .credits-detail-table td { padding: 7px 12px; font-size: 11px; white-space: nowrap; }
+.credits-detail-table th { color: var(--muted); font-size: 10px; font-weight: 600; letter-spacing: .02em; }
+.credits-detail-table td strong { color: var(--text); font-size: 12px; font-weight: 600; }
+.credits-detail-table td small { display: block; margin-top: 2px; color: var(--faint); font-size: 10px; }
 @media (max-width: 760px) { .refresh-control { width: 100%; justify-content: space-between; } .refresh-control select { flex: 1; } }
 </style>
