@@ -50,6 +50,7 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
                 request=chat_request,
                 context=context,
                 request_logger=state.request_logger,
+                settings=state.settings,
             ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},

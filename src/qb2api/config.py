@@ -148,6 +148,7 @@ def _observability_values() -> dict[str, object]:
         "metrics_history_retention_days": _env_int("QB2API_METRICS_HISTORY_RETENTION_DAYS", 90),
         "usage_rollup_interval_seconds": _env_int("QB2API_USAGE_ROLLUP_INTERVAL_SECONDS", 60),
         "usage_detail_retention_days": _env_int("QB2API_USAGE_DETAIL_RETENTION_DAYS", 90),
+        "stream_reasoning": _env_bool("QB2API_STREAM_REASONING", False),
         "log_requests": _env_bool("QB2API_LOG_REQUESTS", True),
         "log_dir": os.getenv("QB2API_LOG_DIR", "./logs"),
         "model_config_path": os.getenv("QB2API_MODEL_CONFIG", "./config/models.json"),
@@ -242,6 +243,9 @@ class Settings:
     metrics_history_retention_days: int = 90
     usage_rollup_interval_seconds: int = 60
     usage_detail_retention_days: int = 90
+
+    # Streaming — forward reasoning_content when QB2API_STREAM_REASONING=1
+    stream_reasoning: bool = False
 
     # Logging
     log_requests: bool = True
