@@ -15,6 +15,13 @@ from .models import (
     VerificationStatus,
 )
 from .promote import promote_env_account
+from .qoder_model_sync import (
+    SyncReport,
+    UpstreamModel,
+    convert_upstream_models,
+    fetch_qoder_models,
+    sync_qoder_models,
+)
 from .registry import AccountRegistry
 from .repository import AccountRepository, CredentialVersionConflict
 from .resolver import CredentialResolver
@@ -37,6 +44,11 @@ __all__ = [
     "PurposeName",
     "PurposeRecord",
     "PurposeStatus",
+    "SyncReport",
+    "UpstreamModel",
     "VerificationStatus",
+    "convert_upstream_models",
+    "fetch_qoder_models",
     "promote_env_account",
+    "sync_qoder_models",
 ]

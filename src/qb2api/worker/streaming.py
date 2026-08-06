@@ -6,6 +6,7 @@ import json
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from typing import Any
 
 from qb2api.anthropic_stream import anthropic_error_sse, openai_stream_to_anthropic
 from qb2api.logger import RequestLogger
@@ -30,12 +31,16 @@ async def openai_stream(
     request: ChatCompletionRequest,
     context: StreamLogContext,
     request_logger: RequestLogger | None,
+    keep_reasoning: bool | None = None,
+    settings: Any | None = None,
 ) -> AsyncIterator[bytes]:
     start = time.time()
     success, error = True, None
+    keep = keep_reasoning if keep_reasoning is not None else getattr(settings, "stream_reasoning", False)
     try:
         async for chunk in provider.stream(request):
-            yield chunk if isinstance(chunk, bytes) else str(chunk).encode()
+            raw = chunk if isinstance(chunk, bytes) else str(chunk).encode()
+            yield _filter_reasoning(raw, keep=keep)
     except ProviderUnavailableError as exc:
         success, error = False, str(exc)
         yield _openai_error(error, "provider_unavailable")
@@ -81,6 +86,23 @@ async def anthropic_stream(
             error=error,
             duration=time.time() - start,
         )
+
+
+def _filter_reasoning(chunk: bytes, *, keep: bool) -> bytes:
+    if keep:
+        return chunk
+    line = chunk.decode("utf-8", errors="replace").strip()
+    if not line.startswith("data:") or line.startswith("data: [DONE]"):
+        return chunk
+    try:
+        payload = json.loads(line[5:].strip())
+    except json.JSONDecodeError:
+        return chunk
+    for choice in payload.get("choices", []):
+        delta = choice.get("delta")
+        if isinstance(delta, dict):
+            delta.pop("reasoning_content", None)
+    return f"data: {json.dumps(payload)}\n\n".encode()
 
 
 def _openai_error(message: str, error_type: str) -> bytes:

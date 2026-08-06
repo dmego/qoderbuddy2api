@@ -8,9 +8,11 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
+from qb2api.accounts.qoder_model_sync import sync_qoder_models
 from qb2api.models import load_models_from_config
 from qb2api.openai import ChatCompletionRequest, ChatMessage
 from qb2api.provider_factory import ProviderFactory
+from qb2api.providers.qoder_auth import QoderError
 
 from .catalog_filters import filter_models
 from .dependencies import admin_state, require_admin
@@ -113,6 +115,44 @@ async def refresh_models(request: Request) -> dict[str, Any]:
             resource_id="catalog",
         )
     return {"status": "succeeded", "refreshed": count}
+
+
+@router.post("/sync/{provider}")
+async def sync_upstream_models(provider: str, request: Request) -> dict[str, Any]:
+    await require_admin(request)
+    if provider != "qoder":
+        raise HTTPException(status_code=400, detail="unsupported_provider")
+    state = admin_state(request)
+    try:
+        report = await sync_qoder_models(
+            state.account_repo,
+            state.account_registry,
+            state.credential_resolver,
+        )
+    except QoderError as error:
+        await _audit(
+            request,
+            action="model.sync",
+            resource_type=provider,
+            resource_id="catalog",
+            result="failed",
+            metadata={"error_code": error.status_code},
+        )
+        raise HTTPException(status_code=error.status_code, detail="sync_failed") from error
+    await _audit(
+        request,
+        action="model.sync",
+        resource_type=provider,
+        resource_id="catalog",
+        metadata={"added": report.added, "updated": report.updated, "disabled": report.disabled},
+    )
+    return {
+        "status": "succeeded",
+        "added": report.added,
+        "updated": report.updated,
+        "disabled": report.disabled,
+        "models": report.models,
+    }
 
 
 @router.post("/{provider}/{model_id}/probe")

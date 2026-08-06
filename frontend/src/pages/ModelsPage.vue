@@ -50,6 +50,14 @@ const refresh = useMutation({
   onSuccess: async (result) => { lastOperation.value = { action: "刷新模型目录", ...result }; notify("模型目录已刷新", { message: `${result.refreshed ?? "目录"} 个定义已处理`, tone: "success" }); await queryClient.invalidateQueries({ queryKey: ["models"] }); },
   onError: (error) => notify("模型目录刷新失败", { message: String(error), tone: "error" }),
 });
+const syncUpstream = useMutation({
+  mutationFn: () => apiRequest<{ added: number; updated: number; disabled: number }>("/models/sync/qoder", { method: "POST" }),
+  onSuccess: async (result) => {
+    notify("上游同步完成", { message: `新增 ${result.added} · 更新 ${result.updated} · 停用 ${result.disabled}`, tone: "success" });
+    await queryClient.invalidateQueries({ queryKey: ["models"] });
+  },
+  onError: (error) => notify("上游同步失败", { message: String(error).includes("401") || String(error).includes("403") ? "Qoder 凭据失效，请在账号页检查" : String(error), tone: "error" }),
+});
 const toggle = useMutation({
   mutationFn: (model: Model) => apiRequest<Record<string, unknown>>(`/models/${encodeURIComponent(model.provider)}/${encodeURIComponent(model.model_id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !model.enabled }) }),
   onSuccess: async (result, model) => { lastOperation.value = { action: `${model.enabled ? "停用" : "启用"}模型`, status: "succeeded", model_id: model.model_id, ...result }; notify(`模型已${model.enabled ? "停用" : "启用"}`, { message: model.model_id, tone: "success" }); selected.value = null; await queryClient.invalidateQueries({ queryKey: ["models"] }); },
@@ -71,7 +79,7 @@ function errorRate(summary?: UsageSummary): string { if (!summary?.request_count
   <section class="page-content">
     <header class="page-header">
       <div><h1>模型管理</h1><p>控制模型可见性，核对发现来源，并通过固定最小请求验证上游可用性。</p></div>
-      <div class="header-actions"><button class="secondary-button" type="button" :disabled="models.isFetching.value" @click="models.refetch()"><RefreshCcw :class="{ spin: models.isFetching.value }" :size="16" />读取目录</button><button type="button" :disabled="refresh.isPending.value" @click="refresh.mutate()"><Boxes :size="16" />刷新目录</button></div>
+      <div class="header-actions"><button class="secondary-button" type="button" :disabled="models.isFetching.value" @click="models.refetch()"><RefreshCcw :class="{ spin: models.isFetching.value }" :size="16" />读取目录</button><button type="button" :disabled="refresh.isPending.value" @click="refresh.mutate()"><Boxes :size="16" />刷新目录</button><button type="button" :disabled="syncUpstream.isPending.value || (provider !== '' && provider !== 'qoder')" aria-label="从上游同步" @click="syncUpstream.mutate()"><RefreshCcw :class="{ spin: syncUpstream.isPending.value }" :size="16" />从上游同步</button></div>
     </header>
 
     <section class="data-panel filter-panel">
@@ -79,7 +87,7 @@ function errorRate(summary?: UsageSummary): string { if (!summary?.request_count
       <div class="filter-grid filter-grid--six">
         <label class="filter-search">模型名称或 ID<div class="input-with-icon"><Search :size="15" /><input v-model="draftSearch" placeholder="输入后回车搜索" @keyup.enter="applySearch" /></div></label>
         <label>服务提供方<select v-model="provider" @change="reset"><option value="">全部</option><option value="codebuddy">CodeBuddy</option><option value="qoder">Qoder</option></select></label>
-        <label>来源<select v-model="source" @change="reset"><option value="">全部</option><option value="definition">定义文件</option><option value="discovered">上游发现</option></select></label>
+        <label>来源<select v-model="source" @change="reset"><option value="">全部</option><option value="definition">定义文件</option><option value="discovered">上游发现</option><option value="upstream">上游同步</option></select></label>
         <label>状态<select v-model="enabled" @change="reset"><option value="">全部</option><option value="true">启用</option><option value="false">停用</option></select></label>
         <label>能力<select v-model="capability" @change="reset"><option value="">全部</option><option value="chat">对话</option><option value="streaming">流式输出</option><option value="tools">工具调用</option></select></label>
         <div class="filter-actions"><button type="button" @click="applySearch"><Search :size="15" />应用</button><button class="secondary-button" type="button" @click="clearFilters"><X :size="15" />清除</button></div>

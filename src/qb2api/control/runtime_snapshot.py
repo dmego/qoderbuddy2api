@@ -6,7 +6,7 @@ import logging
 from typing import Any
 
 from qb2api.admin.crypto import hash_token
-from qb2api.models import load_models_from_config
+from qb2api.models import ModelCapabilities, ModelDefinition, load_models_from_config
 from qb2api.runtime import RuntimeServices
 from qb2api.runtime_snapshot import RuntimeProxyKey, RuntimeSlot, RuntimeSnapshot
 
@@ -44,6 +44,9 @@ class RuntimeSnapshotService:
         else:
             slots.extend(_env_slots(self._runtime.settings))
         models = load_models_from_config(self._runtime.settings.model_config_path)
+        upstream = await self._upstream_catalog_models()
+        if upstream:
+            models = _merge_upstream_models(models, upstream)
         proxy_keys, proxy_auth_required = await self._proxy_keys()
         return RuntimeSnapshot(
             snapshot_version=self._version,
@@ -54,6 +57,18 @@ class RuntimeSnapshotService:
             proxy_keys=proxy_keys,
             proxy_auth_required=proxy_auth_required,
         )
+
+    async def _upstream_catalog_models(self) -> list[ModelDefinition]:
+        """Provider-catalog models merged into the snapshot with upstream metadata."""
+        repository = self._runtime.account_repo
+        if repository is None:
+            return []
+        models: list[ModelDefinition] = []
+        for row in await repository.list_models("qoder"):
+            model = _to_model_definition(row)
+            if model is not None:
+                models.append(model)
+        return models
 
     async def _proxy_keys(self) -> tuple[tuple[RuntimeProxyKey, ...], bool]:
         keys: list[RuntimeProxyKey] = []
@@ -80,6 +95,53 @@ def _primary_token(provider: str, payload: dict[str, Any]) -> str | None:
     if provider == "qoder":
         return payload.get("pat") or payload.get("access_token")
     return payload.get("access_token") or payload.get("token")
+
+
+def _merge_upstream_models(
+    models: dict[str, list[ModelDefinition]],
+    upstream: list[ModelDefinition],
+) -> dict[str, list[ModelDefinition]]:
+    """Merge upstream catalog models into config models; upstream wins by id."""
+    merged = {model.id: model for model in upstream}
+    merged.update(
+        {model.id: model for model in models.get("qoder", []) if model.id not in merged}
+    )
+    result = {key: list(value) for key, value in models.items()}
+    result["qoder"] = list(merged.values())
+    return result
+
+
+def _to_model_definition(row: dict[str, Any]) -> ModelDefinition | None:
+    """Convert one upstream catalog row into a ModelDefinition, or None when filtered."""
+    if row.get("source") != "upstream" or not row.get("enabled"):
+        return None
+    capabilities = row.get("capabilities") or []
+    metadata = row.get("metadata") or {}
+    return ModelDefinition(
+        id=row["model_id"],
+        name=row.get("display_name") or row["model_id"],
+        provider="qoder",
+        capabilities=ModelCapabilities(
+            **{
+                name: name in capabilities
+                for name in (
+                    "chat",
+                    "streaming",
+                    "tool_calling",
+                    "reasoning",
+                    "reasoning_effort",
+                    "context_window",
+                    "max_output_tokens",
+                )
+            }
+        ),
+        max_context=int(metadata.get("default_context_window") or 0) or 128000,
+        max_output=4096,
+        metadata={
+            "cosy_key": metadata.get("cosy_key"),
+            "default_effort": metadata.get("default_effort"),
+        },
+    )
 
 
 def _env_slots(settings: Any) -> list[RuntimeSlot]:

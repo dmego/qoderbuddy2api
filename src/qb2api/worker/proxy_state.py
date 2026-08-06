@@ -16,6 +16,7 @@ from qb2api.config import Settings
 from qb2api.logger import RequestLogger
 from qb2api.models import ModelDefinition
 from qb2api.providers import DynamicProviderPool, ProviderRegistry
+from qb2api.providers.qoder_payload import set_runtime_model_keys
 from qb2api.runtime_snapshot import RuntimeSnapshot
 
 from .control_client import ControlPlaneClient
@@ -53,6 +54,7 @@ class ProxyState:
         application.state.runtime = self.runtime
         application.state.proxy_state = self
         self._build_model_index()
+        self._sync_runtime_model_keys()
         logger.info("proxy worker started with providers: %s", self.registry.providers)
 
     async def close(self) -> None:
@@ -67,6 +69,7 @@ class ProxyState:
         await self.runtime.apply(snapshot)
         self.model_definitions = {key: list(value) for key, value in snapshot.models.items()}
         self._build_model_index()
+        self._sync_runtime_model_keys()
 
     def verify_proxy_auth(self, authorization: str | None) -> bool:
         if self.runtime is None:
@@ -111,6 +114,14 @@ class ProxyState:
                 continue
             definitions = self.model_definitions.get(provider_name, [])
             self.model_index[provider_name] = {model.id for model in definitions}
+
+    def _sync_runtime_model_keys(self) -> None:
+        mapping = {
+            model.id: model.metadata["cosy_key"]
+            for model in self.model_definitions.get("qoder", [])
+            if model.metadata and model.metadata.get("cosy_key")
+        }
+        set_runtime_model_keys(mapping)
 
     def _resolve_prefixed(self, model: str) -> tuple[str, str]:
         provider_name, model_id = model.split("/", 1)

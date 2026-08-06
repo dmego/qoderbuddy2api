@@ -2,7 +2,8 @@
 
 - 日期：2026-08-05
 - 严重级别：Low（仅影响显示，不影响数据）
-- 状态：待处理（记录观察，非阻塞）
+- 状态：已实现（2026-08-06，落地于 docs/superpowers/plans/2026-08-06-qoder-model-sync-and-reasoning-passthrough.md）
+- 实现摘要：`openai_stream` 新增 `keep_reasoning`/`settings` 参数，默认按 `Settings.stream_reasoning=False` 剥离 `delta.reasoning_content`（`QB2API_STREAM_REASONING=1` 可恢复透传）；`_filter_reasoning` 只处理 `data:` JSON 行，`[DONE]`/非 data 行原样透传；非流式聚合路径（sse.py）与 Anthropic 转换路径（仅消费 content/tool_calls）不受影响。
 
 ## 现象
 
