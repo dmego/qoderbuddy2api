@@ -33,11 +33,8 @@ async def test_disabled_automation_does_not_fetch() -> None:
         growth_auto_buddy_open=False,
     )
     result = await GrowthAutomation(settings, client).run("token")
-    assert result == {
-        "tasks": "skipped", "lottery": "skipped",
-        "travel": "skipped", "redeem": "skipped",
-        "buddy_open": "skipped",
-    }
+    for key in ("tasks", "lottery", "travel", "redeem", "buddy_open"):
+        assert result[key] == {"status": "skipped", "detail": "未启用"}
 
 
 @pytest.mark.asyncio
@@ -49,5 +46,25 @@ async def test_step_failure_isolated_and_sanitized() -> None:
         growth_auto_buddy_open=False,
     )
     result = await GrowthAutomation(settings, client).run("token")
-    assert result["travel"] == "failed:RuntimeError"
+    assert result["travel"]["status"] == "failed"
     assert "test failure" not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_run_step_executes_single_step() -> None:
+    client = FakeGrowthClient({"tasks": [], "lottery": {"available_chances": 0}})
+    settings = Settings()
+    automation = GrowthAutomation(settings, client)
+    result = await automation.run_step("token", "lottery")
+    assert result["status"] == "no_chances"
+    assert result["detail"] == "暂无抽奖次数"
+
+
+@pytest.mark.asyncio
+async def test_run_step_rejects_unknown_step() -> None:
+    client = FakeGrowthClient({})
+    settings = Settings()
+    automation = GrowthAutomation(settings, client)
+    result = await automation.run_step("token", "bogus")
+    assert result["status"] == "failed"
+    assert "unknown_step" in result["detail"]

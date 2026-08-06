@@ -57,6 +57,8 @@ class SettingsApplier:
         "growth.auto_redeem": "growth_auto_redeem",
         "growth.redeem_tier": "growth_redeem_tier",
         "growth.auto_buddy_open": "growth_auto_buddy_open",
+        "growth.scheduler_enabled": "growth_scheduler_enabled",
+        "growth.scheduler_interval_seconds": "growth_scheduler_interval_seconds",
     }
     _SCHEDULER_KEYS = frozenset(
         {
@@ -83,6 +85,8 @@ class SettingsApplier:
             ZoneInfo(value)
         if key == "growth.redeem_tier" and value not in _REDEEM_TIERS:
             raise ValueError("growth.redeem_tier must be 7d, 14d, 28d, or off")
+        if key == "growth.scheduler_interval_seconds" and value < 600:
+            raise ValueError("growth.scheduler_interval_seconds must be >= 600")
         _validate_range(key, value)
 
     @classmethod
@@ -106,6 +110,11 @@ class SettingsApplier:
                 )
             if key.startswith("usage.") and self.runtime.usage_rollup_service:
                 self.runtime.usage_rollup_service.reconfigure()
+            if key.startswith("growth.scheduler_") and self.runtime.growth_scheduler:
+                if key == "growth.scheduler_enabled":
+                    await self.runtime.growth_scheduler.reconfigure(enabled=value)
+                else:
+                    await self.runtime.growth_scheduler.reconfigure()
             if key == "service.worker.autostart":
                 return {"status": "restart_required", "restart_required": True}
             if key == "service.worker.start_timeout_seconds":

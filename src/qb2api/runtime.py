@@ -12,6 +12,7 @@ from .admin.sessions import AdminSessionStore
 from .auth.codebuddy_oauth import CodeBuddyOAuthClient
 from .auth.flows import FlowStore
 from .checkin.growth_automation import GrowthAutomation
+from .checkin.growth_scheduler import GrowthScheduler
 from .checkin.metrics import MetricsScheduler
 from .checkin.scheduler import CheckinScheduler
 from .checkin.service import CheckinService
@@ -31,6 +32,7 @@ class RuntimeServices:
         self.credential_resolver: CredentialResolver | None = None
         self.checkin_service: CheckinService | None = None
         self.checkin_scheduler: CheckinScheduler | None = None
+        self.growth_scheduler: GrowthScheduler | None = None
         self.metrics_scheduler: MetricsScheduler | None = None
         self.backup_service: BackupService | None = None
         self.usage_rollup_service: UsageRollupService | None = None
@@ -128,10 +130,10 @@ class RuntimeServices:
             registry=self.account_registry,
             resolver=self.credential_resolver,
             vault=self.credential_vault,
-            growth_automation=GrowthAutomation(settings=self.settings),
         )
         self.checkin_scheduler = CheckinScheduler(self.checkin_service, self.settings)
         self.checkin_scheduler.start()
+        self._start_growth_services()
 
     def _start_metrics_services(self) -> None:
         if not all((self.account_repo, self.account_registry, self.credential_resolver)):
@@ -146,6 +148,21 @@ class RuntimeServices:
             self.checkin_service.set_metrics_refresher(self.metrics_scheduler.refresh_once)
         self.metrics_scheduler.start()
 
+    def _start_growth_services(self) -> None:
+        if not all(
+            (self.account_repo, self.account_registry, self.credential_resolver)
+        ):
+            return
+        self.growth_scheduler = GrowthScheduler(
+            settings=self.settings,
+            automation=GrowthAutomation(settings=self.settings),
+            registry=self.account_registry,
+            resolver=self.credential_resolver,
+            repo=self.account_repo,
+            metrics_refresh=self.metrics_scheduler.refresh_once if self.metrics_scheduler else None,
+        )
+        self.growth_scheduler.start()
+
     async def refresh_accounts(self) -> None:
         if self.account_registry is not None:
             await self.account_registry.rebuild()
@@ -155,7 +172,8 @@ class RuntimeServices:
         for name in (
             "settings", "account_repo", "credential_vault", "account_registry",
             "credential_resolver", "admin_sessions", "login_limiter", "oauth_flows",
-            "codebuddy_oauth", "checkin_service", "checkin_scheduler", "metrics_scheduler",
+            "codebuddy_oauth", "checkin_service", "checkin_scheduler", "growth_scheduler",
+            "metrics_scheduler",
             "backup_service", "usage_rollup_service",
         ):
             setattr(app.state, name, getattr(self, name))
@@ -168,6 +186,8 @@ class RuntimeServices:
         self._closed = True
         if self.checkin_scheduler is not None:
             await self.checkin_scheduler.stop()
+        if self.growth_scheduler is not None:
+            await self.growth_scheduler.stop()
         await self._cancel_metric_refresh_tasks()
         if self.metrics_scheduler is not None:
             await self.metrics_scheduler.stop()

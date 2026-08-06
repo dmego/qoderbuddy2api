@@ -282,6 +282,18 @@ CREATE TABLE IF NOT EXISTS backup_runs (
     sha256 TEXT,
     error_message TEXT
 );
+
+CREATE TABLE IF NOT EXISTS growth_automation_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    triggered_by TEXT NOT NULL,
+    results_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_growth_log_account
+    ON growth_automation_log(provider, account_id, created_at DESC);
 """
 
 SCHEMA = BASE_SCHEMA + MANAGEMENT_SCHEMA
