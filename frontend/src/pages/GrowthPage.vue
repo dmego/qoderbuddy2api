@@ -138,11 +138,15 @@ function cellTitle(cell: HeatmapCell): string {
 
 function taskStatus(task: GrowthTask): string {
   if (task.locked) return "locked";
-  if (task.reward_claimed || task.claimed || task.is_claimed || task.receive_status === "claimed" || task.receive_status === "received") return "completed";
-  if (task.has_reward) return "claimable";
+  const status = task.accept_status?.trim().toLowerCase();
+  if (status === "claimed" || task.reward_claimed || task.claimed || task.is_claimed || task.receive_status === "claimed" || task.receive_status === "received") return "completed";
+  if (status === "completed") return task.has_reward ? "claimable" : "completed";
+  if (status === "not_accepted") return "not_accepted";
+  if (status === "accepted" || status === "in_progress") return "in_progress";
   const c = task.progress_current, t = task.progress_target;
-  if (typeof c === "number" && typeof t === "number" && c >= t) return "completed";
-  if (task.accept_status === "not_accepted") return "not_accepted";
+  const done = typeof c === "number" && typeof t === "number" && c >= t;
+  if (task.has_reward && done) return "claimable";
+  if (done) return "completed";
   return "in_progress";
 }
 

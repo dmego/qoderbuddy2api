@@ -18,7 +18,7 @@ from qb2api.accounts.imports import (
 from qb2api.accounts.repo_credentials import CredentialVersionConflict
 from qb2api.auth.codebuddy_oauth import CodeBuddyOAuthError
 from qb2api.auth.flows import FlowBusyError
-from qb2api.checkin.models import SUCCESS_OUTCOMES, CheckInOutcome
+from qb2api.checkin.models import SUCCESS_OUTCOMES
 
 from .dependencies import admin_state, require_admin
 from .import_support import (
@@ -301,11 +301,7 @@ async def qoder_checkin_import(request: Request) -> dict[str, Any]:
     )
     refresh_token = required_string(body, "refresh_token", detail="refresh_token_required")
     await _require_qoder_account(state, account_id)
-    probe = await state.checkin_service.qoder_client.status(
-        access_token=access_token,
-        account_id=account_id,
-    )
-    if probe.outcome not in {CheckInOutcome.ALREADY_CHECKED_IN, CheckInOutcome.SKIPPED}:
+    if not await verify_qoder_checkin(state, account_id, access_token):
         raise HTTPException(status_code=400, detail="checkin_credential_rejected")
     await persist_qoder_checkin(
         state.account_repo,

@@ -133,12 +133,49 @@ async def test_qoder_refresh_401_needs_reauth():
 
 
 @pytest.mark.asyncio
+async def test_qoder_refresh_invalid_token_400_needs_reauth():
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: _json_response(
+                400,
+                {
+                    "errorCode": "BadRequest",
+                    "errorMessage": "invalid refresh_token: must start with drt-",
+                },
+                request,
+            )
+        )
+    ) as http:
+        result = await QoderCheckinClient(client=http).refresh(refresh_token="jrt-old")
+
+    assert result.outcome == CheckInOutcome.NEEDS_REAUTH
+    assert result.message == "Qoder refresh credential rejected"
+
+
+@pytest.mark.asyncio
 async def test_qoder_status_401_needs_reauth():
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(lambda request: _json_response(401, {}, request))
     ) as http:
         result = await QoderCheckinClient(client=http).checkin(access_token="expired")
     assert result.outcome == CheckInOutcome.NEEDS_REAUTH
+
+
+@pytest.mark.asyncio
+async def test_qoder_status_token_expire_400_needs_reauth():
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: _json_response(
+                400,
+                {"code": "TOKEN_EXPIRE", "message": "token is not active"},
+                request,
+            )
+        )
+    ) as http:
+        result = await QoderCheckinClient(client=http).checkin(access_token="expired")
+
+    assert result.outcome == CheckInOutcome.NEEDS_REAUTH
+    assert result.business_code == "TOKEN_EXPIRE"
 
 
 @pytest.mark.asyncio

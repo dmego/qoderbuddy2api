@@ -140,6 +140,10 @@ class CheckinService:
         local_date = self.local_date_str()
         timezone = self._settings.checkin_timezone
         states = await self._repo.list_checkin_daily_states(local_date, timezone)
+        account_errors = {
+            (item.provider, item.account_id): item.purposes.get("checkin", {}).get("last_error")
+            for item in self._registry.list_views()
+        }
         return {
             "enabled": self._settings.checkin_enabled,
             "running": self._running,
@@ -155,6 +159,7 @@ class CheckinService:
                     "account_id": slot.account_id,
                     "status": slot.status,
                     "verification_status": slot.verification_status,
+                    "last_error": account_errors.get((slot.provider, slot.account_id)),
                 }
                 for slot in self._batch_executor.eligible_slots()
             ],

@@ -184,6 +184,23 @@ describe("AccountImportPanel", () => {
     expect(wrapper.text()).toContain("签到未能自动启用");
   });
 
+  it("explains rejected Qoder check-in credentials", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => response({ detail: "checkin_credential_rejected" }, 400)));
+    const wrapper = mount(AccountImportPanel, {
+      props: { provider: "qoder", accountId: "qd-demo" },
+      global: { plugins: [createPinia()] },
+    });
+
+    await wrapper.findAll("details").find((details) => details.text().includes("手动导入签到凭据"))?.find("summary").trigger("click");
+    await wrapper.get('input[aria-label="Qoder Access Token"]').setValue("access");
+    await wrapper.get('input[aria-label="Qoder 刷新令牌"]').setValue("refresh");
+    await wrapper.findAll("button").find((button) => button.text().includes("验证并启用"))?.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("签到凭据验证失败");
+    expect(wrapper.text()).toContain("来自同一个 Qoder 账号");
+  });
+
 });
 
 function response(body: unknown, status = 200): Response {

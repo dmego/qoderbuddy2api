@@ -14,7 +14,7 @@ import StatePill from "@/components/StatePill.vue";
 import { appendQuery, useCursorPager } from "@/composables/useCursorPager";
 import { useNotifications } from "@/composables/useNotifications";
 
-type Account = { provider: string; account_id: string; label?: string; status: string; verification_status: string };
+type Account = { provider: string; account_id: string; label?: string; status: string; verification_status: string; last_error?: string };
 type DailyState = { provider: string; account_id: string; terminal_outcome?: string };
 type SchedulerStatus = { catch_up_decision?: string; active_run_id?: string; last_error?: string; last_run_at?: string };
 type MetricsStatus = { enabled: boolean; running: boolean; refresh_in_progress: boolean; last_error?: string; backoff: { metric: string; attempts: number; retry_at: string }[] };
@@ -58,7 +58,10 @@ function targetsBody(): { targets: { provider: string; account_id: string }[] } 
 function accountKey(account: Account): string { return `${account.provider}:${account.account_id}`; }
 function toggle(key: string): void { selected[key] = !selected[key]; }
 function toggleVisible(): void { const nextValue = !allVisibleSelected.value; visibleAccounts.value.forEach((item) => { selected[accountKey(item)] = nextValue; }); }
-function dailyOutcome(account: Account): string { return (status.data.value?.daily_states ?? []).find((item) => item.provider === account.provider && item.account_id === account.account_id)?.terminal_outcome ?? "pending"; }
+function dailyOutcome(account: Account): string {
+  const state = (status.data.value?.daily_states ?? []).find((item) => item.provider === account.provider && item.account_id === account.account_id);
+  return state?.terminal_outcome ?? (account.last_error === "qoder_checkin_disabled" ? account.last_error : "pending");
+}
 function clearAccountFilters(): void { accountSearch.value = ""; accountProvider.value = ""; accountStatus.value = ""; }
 function confirmExecution(): void { confirmRun.value = false; run.mutate(); }
 function attemptStatus(attempt: CheckinAttempt): string {
@@ -66,6 +69,14 @@ function attemptStatus(attempt: CheckinAttempt): string {
   if (attempt.quota_change_status === "claimed_balance_unchanged") return "已领取，余额未变化";
   if (attempt.quota_change_status === "claimed_balance_pending") return "已领取，余额待刷新";
   if (attempt.quota_change_status === "already_checked_in") return "今日已签到";
+  if (attempt.error_code === "qoder_checkin_disabled") return "Qoder 今日签到活动已关闭";
+  if (attempt.outcome === "needs_reauth" || attempt.error_code === "qoder_checkin_reauth_required") {
+    return "签到凭据已失效，请重新派生或导入";
+  }
+  if (attempt.provider === "qoder" && attempt.http_status === 400) {
+    return "Qoder 今日签到不可用，请重新派生凭据或等待活动恢复";
+  }
+  if (attempt.http_status === 400) return "上游拒绝请求，请重新执行确认";
   return attempt.error_code ?? "--";
 }
 function attemptReward(attempt: CheckinAttempt): string {
@@ -90,7 +101,7 @@ function attemptDelta(attempt: CheckinAttempt): string {
     <div v-if="status.data.value?.metrics?.backoff.length" class="data-state data-state--warning">指标退避：{{ status.data.value?.metrics?.backoff.length }} 个采集项等待重试。</div>
 
     <section class="data-panel filter-panel">
-      <PanelHeader title="可签到账号" description="只列出每日签到用途已验证且启用的账号。"><Filter :size="17" /></PanelHeader><div class="filter-grid filter-grid--four"><label class="filter-search">账号<input v-model="accountSearch" placeholder="名称或账号 ID" /></label><label>服务提供方<select v-model="accountProvider"><option value="">全部</option><option value="codebuddy">CodeBuddy</option><option value="qoder">Qoder</option></select></label><label>今日状态<select v-model="accountStatus"><option value="">全部</option><option value="pending">待执行</option><option value="claimed">已签到</option><option value="already_checked_in">已完成</option><option value="failed">失败</option></select></label><div class="filter-actions"><button class="secondary-button" type="button" @click="clearAccountFilters"><X :size="15" />清除</button></div></div>
+      <PanelHeader title="可签到账号" description="只列出每日签到用途已验证且启用的账号。"><Filter :size="17" /></PanelHeader><div class="filter-grid filter-grid--four"><label class="filter-search">账号<input v-model="accountSearch" placeholder="名称或账号 ID" /></label><label>服务提供方<select v-model="accountProvider"><option value="">全部</option><option value="codebuddy">CodeBuddy</option><option value="qoder">Qoder</option></select></label><label>今日状态<select v-model="accountStatus"><option value="">全部</option><option value="pending">待执行</option><option value="claimed">已签到</option><option value="already_checked_in">已完成</option><option value="qoder_checkin_disabled">活动已关闭</option><option value="failed">失败</option></select></label><div class="filter-actions"><button class="secondary-button" type="button" @click="clearAccountFilters"><X :size="15" />清除</button></div></div>
       <PaginatedTable aria-label="可签到账号" :loading="status.isPending.value" :empty="!visibleAccounts.length" empty-title="暂无可签到账号" empty-description="请先导入签到凭据并完成验证，或调整筛选条件。" :page="targetPage" :page-size="targetPageSize" :total="filteredAccounts.length" :can-previous="targetPage > 1" :can-next="targetPage * targetPageSize < filteredAccounts.length" @previous="targetPage -= 1" @next="targetPage += 1"><template #header><tr><th><input type="checkbox" aria-label="选择当前页全部账号" :checked="allVisibleSelected" @change="toggleVisible" /></th><th>账号</th><th>服务提供方</th><th>验证</th><th>今日状态</th></tr></template><tr v-for="account in visibleAccounts" :key="accountKey(account)"><td><input type="checkbox" :aria-label="`选择 ${account.label ?? account.account_id}`" :checked="selected[accountKey(account)]" @change="toggle(accountKey(account))" /></td><td><strong>{{ account.label ?? account.account_id }}</strong><small class="mono">{{ account.account_id }}</small></td><td><span class="provider-mark" :class="`provider-mark--${account.provider}`">{{ account.provider }}</span></td><td><StatePill :value="account.verification_status" /></td><td><StatePill :value="dailyOutcome(account)" /></td></tr></PaginatedTable>
     </section>
 

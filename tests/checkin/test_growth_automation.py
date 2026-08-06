@@ -17,6 +17,13 @@ class FakeGrowthClient:
     async def fetch(self, _token):
         return self.overview
 
+    async def accept_tasks(self, _token, task_codes):
+        self.calls.extend(f"accept:{code}" for code in task_codes)
+
+    async def claim_task(self, _token, task_code):
+        self.calls.append(f"claim:{task_code}")
+        return {}
+
     async def aclose(self):
         return None
 
@@ -96,6 +103,28 @@ async def test_run_step_rejects_unknown_step() -> None:
     result = await automation.run_step("token", "bogus")
     assert result["status"] == "failed"
     assert "unknown_step" in result["detail"]
+
+
+@pytest.mark.asyncio
+async def test_claimed_tasks_are_not_claimed_again() -> None:
+    client = FakeGrowthClient({
+        "tasks": [
+            {"task_code": "already-claimed", "accept_status": "claimed",
+             "progress_current": 1, "progress_target": 1, "has_reward": True},
+            {"task_code": "ready-to-claim", "accept_status": "completed",
+             "progress_current": 1, "progress_target": 1, "has_reward": True},
+        ],
+    })
+    settings = Settings(
+        growth_auto_tasks=True, growth_auto_lottery=False,
+        growth_auto_travel=False, growth_auto_redeem=False,
+        growth_auto_buddy_open=False,
+    )
+
+    result = await GrowthAutomation(settings, client).run("token")
+
+    assert result["tasks"]["claimed"] == 1
+    assert client.calls == ["claim:ready-to-claim"]
 
 
 @pytest.mark.asyncio

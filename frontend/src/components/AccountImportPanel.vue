@@ -73,7 +73,7 @@ async function submitChat(): Promise<void> {
     }
     if (result.account) emit("saved", result.account);
   } catch (error) {
-    setMessage(String(error), true);
+    setMessage(importErrorMessage(error), true);
   } finally {
     pending.value = false;
   }
@@ -106,7 +106,7 @@ async function doSubmitCheckin(): Promise<void> {
     setMessage("签到凭据已验证并保存。", false);
     if (result.account) emit("saved", result.account);
   } catch (error) {
-    setMessage(String(error), true);
+    setMessage(importErrorMessage(error), true);
   } finally {
     pending.value = false;
   }
@@ -118,6 +118,14 @@ function chatEndpoint(): string {
 
 function checkinEndpoint(): string {
   return provider.value === "qoder" ? "/auth/qoder/checkin" : "/auth/codebuddy/checkin";
+}
+
+function importErrorMessage(error: unknown): string {
+  const message = String(error);
+  if (message.includes("checkin_credential_rejected")) {
+    return "签到凭据验证失败，请确认 Access Token 和 Refresh Token 来自同一个 Qoder 账号。若 Qoder 返回 DISABLED，表示活动关闭，不是凭据失效。";
+  }
+  return message;
 }
 
 async function startOAuth(): Promise<void> {

@@ -81,6 +81,18 @@ class _RacingRefreshQoderClient(_RefreshingQoderClient):
         )
 
 
+class _DisabledQoderClient(_RefreshingQoderClient):
+    async def checkin(self, *, access_token: str, account_id: str) -> CheckInResult:
+        return CheckInResult(
+            outcome=CheckInOutcome.FAILED,
+            provider="qoder",
+            account_id=account_id,
+            http_status=200,
+            raw_status="DISABLED",
+            message="Qoder daily check-in is disabled",
+        )
+
+
 @pytest.fixture
 async def qoder_context(tmp_path):
     repository = AccountRepository(str(tmp_path / "accounts.sqlite3"))
@@ -112,6 +124,120 @@ async def test_rate_limit_does_not_mark_purpose_needs_reauth(qoder_context) -> N
 
     assert result.outcome == CheckInOutcome.RATE_LIMITED
     assert checkin["status"] == "active"
+    await executor.close()
+
+
+@pytest.mark.asyncio
+async def test_invalid_refresh_marks_qoder_checkin_reauth(qoder_context) -> None:
+    repository, vault, registry = qoder_context
+    qoder = _RefreshingQoderClient(
+        refresh=RefreshResult(
+            http_status=400,
+            outcome=CheckInOutcome.NEEDS_REAUTH,
+            message="Qoder refresh credential rejected",
+        )
+    )
+    executor = _executor(repository, vault, registry, qoder=qoder)
+
+    result = await executor.run("qoder", "qd-main")
+    purposes = await repository.list_purposes("qoder", "qd-main")
+    checkin = next(item for item in purposes if item["purpose"] == "checkin")
+
+    assert result.outcome == CheckInOutcome.NEEDS_REAUTH
+    assert result.business_code == "qoder_checkin_reauth_required"
+    assert result.message == "Qoder 签到凭据已失效，请重新派生或导入"
+    assert checkin["status"] == "needs_reauth"
+    await executor.close()
+
+
+@pytest.mark.asyncio
+async def test_expired_qoder_credential_rederives_from_chat_pat(qoder_context, monkeypatch) -> None:
+    repository, vault, registry = qoder_context
+    async with repository.transaction():
+        await repository.upsert_purpose(
+            provider="qoder", account_id="qd-main", purpose="chat", enabled=True,
+            status="active", verification_status="not_required", capabilities=["proxy.chat"],
+        )
+        await repository.upsert_credential(
+            provider="qoder", account_id="qd-main", purpose="chat", mode="pat",
+            encrypted_payload=vault.encrypt({"pat": "pat-qd-main"}),
+        )
+    await registry.rebuild()
+
+    async def derive(pat: str) -> tuple[str, str]:
+        assert pat == "pat-qd-main"
+        return "derived-access", "derived-refresh"
+
+    monkeypatch.setattr("qb2api.checkin.executors.derive_qoder_checkin", derive, raising=False)
+    qoder = _RefreshingQoderClient(
+        refresh=RefreshResult(
+            http_status=400,
+            outcome=CheckInOutcome.NEEDS_REAUTH,
+            message="Qoder refresh credential rejected",
+        ),
+        success_token="derived-access",
+    )
+    executor = _executor(repository, vault, registry, qoder=qoder)
+
+    result = await executor.run("qoder", "qd-main")
+
+    assert result.outcome == CheckInOutcome.CLAIMED
+    assert qoder.access_tokens == ["access-qd-main", "derived-access"]
+    stored = await repository.get_credential("qoder", "qd-main", "checkin")
+    assert stored is not None
+    assert vault.decrypt(stored["encrypted_payload"]) == {
+        "access_token": "derived-access", "refresh_token": "derived-refresh",
+    }
+    await executor.close()
+
+
+@pytest.mark.asyncio
+async def test_missing_qoder_checkin_credential_derives_from_chat_pat(qoder_context, monkeypatch) -> None:
+    repository, vault, registry = qoder_context
+    await repository.delete_credential("qoder", "qd-main", "checkin")
+    async with repository.transaction():
+        await repository.upsert_purpose(
+            provider="qoder", account_id="qd-main", purpose="chat", enabled=True,
+            status="active", verification_status="not_required", capabilities=["proxy.chat"],
+        )
+        await repository.upsert_credential(
+            provider="qoder", account_id="qd-main", purpose="chat", mode="pat",
+            encrypted_payload=vault.encrypt({"pat": "pat-qd-main"}),
+        )
+    await registry.rebuild()
+
+    async def derive(pat: str) -> tuple[str, str]:
+        assert pat == "pat-qd-main"
+        return "derived-access", "derived-refresh"
+
+    monkeypatch.setattr("qb2api.checkin.executors.derive_qoder_checkin", derive)
+    qoder = _RefreshingQoderClient(refresh=RefreshResult(), success_token="derived-access")
+    executor = _executor(repository, vault, registry, qoder=qoder)
+
+    result = await executor.run("qoder", "qd-main")
+
+    assert result.outcome == CheckInOutcome.CLAIMED
+    assert qoder.access_tokens == ["derived-access"]
+    stored = await repository.get_credential("qoder", "qd-main", "checkin")
+    assert stored is not None
+    assert vault.decrypt(stored["encrypted_payload"])["refresh_token"] == "derived-refresh"
+    await executor.close()
+
+
+@pytest.mark.asyncio
+async def test_disabled_qoder_checkin_keeps_account_active_with_clear_error(qoder_context) -> None:
+    repository, vault, registry = qoder_context
+    executor = _executor(repository, vault, registry, qoder=_DisabledQoderClient(refresh=RefreshResult()))
+
+    result = await executor.run("qoder", "qd-main")
+    purposes = await repository.list_purposes("qoder", "qd-main")
+    checkin = next(item for item in purposes if item["purpose"] == "checkin")
+
+    assert result.outcome == CheckInOutcome.FAILED
+    assert result.business_code == "qoder_checkin_disabled"
+    assert result.message == "Qoder 今日签到活动已关闭"
+    assert checkin["status"] == "active"
+    assert checkin["last_error"] == "qoder_checkin_disabled"
     await executor.close()
 
 
@@ -221,8 +347,8 @@ async def test_terminal_refresh_auth_failure_records_once(qoder_context) -> None
 
     assert result.outcome == CheckInOutcome.NEEDS_REAUTH
     assert len(updates) == 1
-    assert updates[0]["last_error"] == "refresh_failed"
-    assert checkin["last_error"] == "refresh_failed"
+    assert updates[0]["last_error"] == "qoder_checkin_reauth_required"
+    assert checkin["last_error"] == "qoder_checkin_reauth_required"
     await executor.close()
 
 

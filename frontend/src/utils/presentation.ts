@@ -15,6 +15,8 @@ const statusLabels: Record<string, string> = {
   healthy: "运行正常",
   needs_reauth: "需要重新授权",
   no_expiry: "无到期时间",
+  qoder_checkin_disabled: "Qoder 签到活动已关闭",
+  qoder_checkin_reauth_required: "签到凭据已失效",
   pending: "待处理",
   rejected: "已拒绝",
   refresh: "可刷新",

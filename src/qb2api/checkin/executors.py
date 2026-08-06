@@ -16,6 +16,8 @@ from . import executor_helpers
 from .codebuddy import WorkBuddyClient
 from .models import SUCCESS_OUTCOMES, CheckInOutcome, CheckInResult, RefreshResult
 from .qoder import QoderCheckinClient
+from .qoder_credentials import derive_qoder_checkin
+from .qoder_status import is_usable_checkin_result
 
 logger = logging.getLogger("qb2api.checkin.executors")
 
@@ -100,31 +102,104 @@ class CheckinExecutor:
         except LookupError:
             return executor_helpers.missing_credential("qoder", account_id)
         access_token = credential.payload.get("access_token") or credential.payload.get("token")
-        if not access_token:
-            return executor_helpers.needs_reauth(
+        record_reauth = True
+        if access_token:
+            result = await self._qoder.checkin(
+                access_token=access_token,
+                account_id=account_id,
+            )
+            refresh_token = credential.payload.get("refresh_token")
+            if result.outcome == CheckInOutcome.NEEDS_REAUTH and refresh_token:
+                result, record_reauth = await self._refresh_qoder(
+                    account_id,
+                    credential=credential,
+                    refresh_token=refresh_token,
+                )
+        else:
+            result = executor_helpers.needs_reauth(
                 "qoder", account_id, "missing access_token"
             )
-        result = await self._qoder.checkin(
-            access_token=access_token,
-            account_id=account_id,
-        )
-        record_reauth = True
-        state_error = "auth_failed"
-        refresh_token = credential.payload.get("refresh_token")
-        if result.outcome == CheckInOutcome.NEEDS_REAUTH and refresh_token:
-            result, record_reauth = await self._refresh_qoder(
+        if result.outcome == CheckInOutcome.NEEDS_REAUTH:
+            result, record_reauth = await self._derive_qoder(
                 account_id,
                 credential=credential,
-                refresh_token=refresh_token,
+                record_reauth=record_reauth,
             )
-            state_error = "refresh_failed"
         await self._record_qoder_state(
             account_id,
             result,
             record_reauth=record_reauth,
-            state_error=state_error,
         )
         return result
+
+    async def _derive_qoder(
+        self,
+        account_id: str,
+        *,
+        credential: Any,
+        record_reauth: bool,
+    ) -> tuple[CheckInResult, bool]:
+        pat = await self._qoder_chat_pat(account_id)
+        if pat is None:
+            return self._qoder_reauth_result(account_id, "Qoder chat PAT missing"), record_reauth
+        derived = await derive_qoder_checkin(pat)
+        if derived is None:
+            return self._qoder_reauth_result(account_id, "Qoder check-in derivation failed"), record_reauth
+        access_token, refresh_token = derived
+        result = await self._qoder.checkin(
+            access_token=access_token,
+            account_id=account_id,
+        )
+        if not is_usable_checkin_result(result):
+            return result, True
+        await self._persist_derived_qoder(
+            account_id,
+            credential=credential,
+            access_token=access_token,
+            refresh_token=refresh_token,
+        )
+        return result, True
+
+    async def _qoder_chat_pat(self, account_id: str) -> str | None:
+        try:
+            credential = await self._resolver.credential("qoder", account_id, "chat")
+        except LookupError:
+            return None
+        pat = credential.payload.get("pat")
+        return pat.strip() if isinstance(pat, str) and pat.strip() else None
+
+    @staticmethod
+    def _qoder_reauth_result(account_id: str, message: str) -> CheckInResult:
+        return CheckInResult(
+            outcome=CheckInOutcome.NEEDS_REAUTH,
+            provider="qoder",
+            account_id=account_id,
+            message=message,
+        )
+
+    async def _persist_derived_qoder(
+        self,
+        account_id: str,
+        *,
+        credential: Any,
+        access_token: str,
+        refresh_token: str,
+    ) -> None:
+        current = await self._repo.get_credential("qoder", account_id, "checkin")
+        expected_version = int(current["credential_version"]) if current else 0
+        try:
+            await self._repo.upsert_credential(
+                provider="qoder", account_id=account_id, purpose="checkin",
+                mode="access_refresh",
+                encrypted_payload=self._vault.encrypt(
+                    {"access_token": access_token, "refresh_token": refresh_token}
+                ),
+                has_refresh_token=True, expires_at=credential.expires_at,
+                expected_version=expected_version,
+            )
+        except CredentialVersionConflict:
+            logger.info("qoder derivation CAS lost for account %s", account_id)
+        self._resolver.invalidate("qoder", account_id, "checkin")
 
     async def _refresh_qoder(
         self,
@@ -241,7 +316,6 @@ class CheckinExecutor:
         result: CheckInResult,
         *,
         record_reauth: bool,
-        state_error: str,
     ) -> None:
         if result.outcome in SUCCESS_OUTCOMES:
             await self._set_purpose(
@@ -251,15 +325,26 @@ class CheckinExecutor:
                 verification_status="verified",
                 success=True,
             )
+        elif result.raw_status and result.raw_status.upper() == "DISABLED":
+            result.business_code = "qoder_checkin_disabled"
+            result.message = "Qoder 今日签到活动已关闭"
+            await self._set_purpose(
+                provider="qoder",
+                account_id=account_id,
+                status="active",
+                last_error="qoder_checkin_disabled",
+            )
         elif record_reauth and result.outcome in {
             CheckInOutcome.AUTH_FAILED,
             CheckInOutcome.NEEDS_REAUTH,
         }:
+            result.business_code = "qoder_checkin_reauth_required"
+            result.message = "Qoder 签到凭据已失效，请重新派生或导入"
             await self._set_purpose(
                 provider="qoder",
                 account_id=account_id,
                 status="needs_reauth",
-                last_error=state_error,
+                last_error="qoder_checkin_reauth_required",
             )
 
     async def _set_purpose(

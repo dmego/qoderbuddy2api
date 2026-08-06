@@ -74,6 +74,25 @@ describe("CheckinPage", () => {
     expect(wrapper.text()).toContain("run-manual");
     wrapper.unmount();
   });
+
+  it("explains when Qoder has disabled the daily check-in", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/checkin/runs/run-qoder")) {
+        return response({ run: { run_id: "run-qoder", status: "finished" }, attempts: [{ provider: "qoder", account_id: "qd-1", outcome: "failed", http_status: 200, error_code: "qoder_checkin_disabled", attempts: 1 }] });
+      }
+      if (url.includes("/checkin/runs")) return response({ runs: [{ run_id: "run-qoder", started_at: "2026-08-06T02:48:00Z", status: "finished", trigger: "catch_up", attempt_count: 1, successful_count: 0 }], next_cursor: null });
+      return response({ enabled: true, running: false, local_date: "2026-08-06", timezone: "Asia/Shanghai", checkin_at: "10:30", eligible_accounts: [{ provider: "qoder", account_id: "qd-1", status: "active", verification_status: "verified", last_error: "qoder_checkin_disabled" }], daily_states: [] });
+    }));
+    const wrapper = mount(CheckinPage, { global: { plugins: [createPinia(), VueQueryPlugin] } });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Qoder 签到活动已关闭");
+    await wrapper.get('button[aria-label="查看批次 run-qoder"]').trigger("click");
+    await flushPromises();
+    expect(document.body.textContent).toContain("Qoder 今日签到活动已关闭");
+    wrapper.unmount();
+  });
 });
 
 function buttonWithText(wrapper: ReturnType<typeof mount>, text: string) {

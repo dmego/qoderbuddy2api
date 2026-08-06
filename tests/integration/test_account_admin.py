@@ -117,6 +117,25 @@ async def test_qoder_import_commits_verified_credential_and_redacts_response(adm
 
 
 @pytest.mark.asyncio
+async def test_qoder_import_accepts_disabled_checkin_campaign(admin_context) -> None:
+    app, repository, vault, registry = admin_context
+    account_id = await persist_qoder_chat(repository, vault, label="main", pat="pat-secret")
+    await registry.rebuild()
+    app.state.checkin_service = SimpleNamespace(qoder_client=_QoderProbe(CheckInResult(
+        outcome=CheckInOutcome.FAILED, provider="qoder", raw_status="DISABLED", http_status=200,
+    )))
+
+    response = await _post_qoder_checkin(app, account_id)
+
+    assert response.status_code == 200
+    purposes = await repository.list_purposes("qoder", account_id)
+    checkin = next(item for item in purposes if item["purpose"] == "checkin")
+    assert checkin["status"] == "active"
+    assert checkin["verification_status"] == "verified"
+    assert await repository.get_credential("qoder", account_id, "checkin") is not None
+
+
+@pytest.mark.asyncio
 async def test_codebuddy_manual_import_does_not_enable_unverified_checkin(admin_context) -> None:
     app, repository, _vault, _registry = admin_context
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://test") as client:
@@ -297,6 +316,35 @@ async def test_qoder_rederive_rejects_unverified_derived_token(
 
 
 @pytest.mark.asyncio
+async def test_qoder_rederive_accepts_disabled_checkin_campaign(
+    admin_context,
+    monkeypatch,
+) -> None:
+    app, repository, vault, registry = admin_context
+    account_id = await persist_qoder_chat(repository, vault, label="main", pat="pat-secret")
+    await registry.rebuild()
+    app.state.checkin_service = SimpleNamespace(qoder_client=_QoderProbe(CheckInResult(
+        outcome=CheckInOutcome.FAILED, provider="qoder", raw_status="DISABLED", http_status=200,
+    )))
+
+    async def derive(_settings: Settings, _pat: str) -> tuple[str, str]:
+        return "derived-access", "derived-refresh"
+
+    monkeypatch.setattr(account_routes, "derive_qoder_checkin", derive)
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://test") as client:
+        response = await client.post(
+            f"/api/admin/accounts/qoder/{account_id}/rederive-checkin",
+            headers=_headers(),
+        )
+
+    assert response.status_code == 200
+    credential = await repository.get_credential("qoder", account_id, "checkin")
+    assert credential is not None
+    assert vault.decrypt(credential["encrypted_payload"])["access_token"] == "derived-access"
+
+
+@pytest.mark.asyncio
 async def test_qoder_rederive_rejects_environment_account_before_deriving(
     admin_context,
     monkeypatch,
@@ -350,6 +398,10 @@ async def test_verify_qoder_checkin_accepts_claimed_today_and_rejects_failure(
     for outcome in rejected:
         state.checkin_service = make_probe(outcome)
         assert await import_support.verify_qoder_checkin(state, "acct", "tok") is False, outcome
+    state.checkin_service = SimpleNamespace(qoder_client=_QoderProbe(CheckInResult(
+        outcome=CheckInOutcome.FAILED, provider="qoder", raw_status="DISABLED", http_status=200,
+    )))
+    assert await import_support.verify_qoder_checkin(state, "acct", "tok") is True
 
 
 @pytest.mark.asyncio
@@ -431,4 +483,3 @@ async def test_qoder_derive_returns_none_when_authenticate_fails(monkeypatch) ->
         "pat-secret",
     )
     assert result is None
-

@@ -10,10 +10,11 @@ import httpx
 
 from .base import (
     classify_http_error,
+    extract_business_code,
     extract_message,
     extract_request_id,
 )
-from .models import CheckInOutcome, CheckInResult, RefreshResult
+from .models import SUCCESS_OUTCOMES, CheckInOutcome, CheckInResult, RefreshResult
 
 _ALREADY_STATUS = frozenset(
     {"CLAIMED_TODAY", "ALREADY_CLAIMED", "ALREADY_CHECKED_IN", "CHECKED_IN"}
@@ -51,6 +52,16 @@ def classify_status(
         account_id=account_id,
     )
     if not 200 <= status_code < 300:
+        if _status_requires_reauth(status_code, body):
+            return CheckInResult(
+                outcome=CheckInOutcome.NEEDS_REAUTH,
+                provider="qoder",
+                account_id=account_id,
+                http_status=status_code,
+                business_code=extract_business_code(body),
+                request_id=context.request_id,
+                message="authentication failed",
+            )
         return _http_error(context)
     status = _extract_value(body, _STATUS_KEYS)
     normalized = status.upper() if status else ""
@@ -116,8 +127,12 @@ def classify_refresh(
     if not 200 <= status_code < 300:
         return RefreshResult(
             http_status=status_code,
-            outcome=_refresh_error_outcome(status_code),
-            message=extract_message(body) or f"http {status_code}",
+            outcome=_refresh_error_outcome(status_code, body),
+            message=(
+                "Qoder refresh credential rejected"
+                if _refresh_requires_reauth(status_code, body)
+                else extract_message(body) or f"http {status_code}"
+            ),
         )
     access = _secret_value(body, ("device_token", "token", "access_token"))
     refresh = _secret_value(body, ("refresh_token",))
@@ -139,6 +154,13 @@ def is_claimable(result: CheckInResult) -> bool:
         result.outcome == CheckInOutcome.SKIPPED
         and result.raw_status
         and result.raw_status.upper() in _CLAIMABLE_STATUS
+    )
+
+
+def is_usable_checkin_result(result: CheckInResult) -> bool:
+    """A status that proves the credential is accepted by Qoder."""
+    return result.outcome in {*SUCCESS_OUTCOMES, CheckInOutcome.SKIPPED} or (
+        (result.raw_status or "").upper() == "DISABLED"
     )
 
 
@@ -187,6 +209,17 @@ def _http_error(context: _ResponseContext) -> CheckInResult:
         body=context.body,
         request_id=context.request_id,
     )
+
+
+def _status_requires_reauth(
+    status_code: int,
+    body: dict[str, Any] | None,
+) -> bool:
+    if status_code in {401, 403} or not body:
+        return status_code in {401, 403}
+    values = [body.get(key) for key in ("code", "errorCode", "message", "errorMessage", "msg")]
+    text = " ".join(str(value) for value in values if value).lower()
+    return "token_expire" in text or "token is not active" in text
 
 
 def _extract_value(
@@ -264,11 +297,27 @@ def _secret_value(
     return value.strip() if value and value.strip() else None
 
 
-def _refresh_error_outcome(status_code: int) -> CheckInOutcome:
+def _refresh_error_outcome(
+    status_code: int,
+    body: dict[str, Any] | None = None,
+) -> CheckInOutcome:
     if status_code in {401, 403}:
+        return CheckInOutcome.NEEDS_REAUTH
+    if _refresh_requires_reauth(status_code, body):
         return CheckInOutcome.NEEDS_REAUTH
     if status_code == 429:
         return CheckInOutcome.RATE_LIMITED
     if status_code >= 500:
         return CheckInOutcome.TRANSIENT_ERROR
     return CheckInOutcome.FAILED
+
+
+def _refresh_requires_reauth(
+    status_code: int,
+    body: dict[str, Any] | None,
+) -> bool:
+    if status_code != 400 or not body:
+        return False
+    values = [body.get(key) for key in ("errorCode", "errorMessage", "message", "msg")]
+    text = " ".join(str(value) for value in values if value).lower()
+    return "refresh_token" in text or "invalid refresh" in text

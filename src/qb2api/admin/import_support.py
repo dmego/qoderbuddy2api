@@ -8,9 +8,11 @@ from typing import Any
 from fastapi import HTTPException
 
 from qb2api.checkin.executor_helpers import workbuddy_client
-from qb2api.checkin.models import SUCCESS_OUTCOMES, CheckInOutcome
+from qb2api.checkin.models import SUCCESS_OUTCOMES
+from qb2api.checkin.qoder_credentials import derive_qoder_checkin as _derive_qoder_checkin
+from qb2api.checkin.qoder_status import is_usable_checkin_result
 from qb2api.config import Settings
-from qb2api.providers.qoder_auth import QoderError, QoderSession
+from qb2api.providers.qoder_auth import QoderSession
 
 from .validation import label
 
@@ -95,49 +97,8 @@ async def derive_qoder_checkin(
     settings: Settings,
     pat: str,
 ) -> tuple[str, str] | None:
-    """用 PAT 认证后派生签到凭据 (access_token, refresh_token)。
-
-    实测链路: PAT -> jobToken 响应里的 securityOauthToken (jt-) 即签到 access_token，
-    refreshToken (jrt-) 作为刷新凭据保留。不再依赖 deviceToken/refresh——该端点对
-    当前账号返回 400，且 jt- 已能直接通过签到 status/claim 与 quota 校验。
-    返回 None 表示派生失败，不阻塞 PAT 导入。
-    """
-    del settings  # 派生不再调用 qoder_client，保留参数以兼容调用方签名
-    session = QoderSession(pat)
-    try:
-        await session.authenticate()
-    except QoderError as error:
-        logger.warning(
-            "qoder checkin derive: authenticate failed (http=%s)",
-            error.status_code,
-        )
-        return None
-    except Exception as error:
-        logger.warning(
-            "qoder checkin derive: authenticate unexpected error: %s",
-            type(error).__name__,
-        )
-        return None
-    finally:
-        await session.close()
-
-    access_token = session.security_oauth_token
-    refresh_token = session.refresh_token
-    if not access_token:
-        logger.warning(
-            "qoder checkin derive: no securityOauthToken in jobToken response "
-            "(refreshToken present: %s)",
-            bool(refresh_token),
-        )
-        return None
-    if not refresh_token:
-        logger.warning(
-            "qoder checkin derive: no refreshToken in jobToken response "
-            "(securityOauthToken present: %s)",
-            bool(access_token),
-        )
-        return None
-    return access_token, refresh_token
+    del settings
+    return await _derive_qoder_checkin(pat, session_factory=QoderSession)
 
 
 async def verify_codebuddy_checkin(
@@ -188,4 +149,4 @@ async def verify_qoder_checkin(
         )
     except Exception:
         return False
-    return result.outcome in {*SUCCESS_OUTCOMES, CheckInOutcome.SKIPPED}
+    return is_usable_checkin_result(result)

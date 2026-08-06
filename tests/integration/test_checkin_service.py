@@ -95,6 +95,36 @@ async def test_has_pending_targets_returns_false_when_all_accounts_are_terminal(
 
 
 @pytest.mark.asyncio
+async def test_status_snapshot_exposes_qoder_checkin_error(checkin_context) -> None:
+    repository, vault = checkin_context
+    await seed(repository, vault, "qoder", "qd-disabled")
+    account_registry = await registry(repository, vault)
+    qoder = SequenceClient(
+        "qoder",
+        [
+            CheckInResult(
+                outcome=CheckInOutcome.FAILED,
+                provider="qoder",
+                account_id="qd-disabled",
+                http_status=200,
+                raw_status="DISABLED",
+            )
+        ],
+    )
+    checkin_service = service(
+        repository, vault, account_registry, workbuddy=SequenceClient("codebuddy", []),
+        qoder=qoder, codebuddy_enabled=False, qoder_enabled=True,
+    )
+
+    await checkin_service.run_batch(trigger="manual", skip_already_done=False)
+    snapshot = await checkin_service.status_snapshot()
+
+    account = snapshot["eligible_accounts"][0]
+    assert account["last_error"] == "qoder_checkin_disabled"
+    await checkin_service.close()
+
+
+@pytest.mark.asyncio
 async def test_growth_automation_only_runs_after_scheduled_success(checkin_context) -> None:
     repository, vault = checkin_context
     await seed(repository, vault, "codebuddy", "cb-growth")

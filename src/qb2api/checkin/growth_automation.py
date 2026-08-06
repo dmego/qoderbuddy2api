@@ -171,7 +171,7 @@ class GrowthAutomation:
 
     async def _accept_pending(self, token: str, tasks: list[dict[str, Any]]) -> int:
         pending = [t["task_code"] for t in tasks
-                    if t.get("accept_status") == "not_accepted"
+                    if _task_status(t) == "not_accepted"
                     and not t.get("locked") and t.get("task_code")]
         if not pending:
             return 0
@@ -312,6 +312,8 @@ def _skipped() -> dict[str, Any]:
 
 
 def _task_done(task: dict[str, Any]) -> bool:
+    if _task_status(task) in {"completed", "claimed"}:
+        return True
     current = task.get("progress_current")
     target = task.get("progress_target")
     if isinstance(current, (int, float)) and isinstance(target, (int, float)):
@@ -320,10 +322,17 @@ def _task_done(task: dict[str, Any]) -> bool:
 
 
 def _reward_already_claimed(task: dict[str, Any]) -> bool:
+    if _task_status(task) == "claimed":
+        return True
     if task.get("reward_claimed") or task.get("claimed") or task.get("is_claimed"):
         return True
-    receive_status = task.get("receive_status")
+    receive_status = str(task.get("receive_status") or "").strip().lower()
     return receive_status in ("claimed", "received")
+
+
+def _task_status(task: dict[str, Any]) -> str:
+    value = task.get("accept_status")
+    return str(value).strip().lower() if value is not None else ""
 
 
 def _extract_credits(result: dict[str, Any], fallback: Any = None) -> int:
