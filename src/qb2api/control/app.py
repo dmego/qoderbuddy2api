@@ -14,6 +14,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from qb2api.admin.auth import classify_path
 from qb2api.admin.legacy_config_routes import router as legacy_config_router
 from qb2api.admin.router import router as admin_router
 from qb2api.config import Settings
@@ -110,8 +111,8 @@ def _register_middleware(application: FastAPI) -> None:
 
 
 async def forward_proxy_requests(request: Request, call_next: Callable):
-    """Unified-port entry: forward /v1/* to the Proxy Worker."""
-    if not request.url.path.startswith("/v1/"):
+    """Unified-port entry: forward every proxy-classified path to the Proxy Worker."""
+    if classify_path(request.method, request.url.path) != "proxy_private":
         return await call_next(request)
     return await _relay_to_worker(request)
 

@@ -91,3 +91,88 @@ def test_non_v1_paths_are_not_forwarded():
 
     assert called is False
     assert response.status_code == 404
+
+
+def test_api_v1_models_forwarded_to_worker():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(
+            200,
+            json={"models": [{"id": "deepseek-v4-flash"}]},
+            headers={"content-type": "application/json"},
+        )
+
+    app = _app_with_mock_worker(handler)
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/v1/models", headers={"Authorization": "Bearer proxy-secret"}
+        )
+
+    assert response.status_code == 200
+    assert response.json()["models"][0]["id"] == "deepseek-v4-flash"
+    assert seen["url"] == "http://127.0.0.1:10001/api/v1/models"
+
+
+def test_api_tags_forwarded_to_worker():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(
+            200,
+            json={"models": [{"name": "deepseek-v4-flash"}]},
+            headers={"content-type": "application/json"},
+        )
+
+    app = _app_with_mock_worker(handler)
+    with TestClient(app) as client:
+        response = client.get("/api/tags", headers={"Authorization": "Bearer proxy-secret"})
+
+    assert response.status_code == 200
+    assert response.json()["models"][0]["name"] == "deepseek-v4-flash"
+    assert seen["url"] == "http://127.0.0.1:10001/api/tags"
+
+
+def test_api_show_forwarded_to_worker():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["body"] = request.content.decode()
+        return httpx.Response(
+            200,
+            json={"model": "deepseek-v4-flash"},
+            headers={"content-type": "application/json"},
+        )
+
+    app = _app_with_mock_worker(handler)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/show",
+            content='{"name": "deepseek-v4-flash"}',
+            headers={"Authorization": "Bearer proxy-secret", "Content-Type": "application/json"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["model"] == "deepseek-v4-flash"
+    assert seen["url"] == "http://127.0.0.1:10001/api/show"
+    assert '"name": "deepseek-v4-flash"' in seen["body"]
+
+
+def test_version_stays_on_control_plane():
+    called = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, text="unexpected")
+
+    app = _app_with_mock_worker(handler)
+    with TestClient(app) as client:
+        response = client.get("/version")
+
+    assert called is False
+    assert response.status_code == 200
+    assert response.json()["component"] == "control-plane"
