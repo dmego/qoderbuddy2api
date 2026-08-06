@@ -39,6 +39,9 @@ const metadata: Record<string, Meta> = {
   "growth.auto_redeem": { label: "自动兑换连登档位", description: "连登达标后按下方档位自动兑换奖励。" },
   "growth.redeem_tier": { label: "兑换档位", description: "7d=入门档（积分0）· 14d=进阶档（积分100）· 28d=巅峰档（积分500）· off=不自动兑换。" },
   "growth.auto_buddy_open": { label: "自动抽 Buddy", description: "能量充足时自动抽 Buddy（消耗 10 能量/次）。" },
+  "growth.auto_active_day": { label: "自动增加连续活跃天数", description: "签到成功后通过正式 WorkBuddy 对话记录当天活跃，每个账号每天最多一次。" },
+  "growth.scheduler_enabled": { label: "启用成长自动调度", description: "按固定间隔为 CodeBuddy 账号执行普通成长任务。" },
+  "growth.scheduler_interval_seconds": { label: "成长自动调度间隔", description: "普通成长任务自动执行的间隔，最小 600 秒。", min: 600, max: 86400, unit: "秒" },
 };
 
 const queryClient = useQueryClient();

@@ -18,6 +18,7 @@ from .repo_catalog import CatalogRepositoryMixin
 from .repo_checkin import CheckinRepositoryMixin
 from .repo_control import ControlRepositoryMixin
 from .repo_credentials import CredentialRepositoryMixin, CredentialVersionConflict
+from .repo_growth import GrowthRepositoryMixin
 from .repo_growth_log import GrowthLogMixin
 from .repo_metric_history import MetricHistoryRepositoryMixin
 from .repo_metric_refresh import MetricRefreshRepositoryMixin
@@ -36,6 +37,7 @@ class AccountRepository(
     CatalogRepositoryMixin,
     ServiceEventRepositoryMixin,
     MetricRefreshRepositoryMixin,
+    GrowthRepositoryMixin,
     MetricHistoryRepositoryMixin,
     ControlRepositoryMixin,
     ProxyKeyRepositoryMixin,
@@ -95,7 +97,7 @@ class AccountRepository(
             ):
                 await self._ensure_column("checkin_attempts", column, definition)
             await self.db.execute(
-                "INSERT INTO schema_meta(key, value) VALUES('schema_version', '5') "
+                "INSERT INTO schema_meta(key, value) VALUES('schema_version', '6') "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
             )
             await self.db.commit()

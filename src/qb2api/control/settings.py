@@ -59,6 +59,7 @@ class SettingsApplier:
         "growth.auto_buddy_open": "growth_auto_buddy_open",
         "growth.scheduler_enabled": "growth_scheduler_enabled",
         "growth.scheduler_interval_seconds": "growth_scheduler_interval_seconds",
+        "growth.auto_active_day": "growth_auto_active_day",
     }
     _SCHEDULER_KEYS = frozenset(
         {
@@ -104,25 +105,34 @@ class SettingsApplier:
             if key in self._SCHEDULER_KEYS:
                 return await self._apply_checkin(attribute, value)
             setattr(self.settings, attribute, value)
-            if key.startswith("monitoring.metrics_") and self.runtime.metrics_scheduler:
-                await self.runtime.metrics_scheduler.reconfigure(
-                    enabled=value if key == "monitoring.metrics_enabled" else None
-                )
-            if key.startswith("usage.") and self.runtime.usage_rollup_service:
-                self.runtime.usage_rollup_service.reconfigure()
-            if key.startswith("growth.scheduler_") and self.runtime.growth_scheduler:
-                if key == "growth.scheduler_enabled":
-                    await self.runtime.growth_scheduler.reconfigure(enabled=value)
-                else:
-                    await self.runtime.growth_scheduler.reconfigure()
-            if key == "service.worker.autostart":
-                return {"status": "restart_required", "restart_required": True}
-            if key == "service.worker.start_timeout_seconds":
-                return await self._apply_worker_restart()
-            return {"status": "effective", "restart_required": False}
+            return await self._apply_runtime_effects(key, value)
         except Exception:
             setattr(self.settings, attribute, old_value)
             raise
+
+    async def _apply_runtime_effects(self, key: str, value: Any) -> dict[str, Any]:
+        if key.startswith("monitoring.metrics_") and self.runtime.metrics_scheduler:
+            await self.runtime.metrics_scheduler.reconfigure(
+                enabled=value if key == "monitoring.metrics_enabled" else None
+            )
+        if key.startswith("usage.") and self.runtime.usage_rollup_service:
+            self.runtime.usage_rollup_service.reconfigure()
+        if key.startswith("growth.scheduler_"):
+            await self._apply_growth_scheduler(key, value)
+        if key == "service.worker.autostart":
+            return {"status": "restart_required", "restart_required": True}
+        if key == "service.worker.start_timeout_seconds":
+            return await self._apply_worker_restart()
+        return {"status": "effective", "restart_required": False}
+
+    async def _apply_growth_scheduler(self, key: str, value: Any) -> None:
+        scheduler = self.runtime.growth_scheduler
+        if scheduler is None:
+            return
+        if key == "growth.scheduler_enabled":
+            await scheduler.reconfigure(enabled=value)
+        else:
+            await scheduler.reconfigure()
 
     async def _apply_checkin(self, attribute: str, value: Any) -> dict[str, Any]:
         scheduler = self.runtime.checkin_scheduler

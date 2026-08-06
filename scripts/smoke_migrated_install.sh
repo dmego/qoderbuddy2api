@@ -32,7 +32,7 @@ connection = sqlite3.connect(sys.argv[1])
 version = connection.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()
 account = connection.execute("SELECT label FROM accounts WHERE account_id='preserved'").fetchone()
 connection.close()
-if version != ('5',) or account != ('Preserved',): raise SystemExit('migration did not preserve expected state')
+if version != ('6',) or account != ('Preserved',): raise SystemExit('migration did not preserve expected state')
 PY
 
 stop_control

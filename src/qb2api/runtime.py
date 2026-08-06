@@ -101,6 +101,7 @@ class RuntimeServices:
         await registry.rebuild()
         self._start_checkin_services()
         self._start_metrics_services()
+        self._start_growth_services()
         self.usage_rollup_service.start()
 
     async def _load_runtime_settings(self, repository: AccountRepository) -> None:
@@ -130,10 +131,10 @@ class RuntimeServices:
             registry=self.account_registry,
             resolver=self.credential_resolver,
             vault=self.credential_vault,
+            growth_automation=GrowthAutomation(settings=self.settings, repository=self.account_repo),
         )
         self.checkin_scheduler = CheckinScheduler(self.checkin_service, self.settings)
         self.checkin_scheduler.start()
-        self._start_growth_services()
 
     def _start_metrics_services(self) -> None:
         if not all((self.account_repo, self.account_registry, self.credential_resolver)):
@@ -187,7 +188,7 @@ class RuntimeServices:
         if self.checkin_scheduler is not None:
             await self.checkin_scheduler.stop()
         if self.growth_scheduler is not None:
-            await self.growth_scheduler.stop()
+            await self.growth_scheduler.close()
         await self._cancel_metric_refresh_tasks()
         if self.metrics_scheduler is not None:
             await self.metrics_scheduler.stop()

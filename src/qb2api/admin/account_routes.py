@@ -251,13 +251,15 @@ async def growth_execute(provider: str, account_id: str, request: Request) -> di
         provider=provider, account_id=account_id,
         triggered_by="manual", results=result,
     )
-    await _refresh_growth_metrics(state, provider, account_id, result)
+    await _refresh_growth_metrics(
+        state, provider=provider, account_id=account_id, results=result,
+    )
     return {"status": "ok", "result": result}
 
 
 @router.post("/accounts/{provider}/{account_id}/growth/run/{step}")
 async def growth_run_step(
-    provider: str, account_id: str, step: str, request: Request,
+    provider: str, account_id: str, step: str, *, request: Request,
 ) -> dict[str, Any]:
     """手动触发单个成长中心自动化步骤。"""
     await require_admin(request)
@@ -275,7 +277,9 @@ async def growth_run_step(
         provider=provider, account_id=account_id,
         triggered_by=f"manual:{step}", results=results,
     )
-    await _refresh_growth_metrics(state, provider, account_id, results)
+    await _refresh_growth_metrics(
+        state, provider=provider, account_id=account_id, results=results,
+    )
     return {"status": "ok", "step": step, "result": result}
 
 
@@ -303,7 +307,9 @@ def _validate_growth_account(state: Any, provider: str, account_id: str) -> None
         raise HTTPException(status_code=404, detail="account_not_found")
 
 
-async def _refresh_growth_metrics(state: Any, provider: str, account_id: str, results: dict) -> None:
+async def _refresh_growth_metrics(
+    state: Any, *, provider: str, account_id: str, results: dict,
+) -> None:
     scheduler = getattr(state, "metrics_scheduler", None)
     if scheduler is None:
         return

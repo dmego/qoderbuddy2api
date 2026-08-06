@@ -159,6 +159,7 @@ def _observability_values() -> dict[str, object]:
         "growth_auto_buddy_open": _env_bool("GROWTH_AUTO_BUDDY_OPEN", False),
         "growth_scheduler_enabled": _env_bool("GROWTH_SCHEDULER_ENABLED", True),
         "growth_scheduler_interval_seconds": _env_int("GROWTH_SCHEDULER_INTERVAL_SECONDS", 1800),
+        "growth_auto_active_day": _env_bool("GROWTH_AUTO_ACTIVE_DAY", True),
     }
 
 
@@ -258,6 +259,7 @@ class Settings:
     growth_auto_buddy_open: bool = False
     growth_scheduler_enabled: bool = True
     growth_scheduler_interval_seconds: int = 1800
+    growth_auto_active_day: bool = True
 
     @property
     def api_key(self) -> str | None:

@@ -84,6 +84,9 @@ class GrowthScheduler:
                 await task
             except asyncio.CancelledError:
                 pass
+
+    async def close(self) -> None:
+        await self.stop()
         await self._automation.close()
 
     async def _loop(self) -> None:
@@ -123,13 +126,15 @@ class GrowthScheduler:
             return
         try:
             result = await self._automation.run(token)
-        except Exception:
+        except Exception as error:
             logger.warning(
                 "growth scheduler error %s/%s: %s",
-                provider, account_id, type(Exception).__name__, exc_info=True,
+                provider, account_id, type(error).__name__, exc_info=True,
             )
             return
-        await self._persist_log(provider, account_id, "scheduler", result)
+        await self._persist_log(
+            provider, account_id, triggered_by="scheduler", results=result,
+        )
         await self._maybe_refresh_metrics(provider, account_id, result)
         logger.info(
             "growth scheduler completed %s/%s: %s",
@@ -149,7 +154,7 @@ class GrowthScheduler:
 
     async def _persist_log(
         self, provider: str, account_id: str,
-        triggered_by: str, results: dict,
+        *, triggered_by: str, results: dict,
     ) -> None:
         try:
             await self._repo.insert_growth_log(

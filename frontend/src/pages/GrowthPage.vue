@@ -77,7 +77,7 @@ const history = useQuery({
 
 const settings = useQuery({
   queryKey: ["growth-settings"],
-  queryFn: () => apiRequest<{ settings: { key: string; value: unknown }[] }>("/settings"),
+  queryFn: () => apiRequest<{ settings: { key: string; value: unknown; value_version: number }[] }>("/settings"),
   staleTime: 30_000,
 });
 
@@ -181,7 +181,14 @@ const runAll = useMutation({
 });
 
 const toggleSetting = useMutation({
-  mutationFn: async ({ key, value }: { key: string; value: boolean }) => apiRequest(`/settings/${encodeURIComponent(key)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ value }) }),
+  mutationFn: async ({ key, value }: { key: string; value: boolean }) => {
+    const current = settings.data.value?.settings.find((item) => item.key === key);
+    return apiRequest(`/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key, value, value_version: current?.value_version ?? 0 }),
+    });
+  },
   onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["growth-settings"] }); },
   onError: (error) => notify("设置更新失败", { message: String(error), tone: "error" }),
 });

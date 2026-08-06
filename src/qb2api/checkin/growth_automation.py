@@ -11,8 +11,10 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from qb2api.accounts.repository import AccountRepository
 from qb2api.config import Settings
 
+from .active_day import ActiveDayError, WorkBuddyActiveDayClient
 from .growth import GrowthUnavailableError, WorkBuddyGrowthClient
 
 logger = logging.getLogger("qb2api.checkin.growth_automation")
@@ -28,6 +30,9 @@ class GrowthAutomation:
         self,
         settings: Settings,
         client: WorkBuddyGrowthClient | None = None,
+        *,
+        repository: AccountRepository | None = None,
+        active_day_client: WorkBuddyActiveDayClient | None = None,
     ) -> None:
         self._settings = settings
         self._client = client or WorkBuddyGrowthClient(
@@ -35,10 +40,59 @@ class GrowthAutomation:
             timeout=float(settings.checkin_request_timeout_seconds),
         )
         self._owns_client = client is None
+        self._repository = repository
+        self._active_day_client = active_day_client
+        self._owns_active_day_client = active_day_client is None
 
     async def close(self) -> None:
         if self._owns_client:
             await self._client.aclose()
+        if self._owns_active_day_client and self._active_day_client is not None:
+            await self._active_day_client.aclose()
+
+    async def run_active_day(
+        self,
+        access_token: str,
+        *,
+        account_id: str,
+        local_date: str,
+        timezone: str,
+    ) -> dict[str, str]:
+        if not self._settings.growth_auto_active_day:
+            return {"status": "disabled"}
+        if self._repository is None:
+            return {"status": "repository_missing"}
+        if not access_token:
+            return {"status": "access_token_missing"}
+        if self._active_day_client is None:
+            self._active_day_client = WorkBuddyActiveDayClient(
+                base_url=self._settings.codebuddy_endpoint,
+                timeout=float(self._settings.checkin_request_timeout_seconds),
+            )
+        claimed = await self._repository.claim_workbuddy_active_day(
+            provider="codebuddy", account_id=account_id, local_date=local_date, timezone=timezone
+        )
+        if not claimed:
+            return {"status": "already_claimed"}
+        try:
+            await self._active_day_client.run(access_token)
+        except ActiveDayError as error:
+            await self._repository.finish_workbuddy_active_day(
+                provider="codebuddy", account_id=account_id, local_date=local_date, timezone=timezone,
+                status="failed", error_code=error.code,
+            )
+            return {"status": "failed", "error_code": error.code}
+        except Exception as error:
+            await self._repository.finish_workbuddy_active_day(
+                provider="codebuddy", account_id=account_id, local_date=local_date, timezone=timezone,
+                status="failed", error_code=type(error).__name__,
+            )
+            return {"status": "failed", "error_code": type(error).__name__}
+        await self._repository.finish_workbuddy_active_day(
+            provider="codebuddy", account_id=account_id, local_date=local_date, timezone=timezone,
+            status="succeeded",
+        )
+        return {"status": "succeeded"}
 
     async def run(self, access_token: str) -> dict[str, Any]:
         """执行所有已启用步骤，返回结构化结果。"""

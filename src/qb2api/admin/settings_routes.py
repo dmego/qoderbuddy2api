@@ -44,6 +44,7 @@ SETTING_SCHEMA: dict[str, dict[str, Any]] = {
     "growth.auto_buddy_open": {"default": False, "apply_mode": "immediate", "type": bool},
     "growth.scheduler_enabled": {"default": True, "apply_mode": "immediate", "type": bool},
     "growth.scheduler_interval_seconds": {"default": 1800, "apply_mode": "immediate", "type": int, "min": 600},
+    "growth.auto_active_day": {"default": True, "apply_mode": "immediate", "type": bool},
 }
 
 

@@ -5,7 +5,25 @@ from __future__ import annotations
 import pytest
 from checkin_service_support import SequenceClient, registry, seed, service, success
 
+from qb2api.checkin.batch import CheckinTarget
 from qb2api.checkin.models import CheckInOutcome, CheckInResult
+
+
+class FakeGrowthAutomation:
+    def __init__(self) -> None:
+        self.runs: list[str] = []
+        self.active_days: list[tuple[str, str, str, str]] = []
+
+    async def run(self, token: str) -> dict[str, str]:
+        self.runs.append(token)
+        return {"tasks": "skipped"}
+
+    async def run_active_day(self, token: str, *, account_id: str, local_date: str, timezone: str) -> dict[str, str]:
+        self.active_days.append((token, account_id, local_date, timezone))
+        return {"status": "succeeded"}
+
+    async def close(self) -> None:
+        return None
 
 
 @pytest.mark.asyncio
@@ -73,4 +91,30 @@ async def test_has_pending_targets_returns_false_when_all_accounts_are_terminal(
     )
 
     assert await checkin_service.has_pending_targets() is False
+    await checkin_service.close()
+
+
+@pytest.mark.asyncio
+async def test_growth_automation_only_runs_after_scheduled_success(checkin_context) -> None:
+    repository, vault = checkin_context
+    await seed(repository, vault, "codebuddy", "cb-growth")
+    account_registry = await registry(repository, vault)
+    growth = FakeGrowthAutomation()
+    checkin_service = service(
+        repository, vault, account_registry,
+        workbuddy=SequenceClient("codebuddy", [success("codebuddy", "cb-growth")]),
+        qoder=SequenceClient("qoder", []), codebuddy_enabled=True, qoder_enabled=False,
+        growth_automation=growth,
+    )
+
+    await checkin_service.run_batch(trigger="scheduler")
+    assert growth.runs == []
+    assert growth.active_days == [("access-cb-growth", "cb-growth", checkin_service.local_date_str(), "Asia/Shanghai")]
+    await checkin_service.run_batch(
+        trigger="manual",
+        targets=[CheckinTarget(provider="codebuddy", account_id="cb-growth")],
+        skip_already_done=False,
+    )
+    assert growth.runs == []
+    assert len(growth.active_days) == 1
     await checkin_service.close()

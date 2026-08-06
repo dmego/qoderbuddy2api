@@ -117,6 +117,19 @@ CREATE TABLE IF NOT EXISTS checkin_daily_state (
     PRIMARY KEY (provider, account_id, local_date, timezone)
 );
 
+CREATE TABLE IF NOT EXISTS workbuddy_active_days (
+    provider TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    local_date TEXT NOT NULL,
+    timezone TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    error_code TEXT,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (provider, account_id, local_date, timezone)
+);
+
 CREATE TABLE IF NOT EXISTS oauth_flows (
     state_hash TEXT PRIMARY KEY,
     provider TEXT NOT NULL,
