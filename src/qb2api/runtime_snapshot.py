@@ -101,7 +101,7 @@ class RuntimeSnapshot:
 
 
 def _model_payload(model: ModelDefinition) -> dict[str, Any]:
-    return {
+    payload = {
         "id": model.id,
         "name": model.name,
         "provider": model.provider,
@@ -117,6 +117,9 @@ def _model_payload(model: ModelDefinition) -> dict[str, Any]:
             "max_output_tokens": model.capabilities.max_output_tokens,
         },
     }
+    if model.metadata:
+        payload["metadata"] = model.metadata
+    return payload
 
 
 def _parse_models(value: Any) -> dict[str, tuple[ModelDefinition, ...]]:
@@ -139,6 +142,8 @@ def _parse_model(provider: str, value: Any) -> ModelDefinition:
     fields = {name: bool(capabilities.get(name, False)) for name in (
         "chat", "streaming", "tool_calling", "reasoning", "reasoning_effort", "context_window", "max_output_tokens"
     )}
+    raw_metadata = value.get("metadata")
+    metadata = raw_metadata if isinstance(raw_metadata, dict) else None
     return ModelDefinition(
         id=_text(value.get("id"), "model.id"),
         name=_text(value.get("name"), "model.name"),
@@ -146,6 +151,7 @@ def _parse_model(provider: str, value: Any) -> ModelDefinition:
         capabilities=ModelCapabilities(**fields),
         max_context=_positive_int(value.get("max_context"), "model.max_context"),
         max_output=_positive_int(value.get("max_output"), "model.max_output"),
+        metadata=metadata,
     )
 
 

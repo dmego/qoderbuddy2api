@@ -6,7 +6,7 @@ import logging
 from typing import Any
 
 from qb2api.admin.crypto import hash_token
-from qb2api.models import load_models_from_config
+from qb2api.models import ModelCapabilities, ModelDefinition, load_models_from_config
 from qb2api.runtime import RuntimeServices
 from qb2api.runtime_snapshot import RuntimeProxyKey, RuntimeSlot, RuntimeSnapshot
 
@@ -44,6 +44,14 @@ class RuntimeSnapshotService:
         else:
             slots.extend(_env_slots(self._runtime.settings))
         models = load_models_from_config(self._runtime.settings.model_config_path)
+        upstream = await self._upstream_catalog_models()
+        if upstream:
+            models = {key: list(value) for key, value in models.items()}
+            merged = {model.id: model for model in upstream}
+            merged.update(
+                {model.id: model for model in models.get("qoder", []) if model.id not in merged}
+            )
+            models["qoder"] = list(merged.values())
         proxy_keys, proxy_auth_required = await self._proxy_keys()
         return RuntimeSnapshot(
             snapshot_version=self._version,
@@ -54,6 +62,46 @@ class RuntimeSnapshotService:
             proxy_keys=proxy_keys,
             proxy_auth_required=proxy_auth_required,
         )
+
+    async def _upstream_catalog_models(self) -> list[ModelDefinition]:
+        """Provider-catalog models merged into the snapshot with upstream metadata."""
+        repository = self._runtime.account_repo
+        if repository is None:
+            return []
+        models: list[ModelDefinition] = []
+        for row in await repository.list_models("qoder"):
+            if row.get("source") != "upstream" or not row.get("enabled"):
+                continue
+            capabilities = row.get("capabilities") or []
+            metadata = row.get("metadata") or {}
+            models.append(
+                ModelDefinition(
+                    id=row["model_id"],
+                    name=row.get("display_name") or row["model_id"],
+                    provider="qoder",
+                    capabilities=ModelCapabilities(
+                        **{
+                            name: name in capabilities
+                            for name in (
+                                "chat",
+                                "streaming",
+                                "tool_calling",
+                                "reasoning",
+                                "reasoning_effort",
+                                "context_window",
+                                "max_output_tokens",
+                            )
+                        }
+                    ),
+                    max_context=int(metadata.get("default_context_window") or 0) or 128000,
+                    max_output=4096,
+                    metadata={
+                        "cosy_key": metadata.get("cosy_key"),
+                        "default_effort": metadata.get("default_effort"),
+                    },
+                )
+            )
+        return models
 
     async def _proxy_keys(self) -> tuple[tuple[RuntimeProxyKey, ...], bool]:
         keys: list[RuntimeProxyKey] = []

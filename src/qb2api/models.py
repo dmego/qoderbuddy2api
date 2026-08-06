@@ -29,6 +29,7 @@ class ModelDefinition:
     capabilities: ModelCapabilities = field(default_factory=ModelCapabilities)
     max_context: int = 128000
     max_output: int = 4096
+    metadata: dict | None = None
 
     def to_info(self) -> dict:
         """Convert to /v1/models format."""
