@@ -131,13 +131,19 @@ async def test_qoder_disabled_status_is_not_claimed():
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request.method)
-        return _json_response(200, {"status": "DISABLED"}, request)
+        return _json_response(
+            200,
+            {"status": "DISABLED", "rewardCredits": 100, "expiresAt": 0},
+            request,
+        )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         result = await QoderCheckinClient(client=http).checkin(access_token="access")
 
     assert result.outcome == CheckInOutcome.FAILED
     assert result.raw_status == "DISABLED"
+    assert result.reward_credits is None
+    assert result.reward_expires_at is None
     assert calls == ["GET"]
 
 

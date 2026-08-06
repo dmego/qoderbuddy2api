@@ -128,6 +128,7 @@ function checkinQuotaHint(item: CheckinAttempt): string {
   return checkinErrorHint(item.error_code) ?? "已完成";
 }
 function checkinReward(item: CheckinAttempt): string {
+  if (item.outcome !== "claimed" && item.outcome !== "already_checked_in") return "未发放奖励";
   const reward = typeof item.reward_credits === "number" ? `奖励 ${item.reward_credits.toLocaleString()} credits` : "未返回奖励";
   const expiry = formatExpiry(item.reward_expires_at ?? undefined);
   return expiry ? `${reward} · ${expiry}` : reward;

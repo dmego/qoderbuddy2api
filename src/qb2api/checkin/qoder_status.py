@@ -171,6 +171,8 @@ def _result(
     raw_status: str | None,
     message: str | None = None,
 ) -> CheckInResult:
+    reward = context.reward if outcome in SUCCESS_OUTCOMES else None
+    reward_expires_at = context.reward_expires_at if outcome in SUCCESS_OUTCOMES else None
     return CheckInResult(
         outcome=outcome,
         provider="qoder",
@@ -178,8 +180,8 @@ def _result(
         http_status=context.status_code,
         request_id=context.request_id,
         message=message if message is not None else extract_message(context.body),
-        reward_credits=context.reward,
-        reward_expires_at=context.reward_expires_at,
+        reward_credits=reward,
+        reward_expires_at=reward_expires_at,
         raw_status=raw_status,
     )
 
@@ -282,6 +284,8 @@ def _normalize_expiry(value: Any) -> str | None:
 
 
 def _epoch_to_iso(value: int | float) -> str | None:
+    if value <= 0:
+        return None
     seconds = value / 1000 if value > 10_000_000_000 else value
     try:
         return datetime.fromtimestamp(seconds, tz=UTC).isoformat()

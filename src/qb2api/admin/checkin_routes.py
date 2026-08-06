@@ -17,6 +17,15 @@ from .mutation_audit import add_audit
 from .validation import bounded_int, choice_filter, json_object, required_string
 
 router = APIRouter()
+_REWARD_FIELDS = (
+    "reward_credits",
+    "reward_expires_at",
+    "quota_before",
+    "quota_after",
+    "quota_delta",
+    "quota_observed_at",
+    "quota_change_status",
+)
 
 
 @router.get("/checkin/status")
@@ -132,21 +141,22 @@ def _attempt_view(item: dict[str, Any]) -> dict[str, Any]:
     error_code = item.get("business_code")
     if error_code is None and item.get("redacted_error"):
         error_code = "checkin_failed"
+    outcome = _lower_value(item.get("outcome"))
+    reward_visible = outcome in {"claimed", "already_checked_in"}
+    reward_data = (
+        {key: item.get(key) for key in _REWARD_FIELDS}
+        if reward_visible
+        else dict.fromkeys(_REWARD_FIELDS)
+    )
     return {
         "provider": item.get("provider"),
         "account_id": item.get("account_id"),
-        "outcome": _lower_value(item.get("outcome")),
+        "outcome": outcome,
         "http_status": item.get("http_status"),
         "attempts": item.get("attempts", 0),
         "finished_at": item.get("finished_at"),
         "error_code": str(error_code) if error_code is not None else None,
-        "reward_credits": item.get("reward_credits"),
-        "reward_expires_at": item.get("reward_expires_at"),
-        "quota_before": item.get("quota_before"),
-        "quota_after": item.get("quota_after"),
-        "quota_delta": item.get("quota_delta"),
-        "quota_observed_at": item.get("quota_observed_at"),
-        "quota_change_status": item.get("quota_change_status"),
+        **reward_data,
     }
 
 

@@ -80,12 +80,16 @@ function attemptStatus(attempt: CheckinAttempt): string {
   return attempt.error_code ?? "--";
 }
 function attemptReward(attempt: CheckinAttempt): string {
+  if (attempt.outcome !== "claimed" && attempt.outcome !== "already_checked_in") return "未发放奖励";
   const reward = typeof attempt.reward_credits === "number" ? `奖励 ${attempt.reward_credits} credits` : "未返回奖励";
   if (!attempt.reward_expires_at) return reward;
   const date = new Date(attempt.reward_expires_at);
   return Number.isNaN(date.getTime()) ? reward : `${reward} · 到期 ${date.toLocaleString("zh-CN")}`;
 }
 function attemptDelta(attempt: CheckinAttempt): string {
+  if (attempt.outcome !== "claimed" && attempt.outcome !== "already_checked_in") {
+    return "签到未成功，未记录余额变化";
+  }
   return (attempt.quota_delta?.packages ?? []).filter((item) => typeof item.delta === "number").map((item) => `${item.name ?? "配额包"} ${item.delta! >= 0 ? "+" : ""}${item.delta}`).join(" · ") || "余额差值未知";
 }
 </script>

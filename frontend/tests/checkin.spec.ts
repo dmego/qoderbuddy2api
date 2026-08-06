@@ -79,7 +79,7 @@ describe("CheckinPage", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("/checkin/runs/run-qoder")) {
-        return response({ run: { run_id: "run-qoder", status: "finished" }, attempts: [{ provider: "qoder", account_id: "qd-1", outcome: "failed", http_status: 200, error_code: "qoder_checkin_disabled", attempts: 1 }] });
+        return response({ run: { run_id: "run-qoder", status: "finished" }, attempts: [{ provider: "qoder", account_id: "qd-1", outcome: "failed", http_status: 200, error_code: "qoder_checkin_disabled", reward_credits: 100, reward_expires_at: "1970-01-01T00:00:00+00:00", attempts: 1 }] });
       }
       if (url.includes("/checkin/runs")) return response({ runs: [{ run_id: "run-qoder", started_at: "2026-08-06T02:48:00Z", status: "finished", trigger: "catch_up", attempt_count: 1, successful_count: 0 }], next_cursor: null });
       return response({ enabled: true, running: false, local_date: "2026-08-06", timezone: "Asia/Shanghai", checkin_at: "10:30", eligible_accounts: [{ provider: "qoder", account_id: "qd-1", status: "active", verification_status: "verified", last_error: "qoder_checkin_disabled" }], daily_states: [] });
@@ -91,6 +91,10 @@ describe("CheckinPage", () => {
     await wrapper.get('button[aria-label="查看批次 run-qoder"]').trigger("click");
     await flushPromises();
     expect(document.body.textContent).toContain("Qoder 今日签到活动已关闭");
+    expect(document.body.textContent).toContain("未发放奖励");
+    expect(document.body.textContent).toContain("签到未成功，未记录余额变化");
+    expect(document.body.textContent).not.toContain("奖励 100 credits");
+    expect(document.body.textContent).not.toContain("1970");
     wrapper.unmount();
   });
 });
