@@ -2,6 +2,7 @@
 
 from unittest.mock import AsyncMock, Mock
 
+import httpx
 import pytest
 
 from qb2api.accounts.qoder_model_sync import (
@@ -81,6 +82,21 @@ async def test_fetch_qoder_models_http_error():
     with pytest.raises(QoderError) as exc:
         await fetch_qoder_models("pat", client=client)
     assert exc.value.status_code == 401
+
+
+async def test_fetch_qoder_models_transport_error():
+    client = Mock(get=AsyncMock(side_effect=httpx.ConnectError("boom")))
+    with pytest.raises(QoderError) as exc:
+        await fetch_qoder_models("pat", client=client)
+    assert exc.value.status_code == 502
+
+
+async def test_fetch_qoder_models_invalid_json():
+    response = Mock(status_code=200, json=Mock(side_effect=ValueError("bad payload")))
+    client = Mock(get=AsyncMock(return_value=response))
+    with pytest.raises(QoderError) as exc:
+        await fetch_qoder_models("pat", client=client)
+    assert exc.value.status_code == 502
 
 
 async def test_sync_qoder_models_upsert_and_disable():

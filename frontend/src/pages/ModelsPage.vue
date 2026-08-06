@@ -87,7 +87,7 @@ function errorRate(summary?: UsageSummary): string { if (!summary?.request_count
       <div class="filter-grid filter-grid--six">
         <label class="filter-search">模型名称或 ID<div class="input-with-icon"><Search :size="15" /><input v-model="draftSearch" placeholder="输入后回车搜索" @keyup.enter="applySearch" /></div></label>
         <label>服务提供方<select v-model="provider" @change="reset"><option value="">全部</option><option value="codebuddy">CodeBuddy</option><option value="qoder">Qoder</option></select></label>
-        <label>来源<select v-model="source" @change="reset"><option value="">全部</option><option value="definition">定义文件</option><option value="discovered">上游发现</option></select></label>
+        <label>来源<select v-model="source" @change="reset"><option value="">全部</option><option value="definition">定义文件</option><option value="discovered">上游发现</option><option value="upstream">上游同步</option></select></label>
         <label>状态<select v-model="enabled" @change="reset"><option value="">全部</option><option value="true">启用</option><option value="false">停用</option></select></label>
         <label>能力<select v-model="capability" @change="reset"><option value="">全部</option><option value="chat">对话</option><option value="streaming">流式输出</option><option value="tools">工具调用</option></select></label>
         <div class="filter-actions"><button type="button" @click="applySearch"><Search :size="15" />应用</button><button class="secondary-button" type="button" @click="clearFilters"><X :size="15" />清除</button></div>

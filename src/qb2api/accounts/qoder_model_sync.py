@@ -67,16 +67,22 @@ async def fetch_qoder_models(
 
 
 async def _fetch_once(client: httpx.AsyncClient, pat: str) -> list[UpstreamModel]:
-    response = await client.get(
-        MODELS_ENDPOINT,
-        headers={"Authorization": f"Bearer {pat}"},
-    )
+    try:
+        response = await client.get(
+            MODELS_ENDPOINT,
+            headers={"Authorization": f"Bearer {pat}"},
+        )
+    except httpx.HTTPError as error:
+        raise QoderError(f"Qoder models fetch failed: {error}", status_code=502) from error
     if not 200 <= response.status_code < 300:
         raise QoderError(
             f"Qoder models fetch failed (HTTP {response.status_code})",
             status_code=response.status_code,
         )
-    payload = response.json()
+    try:
+        payload = response.json()
+    except ValueError as error:
+        raise QoderError("Qoder models fetch returned invalid payload", status_code=502) from error
     items = payload.get("data", []) if isinstance(payload, dict) else []
     return [UpstreamModel.from_dict(item) for item in items if isinstance(item, dict)]
 

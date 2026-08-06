@@ -4,6 +4,7 @@
 - 严重级别：Medium（模型清单过时会导致请求失败与能力误报）
 - 状态：已实现（2026-08-06，落地于 docs/superpowers/plans/2026-08-06-qoder-model-sync-and-reasoning-passthrough.md）
 - 实现摘要：新增 `src/qb2api/accounts/qoder_model_sync.py`（`fetch_qoder_models`/`convert_upstream_models`/`sync_qoder_models`，按 provider 拉取官方 `/api/v1/cloud/models`，PAT 只在 Control 进程内存使用）；管理台新增 `POST /models/sync/qoder` 端点（同步按钮在 ModelsPage「从上游同步」）；结果同时落库 `model_catalog`（source="upstream"）并合并进 `RuntimeSnapshotService.build()` 的 `models["qoder"]`（/v1/models 与请求路由可见）；`ModelDefinition` 新增可选 `metadata` 字段并经 snapshot 协议 v2 透传（cosy_key/default_effort）；`qoder_model_key` 支持运行时映射（`set_runtime_model_keys`，proxy_state start/refresh 时从 snapshot 合并）；旧 display 名记录自动停用（改名迁移）。
+- 已知限制（本变更不修复）：`config/models.json` 中已改名的旧 id（如 `Qwen3.8-Max-Preview`）因「不改 config/models.json」约束仍会出现在 /v1/models 并可被请求，命中失效 COSY key；上游同步只停用 `model_catalog` 中的旧 upstream 记录，无法移除 config 基线中的旧定义。
 - 关联：`src/qb2api/worker/metadata_routes.py`（/v1/models）、`src/qb2api/providers/qoder_payload.py`（映射表）、`src/qb2api/admin/catalog_routes.py`（refresh）、`frontend/src/pages/ModelsPage.vue`
 
 ## 背景与问题
