@@ -35,8 +35,24 @@ _QODER_TRANSLATION = str.maketrans(
 )
 
 
+_runtime_model_keys: dict[str, str] = {}
+
+
+def set_runtime_model_keys(mapping: dict[str, str]) -> None:
+    """Replace the runtime model-key mapping (from synced model metadata)."""
+    _runtime_model_keys.clear()
+    _runtime_model_keys.update(mapping)
+
+
+def clear_runtime_model_keys() -> None:
+    """Drop the runtime model-key mapping, restoring static-table behavior."""
+    _runtime_model_keys.clear()
+
+
 def qoder_model_key(model: str) -> str:
     """Map the public CLI display model to the COSY internal key."""
+    if model in _runtime_model_keys:
+        return _runtime_model_keys[model]
     return QODER_CLI_MODEL_KEYS.get(model, model)
 
 
