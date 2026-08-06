@@ -95,7 +95,11 @@ async def test_stream_reasoning_stripped_via_settings_default() -> None:
 
 async def test_keep_reasoning_overrides_settings() -> None:
     # Explicit flag wins over settings.stream_reasoning.
-    out = await _run_openai_stream(_provider([_REASONING_CHUNK]), keep_reasoning=False, settings=Settings(stream_reasoning=True))
+    out = await _run_openai_stream(
+        _provider([_REASONING_CHUNK]),
+        keep_reasoning=False,
+        settings=Settings(stream_reasoning=True),
+    )
     chunks = _chunks(out)
     assert "reasoning_content" not in chunks[0]["choices"][0]["delta"]
 

@@ -149,6 +149,7 @@ async def test_sync_qoder_models_upsert_and_disable():
 
     report = await sync_qoder_models(repo, registry, resolver, client=client)
 
+    assert isinstance(report, SyncReport)
     assert report.added == 1
     assert report.updated == 1
     assert report.disabled == 1

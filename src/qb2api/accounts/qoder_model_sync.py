@@ -42,7 +42,7 @@ class UpstreamModel:
     default_effort: str = ""
 
     @classmethod
-    def from_dict(cls, item: dict[str, Any]) -> "UpstreamModel":
+    def from_dict(cls, item: dict[str, Any]) -> UpstreamModel:
         return cls(**{key: item[key] for key in REQUIRED_FIELDS if key in item})
 
 
@@ -115,17 +115,22 @@ def convert_upstream_models(items: list[UpstreamModel]) -> list[dict[str, Any]]:
     return rows
 
 
+async def _qoder_token(resolver, slot) -> str | None:
+    """Resolve the PAT for one qoder account slot, or None when unavailable."""
+    try:
+        credential = await resolver.credential(slot.provider, slot.account_id, "chat")
+    except LookupError:
+        return None
+    return credential.payload.get("pat") or credential.payload.get("access_token")
+
+
 async def _pick_qoder_pat(registry, resolver) -> str | None:
     """Pick the first usable qoder chat PAT, preferring verified accounts."""
     slots = [slot for slot in registry.snapshot("chat") if slot.provider == "qoder"]
     ordered = [slot for slot in slots if slot.verification_status == "verified"]
     ordered.extend(slot for slot in slots if slot.verification_status != "verified")
     for slot in ordered:
-        try:
-            credential = await resolver.credential(slot.provider, slot.account_id, "chat")
-        except LookupError:
-            continue
-        token = credential.payload.get("pat") or credential.payload.get("access_token")
+        token = await _qoder_token(resolver, slot)
         if token:
             return token
     return None
@@ -144,34 +149,57 @@ async def sync_qoder_models(repository, registry, resolver, *, client=None) -> S
 
     added = 0
     updated = 0
-    disabled = 0
     async with repository.transaction():
         for row in rows:
-            previous = baseline.get(row["model_id"])
-            if previous is None:
-                added += 1
-            elif _content_differs(previous, row):
-                updated += 1
-            await repository.upsert_model(
-                provider="qoder",
-                model_id=row["model_id"],
-                display_name=row["display_name"],
-                capabilities=row["capabilities"],
-                source="upstream",
-                enabled=row["enabled"],
-                metadata=row["metadata"],
-            )
-        incoming_ids = {row["model_id"] for row in rows}
-        for model_id, record in baseline.items():
-            if (
-                record.get("source") == "upstream"
-                and model_id not in incoming_ids
-                and record.get("enabled")
-            ):
-                await repository.set_model_enabled("qoder", model_id, False)
-                disabled += 1
+            added_delta, updated_delta = await _upsert_row(repository, row, baseline)
+            added += added_delta
+            updated += updated_delta
+        disabled = await _disable_stale(repository, baseline, {row["model_id"] for row in rows})
 
     return SyncReport(added=added, updated=updated, disabled=disabled, models=rows)
+
+
+async def _upsert_row(
+    repository,
+    row: dict[str, Any],
+    baseline: dict[str, dict[str, Any]],
+) -> tuple[int, int]:
+    """Upsert one upstream row, returning its (added, updated) contribution counts."""
+    previous = baseline.get(row["model_id"])
+    if previous is None:
+        deltas = (1, 0)
+    elif _content_differs(previous, row):
+        deltas = (0, 1)
+    else:
+        deltas = (0, 0)
+    await repository.upsert_model(
+        provider="qoder",
+        model_id=row["model_id"],
+        display_name=row["display_name"],
+        capabilities=row["capabilities"],
+        source="upstream",
+        enabled=row["enabled"],
+        metadata=row["metadata"],
+    )
+    return deltas
+
+
+async def _disable_stale(
+    repository,
+    baseline: dict[str, dict[str, Any]],
+    incoming_ids: set[str],
+) -> int:
+    """Disable enabled upstream rows missing from the incoming sync; return count."""
+    disabled = 0
+    for model_id, record in baseline.items():
+        if (
+            record.get("source") == "upstream"
+            and model_id not in incoming_ids
+            and record.get("enabled")
+        ):
+            await repository.set_model_enabled("qoder", model_id, False)
+            disabled += 1
+    return disabled
 
 
 def _content_differs(previous: dict[str, Any], row: dict[str, Any]) -> bool:
