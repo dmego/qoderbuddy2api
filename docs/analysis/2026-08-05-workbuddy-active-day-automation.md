@@ -345,7 +345,7 @@ ACP 异常：running → failed + 安全 error_code
 - `docs/analysis/2026-08-04-growth-heatmap-lottery.md`：热力图、连续天数、抽奖、补登卡和兑换风险。
 - 本文：正式 ACP 活跃日协议、真实 A/B 证据、代码接入边界和验证限制。
 
-逆向 bundle 中有协议价值的材料已归档到 `docs/analysis/archive/workbuddy-reverse/`，并附带 SHA-256 清单；导入壳、无关项目服务和产品配置包装已删除。归档内容不是产品代码，不参与构建、测试或运行时加载。`docs/growth-page-refactor-plan.md` 和 `docs/issues/` 是旧研究遗留方案，也不代表本次已经承诺实现。
+逆向 bundle 中有协议价值的材料已归档到 `docs/analysis/archive/workbuddy-reverse/`，并附带 SHA-256 清单；导入壳、无关项目服务和产品配置包装已删除。归档内容不是产品代码，不参与构建、测试或运行时加载。旧研究遗留方案（`docs/growth-page-refactor-plan.md`、历史 `docs/issues/`）已在文档治理中归档或移除，不代表本次承诺实现。
 
 ## 15. 当前本机运行快照（2026-08-06）
 
@@ -406,7 +406,7 @@ CodeBuddy 自动签到成功
 
 ## 18. 2026-08-07 更新：前置检查 + 后置确认 + 手动重跑
 
-针对"本地 ACP succeeded 但上游未记账"的暴露出的空白（今天 cb-d5352301964b 实际是上游异步延迟，约 40 分钟后补记），补充了三段式机制（schema 升至 7，`workbuddy_active_days` 增加 `confirmed`/`confirmed_at`/`confirm_attempts` 列）：
+针对"本地 ACP succeeded 但上游未记账"的暴露出的空白（今天 cb-<redacted> 实际是上游异步延迟，约 40 分钟后补记），补充了三段式机制（schema 升至 7，`workbuddy_active_days` 增加 `confirmed`/`confirmed_at`/`confirm_attempts` 列）：
 
 | 机制 | 行为 | 代码落点 |
 | --- | --- | --- |
@@ -419,4 +419,4 @@ CodeBuddy 自动签到成功
 - 后置确认是有上限的观测：达到尝试上限标记 `not_lit`，不再无限拉取上游。
 - 手动重跑是唯一绕过当日锁的入口，必须由管理员显式发起。
 
-验证：schema v7 迁移（含旧库 `_ensure_column`）、前置跳过、确认走向（lit/pending/not_lit）、强制重跑与前端卡片均已纳入测试；今日 4 账号经重启后全部 `confirmed=lit`，含先前"未记账"的 cb-d5352301964b（上游延迟 40 分钟补记）。
+验证：schema v7 迁移（含旧库 `_ensure_column`）、前置跳过、确认走向（lit/pending/not_lit）、强制重跑与前端卡片均已纳入测试；今日 4 账号经重启后全部 `confirmed=lit`，含先前"未记账"的 cb-<redacted>（上游延迟 40 分钟补记）。

@@ -1,7 +1,7 @@
 # WorkBuddy 连登地图与自动抽奖调研
 
 > 调研日期：2026-08-04
-> 验证账号：cb-501debc6f6f7（codebuddy oauth）
+> 验证账号：cb-<redacted>（codebuddy oauth）
 
 ## 1. 连登规则（8月4日"焕新"后）
 

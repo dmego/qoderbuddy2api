@@ -2,7 +2,7 @@
 
 > 调研日期：2026-08-04
 > 调研方式：抓取成长中心前端 JS bundle + 用真实账号端到端验证
-> 验证账号：`cb-501debc6f6f7`（codebuddy oauth）
+> 验证账号：`cb-<redacted>`（codebuddy oauth）
 
 ## 1. 背景
 
@@ -119,7 +119,7 @@ Referer: https://www.workbuddy.cn/profile/growth-center
 - 已完成且 `has_reward == true` → 可 claim
 - claim 后 `has_reward` 变 `false`
 
-## 5. 端到端验证记录（账号 cb-501debc6f6f7）
+## 5. 端到端验证记录（账号 cb-<redacted>）
 
 | 操作 | HTTP | 结果 |
 | --- | --- | --- |

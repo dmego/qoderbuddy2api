@@ -2,7 +2,7 @@
 
 > **For agentic workers:** 本计划为容器化与部署对接方案，第 1 步涉及新增工程文件（Dockerfile / .dockerignore），第 2 步为外部 CPA 部署目录的 compose 改动。Steps 使用 checkbox（`- [ ]`）语法跟踪。
 
-**Goal:** 把当前工程（qoderbuddy2api）打成 Docker 镜像，并在 `/Users/dmego/docker-space/CPA` 部署目录新增一个 `qb2api` service，使 `cli-proxy-api` 容器能通过内网访问 2api 暴露的 `:9999` 端口，从而在 CPA 里把 2api 作为 OpenAI 兼容供应商添加并使用。
+**Goal:** 把当前工程（qoderbuddy2api）打成 Docker 镜像，并在 `~/docker-space/CPA` 部署目录新增一个 `qb2api` service，使 `cli-proxy-api` 容器能通过内网访问 2api 暴露的 `:9999` 端口，从而在 CPA 里把 2api 作为 OpenAI 兼容供应商添加并使用。
 
 **Architecture:**
 - **双进程单容器**：Control Plane（`:9999`）spawn Proxy Worker 子进程（`:10001`）。Worker 由 `control/worker_process.py::worker_command` 以 `sys.executable -m uvicorn qb2api.worker.app:app` 拉起，镜像内只需 Python + 代码，无需拆成两个 service。
@@ -100,7 +100,7 @@ frontend/test-results/
 - [ ] **Step 3: 构建并冒烟验证镜像**
 
 ```bash
-cd /Users/dmego/vibeCoding/2api
+cd ~/vibeCoding/2api
 docker build -t dmego/qb2api:latest .
 # 冒烟：临时数据目录启动，确认 Control + Worker 子进程都起来
 docker run --rm -d --name qb2api-smoke \
@@ -120,9 +120,9 @@ docker stop qb2api-smoke
 ### Task 2: CPA 部署目录新增 `qb2api` service
 
 **Files:**
-- Modify: `/Users/dmego/docker-space/CPA/docker-compose.yaml`（在 `services:` 下新增 `qb2api`）
-- Create（目录/文件）: `/Users/dmego/docker-space/CPA/qb2api/config/models.json`（从工程 `config/models.json` 拷贝）
-- Create（空目录）: `/Users/dmego/docker-space/CPA/qb2api/data`、`/Users/dmego/docker-space/CPA/qb2api/logs`
+- Modify: `~/docker-space/CPA/docker-compose.yaml`（在 `services:` 下新增 `qb2api`）
+- Create（目录/文件）: `~/docker-space/CPA/qb2api/config/models.json`（从工程 `config/models.json` 拷贝）
+- Create（空目录）: `~/docker-space/CPA/qb2api/data`、`~/docker-space/CPA/qb2api/logs`
 
 **Interfaces:**
 - 网络：复用 CPA 现有 `cpa-network`（bridge），2api 与 `cli-proxy-api` 同网，容器名 `qb2api` 作为内网 DNS。
@@ -132,9 +132,9 @@ docker stop qb2api-smoke
 - [ ] **Step 1: 生成三个 Key 并准备挂卷目录**
 
 ```bash
-cd /Users/dmego/docker-space/CPA
+cd ~/docker-space/CPA
 mkdir -p qb2api/data qb2api/logs qb2api/config
-cp /Users/dmego/vibeCoding/2api/config/models.json qb2api/config/models.json
+cp ~/vibeCoding/2api/config/models.json qb2api/config/models.json
 # 生成 Fernet key（Credential Key，一旦设定不可更换）
 python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
 # Proxy Key / Admin Key 自行设定，三者必须互不相同
@@ -144,7 +144,7 @@ python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 ```yaml
   qb2api:
-    build: /Users/dmego/vibeCoding/2api          # 或先 docker build 打成本地镜像后用 image: dmego/qb2api:latest
+    build: ~/vibeCoding/2api          # 或先 docker build 打成本地镜像后用 image: dmego/qb2api:latest
     container_name: qb2api
     restart: unless-stopped
     environment:
@@ -167,7 +167,7 @@ python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 - [ ] **Step 3: 启动并验证 2api service**
 
 ```bash
-cd /Users/dmego/docker-space/CPA
+cd ~/docker-space/CPA
 docker compose up -d --build qb2api
 docker compose logs --tail=30 qb2api             # 确认 Control + Worker 启动正常
 # CPA 视角验证内网可达 + 模型列表
@@ -182,7 +182,7 @@ docker exec cli-proxy-api wget -qO- http://qb2api:9999/v1/models \
 ### Task 3: 在 CPA 把 2api 配成 OpenAI 兼容供应商
 
 **Files:**
-- Modify: `/Users/dmego/docker-space/CPA/cpa/config.yaml`（在 `openai-compatibility:` 段追加 `qb2api` 项）
+- Modify: `~/docker-space/CPA/cpa/config.yaml`（在 `openai-compatibility:` 段追加 `qb2api` 项）
 
 **Interfaces:**
 - `openai-compatibility[].base-url`：`http://qb2api:9999/v1`（容器名 + Control :9999，走内网）
@@ -212,7 +212,7 @@ openai-compatibility:
 - [ ] **Step 2: 重载 CPA 并验证模型可见**
 
 ```bash
-cd /Users/dmego/docker-space/CPA
+cd ~/docker-space/CPA
 docker compose restart cli-proxy-api          # 重载 config.yaml
 # 验证 CPA 合并模型列表里出现 qb2api 别名
 curl -s http://127.0.0.1:8317/v1/models \

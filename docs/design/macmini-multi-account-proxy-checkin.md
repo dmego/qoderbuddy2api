@@ -10,8 +10,7 @@
 
 ### 实现与验收状态（2026-07-24）
 
-- Control Plane/Worker、账号池、完整 Vue 管理台、设置、审计、备份和本地测试已按本设计集成；当前可复现的本地质量门禁记录在
-  [进度账本](../../.superpowers/sdd/progress.md)。
+- Control Plane/Worker、账号池、完整 Vue 管理台、设置、审计、备份和本地测试已按本设计集成；实现记录与质量门禁以 Git 提交历史为准。
 - `CB-CHECKIN-01`、`QD-CHECKIN-01` 与 `AUTH-01` 仍是外部事实门禁，当前状态及脱敏记录规则以
   [Spike 结果](../spike/spike-results.md) 为准。没有明确授权、真实账号登录和脱敏结果前，不能把这些项目写为已验证。
 - 第 17 节的阶段描述与第 20 节的复选框是部署/真实验收清单，不会因 mock、CI 或本地隔离 E2E 自动勾选。它们必须由实际 Mac Mini 部署与授权账号操作逐项提供证据。
@@ -80,8 +79,8 @@ Shared domain      = accounts + credentials + models + usage + quotas + check-in
 
 | 工程 | 当前版本/状态 | 研究结论 | 允许吸收的内容 |
 | --- | --- | --- | --- |
-| [`workbuddy_api`](https://github.com/akise07/workbuddy_api) | 本地 `/Users/dmego/vibeCoding/workbuddy_api`，clean，`d5de25a` | 单账号 CodeBuddy OAuth device/plugin flow；没有多账号池、签到客户端和 refresh 实现 | auth state/token URL、请求头、pending `11217`、Token 字段解析、JWT user/exp 提取思路 |
-| [`qoderwork-account-switcher`](https://github.com/963072676/qoderwork-account-switcher) | 本地 `/Users/dmego/vibeCoding/qoderwork-account-switcher`，clean，`v1.1.0`，`022c1d4` | Tauri 桌面账号切换器；`quota.rs` 已实现 Qoder OpenAPI status/claim/refresh 和 COSY 额度调用 | Qoder HTTP 路径、Bearer 头、refresh 响应容错、`auth-v2.dat` 数据形状、账号摘要字段 |
+| [`workbuddy_api`](https://github.com/akise07/workbuddy_api) | 本地 `~/vibeCoding/workbuddy_api`，clean，`d5de25a` | 单账号 CodeBuddy OAuth device/plugin flow；没有多账号池、签到客户端和 refresh 实现 | auth state/token URL、请求头、pending `11217`、Token 字段解析、JWT user/exp 提取思路 |
+| [`qoderwork-account-switcher`](https://github.com/963072676/qoderwork-account-switcher) | 本地 `~/vibeCoding/qoderwork-account-switcher`，clean，`v1.1.0`，`022c1d4` | Tauri 桌面账号切换器；`quota.rs` 已实现 Qoder OpenAPI status/claim/refresh 和 COSY 额度调用 | Qoder HTTP 路径、Bearer 头、refresh 响应容错、`auth-v2.dat` 数据形状、账号摘要字段 |
 | [`qoderwork_checkin`](https://github.com/GitOfUser/qoderwork_checkin) | public Python，Windows 专用 | `pyautogui` 按 2560x1440 坐标点击，要求 QoderWork 已启动；不能作为 Mac Mini 无头主路径 | 只作为“没有 HTTP 契约时的退化证据”，不移植实现 |
 
 2026-07-23 新增管理台参考：

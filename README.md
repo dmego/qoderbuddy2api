@@ -1,40 +1,66 @@
 # qoderbuddy2api
 
-`qoderbuddy2api` is a local operations platform for CodeBuddy and Qoder CN
-accounts. A persistent Control Plane owns the administration UI, encrypted
-credentials, SQLite, scheduling, backup, and Worker supervision. Its Proxy
-Worker serves OpenAI- and Anthropic-compatible model traffic.
+<p align="center">
+  <b>Local multi-account model gateway + operations console for CodeBuddy &amp; Qoder</b>
+  <br/>
+  One OpenAI / Anthropic compatible endpoint, an encrypted account pool, and
+  daily check-in automation — all behind a loopback-only Control Plane.
+</p>
 
-Python 3.11+ is required. The product is for one trusted operator on a Mac
-Mini or development machine, not for public multi-tenant Internet exposure.
+<p align="center">
+  <a href="#features">Features</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#client-usage">Client usage</a> ·
+  <a href="#documentation">Documentation</a> ·
+  <a href="README.zh.md">中文</a>
+</p>
 
-## Topology and credentials
+<p align="center">
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776AB" />
+  <img alt="License" src="https://img.shields.io/badge/License-MIT-blue" />
+  <img alt="Frontend" src="https://img.shields.io/badge/Frontend-Vue%203-42b883" />
+</p>
 
-```text
-Browser (admin) ─────┐
-CLI clients (/v1) ───┴──> Control Plane :9999
-                          ├─ Admin UI, SQLite, audit, backup, supervisor
-                          └─ /v1/* forwarded to Proxy Worker 127.0.0.1:10001
+> A trusted-operator tool for a Mac Mini or dev machine — not a public
+> multi-tenant gateway. Worker stays loopback-only; credentials stay encrypted.
+
+## Features
+
+- **Unified model gateway** — one base URL (`/v1`) serves OpenAI and Anthropic
+  compatible clients; requests are routed across CodeBuddy and Qoder account
+  pools with pre-first-token failover.
+- **Encrypted account pool** — durable accounts, purpose-scoped credentials
+  (chat / check-in), versioned rotation, and an admin console to import,
+  verify, and promote accounts.
+- **Daily automation** — scheduled check-in, growth-center task/lottery/travel
+  automation, and a decoupled **login automation** (one WorkBuddy conversation
+  per day per account to keep the streak alive, with post-run upstream
+  verification and a manual retry button).
+- **Observability** — token usage rollups, credit/points history charts,
+  request events, audit log, and SQLite backups with restore validation.
+- **Safety by default** — three separate keys (proxy / admin / credential),
+  loopback-only Worker, no raw tokens in logs, URLs, or browser storage.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    C[CLI / IDE clients] -->|OpenAI / Anthropic /v1| CP[Control Plane :9999]
+    B[Browser] -->|/admin| CP
+    CP -->|"/v1/* forwarded"| W[Proxy Worker 127.0.0.1:10001]
+    CP -->|supervise| W
+    W --> CB[CodeBuddy / WorkBuddy]
+    W --> QD[Qoder]
 ```
 
-The Control Plane is the only persistent service. It starts and owns the
-Worker; do not create a second launchd/systemd Worker unit. The Worker normally
-remains loopback-only and does not open SQLite or receive the Admin Key or the
-credential encryption key.
+The **Control Plane** is the only persistent service: admin UI, SQLite,
+encrypted credentials, schedulers, backups, and Worker supervision. The
+**Proxy Worker** is a supervised child process that only listens on loopback
+and never touches SQLite or the admin/credential keys.
 
-Use three different values:
+## Quick start
 
-| Variable | Scope |
-| --- | --- |
-| `QB2API_PROXY_API_KEY` | Model client requests to the Worker |
-| `QB2API_ADMIN_KEY` | Initial admin login and admin automation |
-| `QB2API_CREDENTIAL_KEY` | Encryption of durable provider credentials |
-
-Never put raw keys, tokens, cookies, Authorization values, prompts, or
-completions in a URL, browser LocalStorage/sessionStorage, Git, screenshots,
-or ordinary logs.
-
-## Local quick start
+Requires Python 3.11+.
 
 ```bash
 git clone https://github.com/dmego/qoderbuddy2api.git
@@ -46,8 +72,7 @@ chmod 600 .env
 mkdir -p data logs && chmod 700 data logs
 ```
 
-Generate two independent HTTP keys and a Fernet credential key locally, then
-put them in `.env`:
+Generate **three distinct** values and put them in `.env`:
 
 ```bash
 .venv/bin/python -c 'import secrets; print(secrets.token_urlsafe(32))'
@@ -55,112 +80,55 @@ put them in `.env`:
 .venv/bin/python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
 ```
 
-Set `QB2API_ADMIN_KEY` and `QB2API_CREDENTIAL_KEY` before enabling the Admin
-UI, durable accounts, check-in, or backup. Start from the repository root so
-the process reads `.env`:
+Start from the repository root (so `.env` is picked up):
 
 ```bash
 .venv/bin/qb2api --mode control
 ```
 
-Default addresses:
+Then open <http://127.0.0.1:9999/admin/> and log in with `QB2API_ADMIN_KEY`.
+The Worker is started automatically.
 
-- Control health: `http://127.0.0.1:9999/health`
-- Admin UI: `http://127.0.0.1:9999/admin/`
-- Unified proxy entry (recommended): `http://127.0.0.1:9999/v1`
-  - Models: `http://127.0.0.1:9999/v1/models`
-  - OpenAI base URL: `http://127.0.0.1:9999/v1`
-  - Anthropic Messages: `http://127.0.0.1:9999/v1/messages`
-- Direct Worker (compatible, optional): `http://127.0.0.1:10001/v1`
+> Full configuration reference, remote-access snippets, and service templates:
+> [Configuration guide](docs/configuration.md) ·
+> [Mac Mini deployment](docs/deployment/macmini.md).
 
-客户端只填统一入口 `9999` 即可：Control Plane 会把 `/v1/*` 转发到 Worker。
-模型请求通过 `Authorization: Bearer …` 只发送 Proxy Key；进程级安全边界保持不变
-（管理面与代理面仍是两个进程，只是对外呈现单端口）。
+## Client usage
 
-## Trusted remote HTTP and HTTPS
+Point any OpenAI / Anthropic compatible client at the unified entry:
 
-HTTPS is recommended for every non-loopback browser. With the default
-`QB2API_ADMIN_COOKIE_SECURE=auto`, loopback HTTP is allowed and remote HTTP
-login is rejected.
-
-Trusted Tailscale/LAN HTTP is explicitly supported when TLS is unavailable:
-
-```ini
-QB2API_CONTROL_HOST=100.101.102.103
-QB2API_CONTROL_PORT=9999
-QB2API_ADMIN_COOKIE_SECURE=false
+```text
+Base URL: http://127.0.0.1:9999/v1
+API Key:  QB2API_PROXY_API_KEY
 ```
-
-This is a deliberate transport-risk exception: the session remains `HttpOnly`
-and `SameSite=Lax`, but the first Admin Key login is not encrypted. Use it only
-on a trusted tailnet/LAN. Never combine it with public DNS, public port
-forwarding, shared Wi-Fi, or a public reverse proxy.
-
-For HTTPS, bind Control Plane to loopback and use a TLS proxy. Only after its
-direct peer CIDR is known should it trust forwarded headers:
-
-```ini
-QB2API_CONTROL_HOST=127.0.0.1
-QB2API_ADMIN_COOKIE_SECURE=auto
-QB2API_TRUSTED_PROXY_HEADERS=true
-QB2API_TRUSTED_PROXY_NETWORKS=127.0.0.1/32
-```
-
-The reverse proxy must overwrite `X-Forwarded-For` and
-`X-Forwarded-Proto`; never enable this trust for arbitrary clients or a broad
-network range.
-
-## Operations, backup, and smoke
-
-Use the Service page (or the Admin-Key-protected service API) only to manage
-the Worker. Restart the Control Plane through launchd/systemd. A Control Plane
-restart stops its Worker and deliberately revokes browser sessions, so signing
-in again is expected.
-
-Backup restore is validation-only through the API: it checks checksum, SQLite
-integrity, and schema compatibility, then returns `offline_restore_required`.
-Actual restoration requires the Control Plane to be stopped before copying a
-validated SQLite backup over the active database.
 
 ```bash
-PYTHON_BIN=.venv/bin/python bash scripts/smoke_fresh_install.sh
-PYTHON_BIN=.venv/bin/python bash scripts/smoke_migrated_install.sh
+curl http://127.0.0.1:9999/v1/chat/completions \
+  -H "Authorization: Bearer $QB2API_PROXY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": "你好"}]}'
 ```
 
-The smokes use a temporary data directory, verify Control/Worker startup, a
-Worker crash followed by supervised restart, and backup dry-run validation.
-They delete their artifacts unless `QB2API_SMOKE_KEEP=1` is set.
+Model IDs are canonical lowercase names (e.g. `deepseek-v4-flash`, `glm-5.2`,
+`qwen3.7-max`); shared models are exposed once and routed internally.
 
-## Runbooks
+## Documentation
 
-- [Mac Mini deployment and operations](docs/deployment/macmini.md)
-- [Single-process migration](docs/migration/single-process-to-control-worker.md)
-- [launchd Control Plane template](deploy/launchd/cn.qb2api.control.plist)
-- [optional systemd development template](deploy/systemd/qb2api-control.service)
-- [Qoder Windows check-in exporter](tools/qoder-checkin-exporter/README.md)
+| Doc | Contents |
+| --- | --- |
+| [Configuration guide](docs/configuration.md) | Keys, `.env` reference, remote access, client examples |
+| [Mac Mini deployment](docs/deployment/macmini.md) | Install, launchd/systemd, backup & restore, account onboarding |
+| [Migration guide](docs/migration/single-process-to-control-worker.md) | Migrate from the old single-process setup |
+| [Qoder check-in exporter](tools/qoder-checkin-exporter/README.md) | Windows QoderWork credential export workflow |
+| [Architecture design](docs/design/macmini-multi-account-proxy-checkin.md) | Original architecture and security baseline |
 
-Static environment tokens are transient chat slots. Use the Admin UI to
-promote/import an account that needs durable identity, check-in, or credential
-rotation. Qoder chat PATs and Qoder check-in access/refresh credentials are
-different values. Import WorkBuddy check-in credentials from
-`/admin/accounts/add` with the CodeBuddy / WorkBuddy Check-in workflow. It
-accepts bearer, cookie, or bearer + cookie mode and persists only after the
-server validates success or an already-checked-in result. Never store those
-credentials in `.env`, a URL, browser storage, or a generic endpoint.
-
-The administrative console is a high-density local control plane. Its grouped
-navigation covers runtime, account pool, proxy/models, automation, and
-governance. On a phone the navigation is an explicit drawer; table data remains
-scrollable and dangerous operations retain their confirmation dialogs. The UI
-does not persist an Admin Key or provider credentials in browser storage.
-
-## Development verification
+## Development
 
 ```bash
 pytest -q
 ruff check src tests
 python -m compileall -q src/qb2api
-cd frontend && npm run test && npm run typecheck && npm run lint && npm run build && npm run test:e2e
+cd frontend && npm run test && npm run typecheck && npm run lint && npm run build
 git diff --check
 ```
 

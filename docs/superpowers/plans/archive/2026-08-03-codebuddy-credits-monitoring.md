@@ -1021,7 +1021,7 @@ async def main():
     rows = await repo.list_metric_snapshots(provider="codebuddy")
     for row in rows:
         print(row["account_id"], row["metric_kind"], row["status"], row["value"])
-    history = await repo.list_metric_history(provider="codebuddy", account_id="cb-501debc6f6f7", metric_kind="points", limit=3)
+    history = await repo.list_metric_history(provider="codebuddy", account_id="cb-<redacted>", metric_kind="points", limit=3)
     print("history:", [(r["observed_at"], r["value"].get("total_remaining")) for r in history])
     await scheduler.stop()
     await repo.close()

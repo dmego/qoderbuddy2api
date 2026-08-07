@@ -24,7 +24,7 @@ elif provider == "codebuddy" and purpose == "checkin":
 
 ## 2. 已证实的上游协议（脱敏 Spike 证据）
 
-2026-08-03 使用库中两个真实 CodeBuddy OAuth 账号（`cb-501debc6f6f7`、`cb-d0cb2f6ace4a`）实测：
+2026-08-03 使用库中两个真实 CodeBuddy OAuth 账号（`cb-<redacted>`、`cb-<redacted>`）实测：
 
 - `POST https://www.workbuddy.cn/billing/meter/get-user-resource`
 - 请求头：`Authorization: Bearer <access_token>`、`Accept: application/json`、`Content-Type: application/json`、`X-Client-Platform: web`，body `{}`
