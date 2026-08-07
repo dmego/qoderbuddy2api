@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 from qb2api.config import Settings
 
@@ -125,7 +127,22 @@ class GrowthScheduler:
             logger.info("growth scheduler skip %s/%s: no token", provider, account_id)
             return
         try:
-            result = await self._automation.run(token)
+            result = await self._automation.run(
+                token,
+                account_id=account_id,
+                local_date=self._local_date(),
+                timezone=self._settings.checkin_timezone,
+            )
+            confirm = await self._automation.confirm_active_day(
+                token,
+                account_id=account_id,
+                local_date=self._local_date(),
+                timezone=self._settings.checkin_timezone,
+            )
+            if confirm.get("status") in {"lit", "not_lit"}:
+                logger.info(
+                    "growth scheduler active-day confirm %s/%s: %s", provider, account_id, confirm,
+                )
         except Exception as error:
             logger.warning(
                 "growth scheduler error %s/%s: %s",
@@ -140,6 +157,9 @@ class GrowthScheduler:
             "growth scheduler completed %s/%s: %s",
             provider, account_id, result,
         )
+
+    def _local_date(self) -> str:
+        return datetime.now(ZoneInfo(self._settings.checkin_timezone)).date().isoformat()
 
     async def _resolve_token(self, provider: str, account_id: str) -> str | None:
         for purpose in ("checkin", "chat"):

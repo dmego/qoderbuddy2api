@@ -127,6 +127,9 @@ CREATE TABLE IF NOT EXISTS workbuddy_active_days (
     started_at TEXT NOT NULL,
     finished_at TEXT,
     updated_at TEXT NOT NULL,
+    confirmed TEXT,
+    confirmed_at TEXT,
+    confirm_attempts INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (provider, account_id, local_date, timezone)
 );
 

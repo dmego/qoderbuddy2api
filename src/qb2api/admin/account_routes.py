@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 from qb2api.accounts.imports import persist_qoder_checkin
@@ -231,6 +231,12 @@ async def growth_overview(provider: str, account_id: str, request: Request) -> d
         raise HTTPException(status_code=502, detail=f"growth_unavailable:{error}") from error
     finally:
         await client.aclose()
+    local_day = await state.account_repo.get_workbuddy_active_day(
+        provider="codebuddy", account_id=account_id,
+        local_date=_growth_local_date(state), timezone=state.settings.checkin_timezone,
+    )
+    result = dict(result)
+    result["active_day_local"] = _active_day_local_view(local_day)
     return result
 
 
@@ -242,9 +248,14 @@ async def growth_execute(provider: str, account_id: str, request: Request) -> di
     _validate_growth_account(state, provider, account_id)
     token = await _resolve_codebuddy_token(state, provider, account_id)
     from qb2api.checkin.growth_automation import GrowthAutomation
-    automation = GrowthAutomation(settings=state.settings)
+    automation = GrowthAutomation(settings=state.settings, repository=state.account_repo)
     try:
-        result = await automation.run(token)
+        result = await automation.run(
+            token,
+            account_id=account_id,
+            local_date=_growth_local_date(state),
+            timezone=state.settings.checkin_timezone,
+        )
     finally:
         await automation.close()
     await state.account_repo.insert_growth_log(
@@ -267,9 +278,14 @@ async def growth_run_step(
     _validate_growth_account(state, provider, account_id)
     token = await _resolve_codebuddy_token(state, provider, account_id)
     from qb2api.checkin.growth_automation import GrowthAutomation
-    automation = GrowthAutomation(settings=state.settings)
+    automation = GrowthAutomation(settings=state.settings, repository=state.account_repo)
     try:
-        result = await automation.run_step(token, step)
+        result = await automation.run_step(
+            token, step,
+            account_id=account_id,
+            local_date=_growth_local_date(state),
+            timezone=state.settings.checkin_timezone,
+        )
     finally:
         await automation.close()
     results = {step: result}
@@ -285,17 +301,68 @@ async def growth_run_step(
 
 @router.get("/accounts/{provider}/{account_id}/growth/history")
 async def growth_history(
-    provider: str, account_id: str, request: Request,
+    provider: str,
+    account_id: str,
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
 ) -> dict[str, Any]:
-    """查询某账号最近的成长自动化执行记录。"""
+    """查询某账号最近的成长自动化执行记录（分页）。"""
     await require_admin(request)
     state = admin_state(request)
     if find_account_view(state, provider, account_id) is None:
         raise HTTPException(status_code=404, detail="account_not_found")
-    logs = await state.account_repo.list_growth_logs(
-        provider=provider, account_id=account_id, limit=20,
+    total = await state.account_repo.count_growth_logs(
+        provider=provider, account_id=account_id,
     )
-    return {"logs": logs}
+    logs = await state.account_repo.list_growth_logs(
+        provider=provider, account_id=account_id, limit=page_size, offset=(page - 1) * page_size,
+    )
+    return {
+        "logs": logs,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "pages": (total + page_size - 1) // page_size if total else 0,
+    }
+
+
+@router.post("/accounts/{provider}/{account_id}/growth/active-day/rerun")
+async def growth_active_day_rerun(
+    provider: str, account_id: str, *, request: Request,
+) -> dict[str, Any]:
+    """手动强制重跑当日活跃日 ACP：绕过当天幂等锁，消耗一次真实对话额度。"""
+    await require_admin(request)
+    state = admin_state(request)
+    _validate_growth_account(state, provider, account_id)
+    token = await _resolve_codebuddy_token(state, provider, account_id)
+    from qb2api.checkin.growth_automation import GrowthAutomation
+    automation = GrowthAutomation(settings=state.settings, repository=state.account_repo)
+    try:
+        result = await automation.rerun_active_day(
+            token, account_id=account_id,
+            local_date=_growth_local_date(state), timezone=state.settings.checkin_timezone,
+        )
+    finally:
+        await automation.close()
+    await state.account_repo.insert_growth_log(
+        provider=provider, account_id=account_id,
+        triggered_by="manual:active_day_rerun", results={"active_day": result},
+    )
+    return {"status": "ok", "step": "active_day", "result": result}
+
+
+def _active_day_local_view(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    return {
+        "local_date": row.get("local_date"),
+        "status": row.get("status"),
+        "error_code": row.get("error_code"),
+        "confirmed": row.get("confirmed"),
+        "confirm_attempts": row.get("confirm_attempts"),
+        "finished_at": row.get("finished_at"),
+    }
 
 
 def _validate_growth_account(state: Any, provider: str, account_id: str) -> None:
@@ -305,6 +372,13 @@ def _validate_growth_account(state: Any, provider: str, account_id: str) -> None
         raise HTTPException(status_code=400, detail="env_account_read_only")
     if find_account_view(state, provider, account_id) is None:
         raise HTTPException(status_code=404, detail="account_not_found")
+
+
+def _growth_local_date(state: Any) -> str:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    return datetime.now(ZoneInfo(state.settings.checkin_timezone)).date().isoformat()
 
 
 async def _refresh_growth_metrics(

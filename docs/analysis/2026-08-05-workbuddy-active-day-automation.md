@@ -378,3 +378,45 @@ CodeBuddy 自动签到成功
 ```
 
 这就是本次研究真正落盘的核心收获：业务含义已拆开，错误方案有实测排除证据，正式协议有可复现流程，代码触发边界和安全边界明确，当前运行库的迁移状态也已核对，剩余未知项没有被伪装成已完成。
+
+## 17. 2026-08-07 更新：登录自动化与签到解耦
+
+本文 §8 的触发矩阵和 §13 的"独立成长调度器"边界已被本次改动替换：**活跃日（登录自动化）从签到批次中拆出，成为成长中心一个独立自动化步骤，由独立的 GrowthScheduler 调度。**
+
+现状与改动：
+
+| 项 | 之前 | 现在 |
+| --- | --- | --- |
+| 活跃日触发 | 仅挂签到批次成功钩子（trigger=scheduler/catch_up 且当次 CLAIMED） | 独立步骤 `active_day`，进 GrowthScheduler 循环（启动即跑 + 每 `growth.scheduler_interval_seconds` 间隔，幂等一天一次） |
+| 与签到关系 | 手动签到会抢占自动签到 → 活跃日在手动签到当天永不执行 | 完全解耦，不再依赖签到结果或触发类型 |
+| 开关 | `growth.auto_active_day`（只影响签到钩子） | 同样开关，作用于调度/执行全部步骤 |
+| 管理台 | 成长页无卡片 | GrowthPage 新增"登录自动化"卡片；`growth/execute` 与 `growth/run/{step}` 均带日期/时区上下文 |
+| 调度定时 | — | 仍沿用成长调度共享间隔；因幂等 claim，'一天一次'不需 per-task 定时器 |
+
+触发语义（更新版触发矩阵）：
+
+| 场景 | ACP 活跃日 |
+| --- | --- |
+| GrowthScheduler tick（含程序启动后的首轮） | 执行；每日首次 tick 发起 ACP，其余 tick 幂等跳过 |
+| 成长页手动"执行全部" | 按 `growth.auto_active_day` 开关 |
+| 成长页手动单步 active_day | 强制执行（不受开关限制，与其他步骤一致） |
+| 签到（任意 trigger） | 不再影响活跃日 |
+
+关键不变量保持原文 §9：`workbuddy_active_days` 唯一键 + `ON CONFLICT DO NOTHING` 原子预留，重复调用返回 `already_claimed`，绝不重复创建 ACP 会话。移除签到钩子的回归测试见 `tests/integration/test_checkin_service.py::test_scheduled_checkin_does_not_claim_active_day`。
+
+## 18. 2026-08-07 更新：前置检查 + 后置确认 + 手动重跑
+
+针对"本地 ACP succeeded 但上游未记账"的暴露出的空白（今天 cb-d5352301964b 实际是上游异步延迟，约 40 分钟后补记），补充了三段式机制（schema 升至 7，`workbuddy_active_days` 增加 `confirmed`/`confirmed_at`/`confirm_attempts` 列）：
+
+| 机制 | 行为 | 代码落点 |
+| --- | --- | --- |
+| 前置检查 | 当天首次 claim 时，若成长中心 `today.is_active`/当日 score>0 已被外部点亮，则记 `skipped_external`（confirmed=lit）并跳过 ACP，不消耗调用 | `growth_automation.run_active_day`（复用 run() 已拉取的 overview） |
+| 后置确认 | 每次 GrowthScheduler tick，对 `status=succeeded` 且未确认的当天记录拉取 overview：点亮→`confirmed=lit`；未点亮→累加 `confirm_attempts`，达到 `growth.active_day_confirm_attempts`（默认 3，`GROWTH_ACTIVE_DAY_CONFIRM_ATTEMPTS`）仍无→`confirmed=not_lit` | `growth_automation.confirm_active_day` + `growth_scheduler._run_for_account` |
+| 手动重跑 | `POST /accounts/{provider}/{account_id}/growth/active-day/rerun`：绕过幂等锁强制再发一次 ACP（真实扣费），重写当天结果为 succeeded/failed 并重置确认状态；前端成长页 login 卡片显示"今日:已点亮/未点亮"与"今日重试"按钮 | `admin/account_routes.py::growth_active_day_rerun`、`growth_automation.rerun_active_day`、`repo.replace_workbuddy_active_day_result` |
+
+行为边界：
+- 本地幂等锁仍是一天最多一次自动 ACP 的硬闸；前置检查只在"当天尚无任何本地尝试"时读取上游，滞后窗口不会诱发重复调用。
+- 后置确认是有上限的观测：达到尝试上限标记 `not_lit`，不再无限拉取上游。
+- 手动重跑是唯一绕过当日锁的入口，必须由管理员显式发起。
+
+验证：schema v7 迁移（含旧库 `_ensure_column`）、前置跳过、确认走向（lit/pending/not_lit）、强制重跑与前端卡片均已纳入测试；今日 4 账号经重启后全部 `confirmed=lit`，含先前"未记账"的 cb-d5352301964b（上游延迟 40 分钟补记）。

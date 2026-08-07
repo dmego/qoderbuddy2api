@@ -32,6 +32,7 @@ class GrowthLogMixin:
         provider: str,
         account_id: str,
         limit: int = 20,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         async with self._operation() as db:
             cursor = await db.execute(
@@ -41,9 +42,9 @@ class GrowthLogMixin:
                 FROM growth_automation_log
                 WHERE provider=? AND account_id=?
                 ORDER BY created_at DESC
-                LIMIT ?
+                LIMIT ? OFFSET ?
                 """,
-                (provider, account_id, limit),
+                (provider, account_id, limit, offset),
             )
             rows = await cursor.fetchall()
         return [
@@ -57,3 +58,15 @@ class GrowthLogMixin:
             }
             for row in rows
         ]
+
+    async def count_growth_logs(self, *, provider: str, account_id: str) -> int:
+        async with self._operation() as db:
+            cursor = await db.execute(
+                """
+                SELECT COUNT(*) AS count FROM growth_automation_log
+                WHERE provider=? AND account_id=?
+                """,
+                (provider, account_id),
+            )
+            row = await cursor.fetchone()
+        return int(row["count"]) if row else 0

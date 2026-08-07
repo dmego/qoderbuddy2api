@@ -134,7 +134,6 @@ class RuntimeServices:
             registry=self.account_registry,
             resolver=self.credential_resolver,
             vault=self.credential_vault,
-            growth_automation=GrowthAutomation(settings=self.settings, repository=self.account_repo),
         )
         self.checkin_scheduler = CheckinScheduler(self.checkin_service, self.settings)
         self.checkin_scheduler.start()
@@ -159,7 +158,7 @@ class RuntimeServices:
             return
         self.growth_scheduler = GrowthScheduler(
             settings=self.settings,
-            automation=GrowthAutomation(settings=self.settings),
+            automation=GrowthAutomation(settings=self.settings, repository=self.account_repo),
             registry=self.account_registry,
             resolver=self.credential_resolver,
             repo=self.account_repo,

@@ -7,6 +7,7 @@ import MetricChart from "@/components/MetricChart.vue";
 import PanelHeader from "@/components/PanelHeader.vue";
 import StatePill from "@/components/StatePill.vue";
 import { apiRequest } from "@/api/client";
+import { formatTokens } from "@/utils/format";
 import { statusLabel } from "@/utils/presentation";
 
 type Account = { provider: string; enabled: boolean; summary_status: string };
@@ -27,7 +28,7 @@ const summary = computed(() => [
   { label: "可用账号", value: String((accounts.data.value?.accounts ?? []).filter((item) => item.enabled).length), note: "CodeBuddy / Qoder", icon: UsersRound },
   { label: "启用模型", value: String((models.data.value?.models ?? []).filter((item) => item.enabled).length), note: statusLabel(service.data.value?.observed_state ?? "代理服务未连接"), icon: Cpu },
   { label: "请求总数", value: String(usage.data.value?.summary?.request_count ?? 0), note: `错误 ${usage.data.value?.summary?.error_count ?? 0}`, icon: Activity },
-  { label: "Token", value: usage.data.value?.summary?.token_event_count ? String(((usage.data.value.summary.input_tokens ?? 0) + (usage.data.value.summary.output_tokens ?? 0)).toLocaleString()) : "不可用", note: "仅统计实际用量事件", icon: Coins },
+  { label: "Token", value: usage.data.value?.summary?.token_event_count ? formatTokens((usage.data.value.summary.input_tokens ?? 0) + (usage.data.value.summary.output_tokens ?? 0)) : "不可用", note: "仅统计实际用量事件", icon: Coins },
 ]);
 async function refreshAll(): Promise<void> { await Promise.all([accounts.refetch(), models.refetch(), usage.refetch(), metrics.refetch(), service.refetch(), checkin.refetch(), rollups.refetch()]); }
 </script>

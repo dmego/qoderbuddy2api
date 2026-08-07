@@ -96,8 +96,14 @@ class AccountRepository(
                 ("quota_change_status", "TEXT"),
             ):
                 await self._ensure_column("checkin_attempts", column, definition)
+            for column, definition in (
+                ("confirmed", "TEXT"),
+                ("confirmed_at", "TEXT"),
+                ("confirm_attempts", "INTEGER NOT NULL DEFAULT 0"),
+            ):
+                await self._ensure_column("workbuddy_active_days", column, definition)
             await self.db.execute(
-                "INSERT INTO schema_meta(key, value) VALUES('schema_version', '6') "
+                "INSERT INTO schema_meta(key, value) VALUES('schema_version', '7') "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
             )
             await self.db.commit()

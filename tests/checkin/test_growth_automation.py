@@ -36,13 +36,37 @@ class FakeRepository:
     def __init__(self) -> None:
         self.claims = 0
         self.finished: list[dict[str, str | None]] = []
+        self.touched: list[dict[str, str | None]] = []
+        self.replaced: list[dict[str, str | None]] = []
+        self.row: dict[str, object] | None = None
 
-    async def claim_workbuddy_active_day(self, **_kwargs) -> bool:
+    async def claim_workbuddy_active_day(self, **kwargs) -> bool:
         self.claims += 1
+        if self.row is None:
+            self.row = {**kwargs, "status": "running", "confirm_attempts": 0}
         return self.claims == 1
 
     async def finish_workbuddy_active_day(self, **kwargs) -> None:
         self.finished.append(kwargs)
+        if self.row is not None:
+            self.row["status"] = kwargs["status"]
+            self.row["error_code"] = kwargs.get("error_code")
+            if kwargs.get("confirmed"):
+                self.row["confirmed"] = kwargs["confirmed"]
+
+    async def get_workbuddy_active_day(self, **_kwargs) -> dict | None:
+        return dict(self.row) if self.row else None
+
+    async def touch_workbuddy_active_day_confirmation(self, **kwargs) -> None:
+        self.touched.append(kwargs)
+        if self.row is not None:
+            self.row["confirm_attempts"] = int(self.row.get("confirm_attempts") or 0) + 1
+            if kwargs.get("confirmed"):
+                self.row["confirmed"] = kwargs["confirmed"]
+
+    async def replace_workbuddy_active_day_result(self, **kwargs) -> None:
+        self.replaced.append(kwargs)
+        self.row = {**kwargs, "confirmed": None, "confirm_attempts": 0}
 
 
 class FakeActiveDayClient:
@@ -65,10 +89,10 @@ async def test_disabled_automation_does_not_fetch() -> None:
     settings = Settings(
         growth_auto_tasks=False, growth_auto_lottery=False,
         growth_auto_travel=False, growth_auto_redeem=False,
-        growth_auto_buddy_open=False,
+        growth_auto_buddy_open=False, growth_auto_active_day=False,
     )
     result = await GrowthAutomation(settings, client).run("token")
-    for key in ("tasks", "lottery", "travel", "redeem", "buddy_open"):
+    for key in ("tasks", "lottery", "travel", "redeem", "buddy_open", "active_day"):
         assert result[key] == {"status": "skipped", "detail": "未启用"}
 
 
@@ -78,7 +102,7 @@ async def test_step_failure_isolated_and_sanitized() -> None:
     settings = Settings(
         growth_auto_tasks=False, growth_auto_lottery=False,
         growth_auto_travel=True, growth_auto_redeem=False,
-        growth_auto_buddy_open=False,
+        growth_auto_buddy_open=False, growth_auto_active_day=False,
     )
     result = await GrowthAutomation(settings, client).run("token")
     assert result["travel"]["status"] == "failed"
@@ -147,3 +171,151 @@ async def test_active_day_is_daily_idempotent_and_records_safe_failure() -> None
     assert second == {"status": "already_claimed"}
     assert active_day.calls == 1
     assert repository.finished[0]["error_code"] == "rpc_timeout"
+
+
+@pytest.mark.asyncio
+async def test_run_runs_active_day_when_enabled_with_context() -> None:
+    repository = FakeRepository()
+    active_day = FakeActiveDayClient()
+    settings = Settings(growth_auto_active_day=True)
+    automation = GrowthAutomation(
+        settings, FakeGrowthClient({}), repository=repository, active_day_client=active_day
+    )
+
+    result = await automation.run(
+        "token", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai"
+    )
+
+    assert result["active_day"]["status"] == "succeeded"
+    assert active_day.calls == 1
+
+    # 同一账号同一天再次执行幂等。
+    second = await automation.run(
+        "token", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai"
+    )
+    assert second["active_day"]["status"] == "already_claimed"
+    assert active_day.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_run_skips_active_day_when_toggle_off_or_context_missing() -> None:
+    settings = Settings(growth_auto_active_day=False)
+    automation = GrowthAutomation(settings, FakeGrowthClient({}), repository=FakeRepository())
+    result = await automation.run(
+        "token", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai"
+    )
+    assert result["active_day"] == {"status": "skipped", "detail": "未启用"}
+
+    enabled = Settings(growth_auto_active_day=True)
+    automation_enabled = GrowthAutomation(enabled, FakeGrowthClient({}), repository=FakeRepository())
+    missing = await automation_enabled.run("token")
+    assert missing["active_day"] == {"status": "skipped", "detail": "active_day_context_missing"}
+
+
+@pytest.mark.asyncio
+async def test_run_step_active_day_requires_context() -> None:
+    settings = Settings(growth_auto_active_day=True)
+    automation = GrowthAutomation(settings, FakeGrowthClient({}), repository=FakeRepository())
+
+    missing = await automation.run_step("token", "active_day")
+    assert missing["status"] == "skipped"
+    assert missing["detail"] == "active_day_context_missing"
+
+    bogus = await automation.run_step("token", "bogus")
+    assert bogus["status"] == "failed"
+    assert "unknown_step" in bogus["detail"]
+
+
+@pytest.mark.asyncio
+async def test_run_active_day_skips_when_already_lit_externally() -> None:
+    repository = FakeRepository()
+    active_day = FakeActiveDayClient()
+    automation = GrowthAutomation(
+        Settings(growth_auto_active_day=True), FakeGrowthClient({}),
+        repository=repository, active_day_client=active_day,
+    )
+    overview = {"heatmap": {"today": {"is_active": True, "score": 2, "status_text": "今日已活跃"}}}
+
+    result = await automation.run_active_day(
+        "token", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai",
+        overview=overview,
+    )
+
+    assert result == {"status": "skipped_external"}
+    assert active_day.calls == 0
+    assert repository.finished[0]["status"] == "skipped_external"
+    assert repository.finished[0]["confirmed"] == "lit"
+
+
+@pytest.mark.asyncio
+async def test_confirm_active_day_marks_lit_when_today_counted() -> None:
+    repository = FakeRepository()
+    automation = GrowthAutomation(Settings(growth_auto_active_day=True), FakeGrowthClient({}), repository=repository)
+    await repository.claim_workbuddy_active_day(
+        provider="codebuddy", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai",
+    )
+    await repository.finish_workbuddy_active_day(
+        provider="codebuddy", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai",
+        status="succeeded",
+    )
+
+    overview = {"heatmap": {"today": {"is_active": True}}}
+    result = await automation.confirm_active_day(
+        "token", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai", overview=overview,
+    )
+
+    assert result["status"] == "lit"
+    assert repository.touched[-1]["confirmed"] == "lit"
+
+
+@pytest.mark.asyncio
+async def test_confirm_active_day_terminates_not_lit_after_attempts() -> None:
+    repository = FakeRepository()
+    settings = Settings(growth_auto_active_day=True, growth_active_day_confirm_attempts=2)
+    automation = GrowthAutomation(settings, FakeGrowthClient({}), repository=repository)
+    await repository.claim_workbuddy_active_day(
+        provider="codebuddy", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai",
+    )
+    await repository.finish_workbuddy_active_day(
+        provider="codebuddy", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai",
+        status="succeeded",
+    )
+    overview = {"heatmap": {"today": {"is_active": False, "score": 0}}}
+
+    first = await automation.confirm_active_day(
+        "token", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai", overview=overview,
+    )
+    second = await automation.confirm_active_day(
+        "token", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai", overview=overview,
+    )
+
+    assert first["status"] == "pending"
+    assert second["status"] == "not_lit"
+    assert repository.row["confirmed"] == "not_lit"
+
+
+@pytest.mark.asyncio
+async def test_rerun_active_day_forces_conversation_and_resets_confirm() -> None:
+    repository = FakeRepository()
+    active_day = FakeActiveDayClient()
+    automation = GrowthAutomation(
+        Settings(growth_auto_active_day=True), FakeGrowthClient({}),
+        repository=repository, active_day_client=active_day,
+    )
+    await repository.claim_workbuddy_active_day(
+        provider="codebuddy", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai",
+    )
+    await repository.finish_workbuddy_active_day(
+        provider="codebuddy", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai",
+        status="succeeded",
+    )
+
+    result = await automation.rerun_active_day(
+        "token", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai",
+    )
+
+    assert result == {"status": "succeeded"}
+    assert active_day.calls == 1
+    assert repository.replaced[0]["status"] == "succeeded"
+    assert repository.row["confirmed"] is None
+    assert repository.row["confirm_attempts"] == 0

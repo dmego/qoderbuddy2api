@@ -54,7 +54,7 @@ async def test_v2_usage_rollup_table_gets_token_count_columns(tmp_path):
     cursor = await repository.db.execute("PRAGMA table_info(usage_rollups)")
     columns = {row[1] for row in await cursor.fetchall()}
     assert {"token_event_count", "missing_token_count"} <= columns
-    assert await repository.schema_version() == "6"
+    assert await repository.schema_version() == "7"
     await repository.close()
 
 
@@ -137,7 +137,56 @@ async def test_v3_to_v4_adds_management_tables_and_preserves_data(tmp_path):
     assert event_count[0][0] == 0
     assert tuple(audit[0]) == ("account.update", "succeeded")
     assert tuple(usage[0]) == ("request-v3", 1, 2)
-    assert await repository.schema_version() == "6"
+    assert await repository.schema_version() == "7"
+    await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_v6_active_days_table_gets_confirm_columns(tmp_path):
+    path = tmp_path / "v6.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO schema_meta VALUES ('schema_version', '6');
+        CREATE TABLE workbuddy_active_days (
+            provider TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            local_date TEXT NOT NULL,
+            timezone TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'running',
+            error_code TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (provider, account_id, local_date, timezone)
+        );
+        INSERT INTO workbuddy_active_days VALUES (
+            'codebuddy', 'cb-1', '2026-08-05', 'Asia/Shanghai',
+            'succeeded', NULL, '2026-08-05T01:00:00+00:00', '2026-08-05T01:00:30+00:00',
+            '2026-08-05T01:00:30+00:00'
+        );
+        """
+    )
+    connection.close()
+
+    repository = AccountRepository(str(path))
+    await repository.connect()
+    await repository.migrate()
+
+    columns = {
+        row[1]
+        for row in await (await repository.db.execute(
+            "PRAGMA table_info(workbuddy_active_days)"
+        )).fetchall()
+    }
+    row = await (await repository.db.execute(
+        "SELECT status, confirmed, confirm_attempts FROM workbuddy_active_days "
+        "WHERE account_id='cb-1'"
+    )).fetchone()
+    assert {"confirmed", "confirmed_at", "confirm_attempts"} <= columns
+    assert tuple(row) == ("succeeded", None, 0)
+    assert await repository.schema_version() == "7"
     await repository.close()
 
 

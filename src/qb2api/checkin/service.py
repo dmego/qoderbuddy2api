@@ -23,7 +23,6 @@ from .batch import (
 )
 from .codebuddy import WorkBuddyClient
 from .executors import CheckinExecutor
-from .growth_automation import GrowthAutomation
 from .qoder import QoderCheckinClient
 from .service_execution import CheckinBatchExecutor
 from .timing import jitter_seconds as jitter_seconds
@@ -46,13 +45,11 @@ class CheckinService:
         vault: CredentialVault,
         workbuddy: WorkBuddyClient | None = None,
         qoder: QoderCheckinClient | None = None,
-        growth_automation: GrowthAutomation | None = None,
     ) -> None:
         self._settings = settings
         self._repo = repo
         self._registry = registry
         self._resolver = resolver
-        self._growth_automation = growth_automation
         self._executor = CheckinExecutor(
             settings=settings,
             repo=repo,
@@ -67,7 +64,6 @@ class CheckinService:
             repo=repo,
             registry=registry,
             executor=self._executor,
-            growth_runner=self._run_growth if growth_automation is not None else None,
         )
         self._running = False
         self._last_run: CheckinBatchResult | None = None
@@ -105,29 +101,6 @@ class CheckinService:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         await self._executor.close()
-        if self._growth_automation is not None:
-            await self._growth_automation.close()
-
-    async def _run_growth(self, target: CheckinTarget, context: RunContext) -> dict[str, Any]:
-        if self._registry.is_env_account(target.provider, target.account_id):
-            return {"status": "env_account_skipped"}
-        try:
-            credential = await self._resolver.credential(target.provider, target.account_id, "checkin")
-        except LookupError:
-            credential = None
-        token = self._credential_token(credential)
-        if not token:
-            try:
-                credential = await self._resolver.credential(target.provider, target.account_id, "chat")
-            except LookupError:
-                credential = None
-            token = self._credential_token(credential)
-        if not isinstance(token, str) or not token.strip():
-            return {"status": "access_token_missing"}
-        result = await self._growth_automation.run_active_day(
-            token, account_id=target.account_id, local_date=context.local_date, timezone=context.timezone
-        )
-        return result
 
     @staticmethod
     def _credential_token(credential: Any) -> str | None:

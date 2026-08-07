@@ -97,14 +97,15 @@ async def test_growth_execute_runs_automation_for_manual_account(admin_context, 
     calls: list[str] = []
 
     class FakeAutomation:
-        def __init__(self, *, settings):
+        def __init__(self, *, settings, repository=None):
             assert settings is app.state.settings
+            assert repository is app.state.account_repo
 
-        async def run(self, token):
+        async def run(self, token, **_ctx):
             calls.append(token)
             return {"tasks": {"status": "skipped", "detail": "未启用"}}
 
-        async def run_step(self, token, step):
+        async def run_step(self, token, step, **_ctx):
             calls.append(f"{token}:{step}")
             return {"status": "completed", "detail": "ok"}
 
@@ -140,10 +141,10 @@ async def test_growth_run_step_executes_single_step(admin_context, monkeypatch) 
     await registry.rebuild()
 
     class FakeAutomation:
-        def __init__(self, *, settings):
+        def __init__(self, *, settings, repository=None):
             pass
 
-        async def run_step(self, token, step):
+        async def run_step(self, token, step, **_ctx):
             assert token == "step-token"
             assert step == "lottery"
             return {"status": "no_chances", "detail": "暂无抽奖次数"}
@@ -180,3 +181,45 @@ async def test_growth_execute_rejects_env_account(admin_context) -> None:
         )
     assert response.status_code == 400
     assert response.json()["detail"] == "env_account_read_only"
+
+
+@pytest.mark.asyncio
+async def test_growth_active_day_rerun_forces_conversation(admin_context, monkeypatch) -> None:
+    app, repository, vault, registry = admin_context
+    account_id = "cb-growth-rerun"
+    await repository.upsert_account(
+        provider="codebuddy", account_id=account_id, label=account_id,
+        source="manual", enabled=True,
+    )
+    await repository.upsert_credential(
+        provider="codebuddy", account_id=account_id, purpose="chat", mode="bearer",
+        encrypted_payload=vault.encrypt({"access_token": "rerun-token"}),
+    )
+    await registry.rebuild()
+    calls: list[str] = []
+
+    class FakeAutomation:
+        def __init__(self, *, settings, repository=None):
+            assert repository is app.state.account_repo
+
+        async def rerun_active_day(self, token, *, account_id, local_date, timezone):
+            calls.append(token)
+            return {"status": "succeeded"}
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(automation_mod, "GrowthAutomation", FakeAutomation)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://test"
+    ) as client:
+        response = await client.post(
+            f"/api/admin/accounts/codebuddy/{account_id}/growth/active-day/rerun",
+            headers=_headers(), json={},
+        )
+
+    assert response.status_code == 200
+    assert calls == ["rerun-token"]
+    body = response.json()
+    assert body["step"] == "active_day"
+    assert body["result"]["status"] == "succeeded"

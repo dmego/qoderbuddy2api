@@ -20,7 +20,23 @@ from .growth import GrowthUnavailableError, WorkBuddyGrowthClient
 logger = logging.getLogger("qb2api.checkin.growth_automation")
 
 _REDEEM_DAYS = {"7d": 7, "14d": 14, "28d": 28}
-_STEP_KEYS = ("tasks", "lottery", "travel", "redeem", "buddy_open")
+_STEP_KEYS = ("tasks", "lottery", "travel", "redeem", "buddy_open", "active_day")
+
+
+def _today_lit(overview: dict[str, Any], local_date: str) -> bool:
+    """成长中心今天是否已被上游记账点亮（is_active / 当日 score>0）。"""
+    heatmap = overview.get("heatmap") or {}
+    today = heatmap.get("today") or {}
+    if today.get("is_active") is True:
+        return True
+    score = today.get("score")
+    if isinstance(score, (int, float)) and score > 0:
+        return True
+    for cell in heatmap.get("cells") or []:
+        if isinstance(cell, dict) and cell.get("date") == local_date:
+            s = cell.get("score")
+            return isinstance(s, (int, float)) and s > 0
+    return False
 
 
 class GrowthAutomation:
@@ -57,9 +73,9 @@ class GrowthAutomation:
         account_id: str,
         local_date: str,
         timezone: str,
+        overview: dict[str, Any] | None = None,
     ) -> dict[str, str]:
-        if not self._settings.growth_auto_active_day:
-            return {"status": "disabled"}
+        # 开关由调用方(run 的 growth_auto_active_day)决定；手动单步执行不在此拦截。
         if self._repository is None:
             return {"status": "repository_missing"}
         if not access_token:
@@ -74,6 +90,18 @@ class GrowthAutomation:
         )
         if not claimed:
             return {"status": "already_claimed"}
+        # 前置检查：当天若已被外部点亮（人工使用/其它进程），省掉这次 ACP。
+        if overview is None:
+            try:
+                overview = await self._client.fetch(access_token)
+            except Exception:
+                overview = None
+        if overview is not None and _today_lit(overview, local_date):
+            await self._repository.finish_workbuddy_active_day(
+                provider="codebuddy", account_id=account_id, local_date=local_date, timezone=timezone,
+                status="skipped_external", confirmed="lit",
+            )
+            return {"status": "skipped_external"}
         try:
             await self._active_day_client.run(access_token)
         except ActiveDayError as error:
@@ -94,7 +122,98 @@ class GrowthAutomation:
         )
         return {"status": "succeeded"}
 
-    async def run(self, access_token: str) -> dict[str, Any]:
+    async def confirm_active_day(
+        self,
+        access_token: str,
+        *,
+        account_id: str,
+        local_date: str,
+        timezone: str,
+        overview: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """后置确认：当天本地 succeeded 后，上游是否真的记账点亮。
+
+        已确认(confirmed 非空)时不再访问上游；达到尝试上限仍未点亮则标记 not_lit。
+        """
+        if self._repository is None:
+            return {"status": "repository_missing"}
+        if not access_token:
+            return {"status": "access_token_missing"}
+        current = await self._repository.get_workbuddy_active_day(
+            provider="codebuddy", account_id=account_id, local_date=local_date, timezone=timezone,
+        )
+        if current is None or current.get("status") != "succeeded":
+            return {"status": "skip_irrelevant"}
+        if current.get("confirmed") is not None:
+            return {"status": "confirmed", "confirmed": current.get("confirmed")}
+        if overview is None:
+            try:
+                overview = await self._client.fetch(access_token)
+            except Exception:
+                overview = None
+        repo_kwargs = dict(
+            provider="codebuddy", account_id=account_id, local_date=local_date, timezone=timezone,
+        )
+        if overview is not None and _today_lit(overview, local_date):
+            await self._repository.touch_workbuddy_active_day_confirmation(
+                **repo_kwargs, confirmed="lit",
+            )
+            return {"status": "lit"}
+        attempts = int(current.get("confirm_attempts") or 0) + 1
+        if attempts >= self._settings.growth_active_day_confirm_attempts:
+            await self._repository.touch_workbuddy_active_day_confirmation(
+                **repo_kwargs, confirmed="not_lit",
+            )
+            return {"status": "not_lit"}
+        await self._repository.touch_workbuddy_active_day_confirmation(**repo_kwargs)
+        return {"status": "pending"}
+
+    async def rerun_active_day(
+        self,
+        access_token: str,
+        *,
+        account_id: str,
+        local_date: str,
+        timezone: str,
+    ) -> dict[str, str]:
+        """手动强制重跑当日 ACP：绕过幂等锁、不前置检查，再次发起确认。"""
+        if self._repository is None:
+            return {"status": "repository_missing"}
+        if not access_token:
+            return {"status": "access_token_missing"}
+        if self._active_day_client is None:
+            self._active_day_client = WorkBuddyActiveDayClient(
+                base_url=self._settings.codebuddy_endpoint,
+                timeout=float(self._settings.checkin_request_timeout_seconds),
+            )
+        try:
+            await self._active_day_client.run(access_token)
+        except ActiveDayError as error:
+            await self._repository.replace_workbuddy_active_day_result(
+                provider="codebuddy", account_id=account_id, local_date=local_date, timezone=timezone,
+                status="failed", error_code=error.code,
+            )
+            return {"status": "failed", "error_code": error.code}
+        except Exception as error:
+            await self._repository.replace_workbuddy_active_day_result(
+                provider="codebuddy", account_id=account_id, local_date=local_date, timezone=timezone,
+                status="failed", error_code=type(error).__name__,
+            )
+            return {"status": "failed", "error_code": type(error).__name__}
+        await self._repository.replace_workbuddy_active_day_result(
+            provider="codebuddy", account_id=account_id, local_date=local_date, timezone=timezone,
+            status="succeeded",
+        )
+        return {"status": "succeeded"}
+
+    async def run(
+        self,
+        access_token: str,
+        *,
+        account_id: str | None = None,
+        local_date: str | None = None,
+        timezone: str | None = None,
+    ) -> dict[str, Any]:
         """执行所有已启用步骤，返回结构化结果。"""
         results: dict[str, Any] = {key: _skipped() for key in _STEP_KEYS}
         if not access_token:
@@ -123,14 +242,44 @@ class GrowthAutomation:
             results["buddy_open"] = await self._guard(
                 lambda: self._step_buddy_open(access_token)
             )
+        if self._settings.growth_auto_active_day:
+            if account_id and local_date and timezone:
+                results["active_day"] = await self._guard(
+                    lambda: self.run_active_day(
+                        access_token,
+                        account_id=account_id, local_date=local_date, timezone=timezone,
+                        overview=overview,
+                    )
+                )
+            else:
+                results["active_day"] = {
+                    "status": "skipped", "detail": "active_day_context_missing",
+                }
         return results
 
-    async def run_step(self, access_token: str, step: str) -> dict[str, Any]:
+    async def run_step(
+        self,
+        access_token: str,
+        step: str,
+        *,
+        account_id: str | None = None,
+        local_date: str | None = None,
+        timezone: str | None = None,
+    ) -> dict[str, Any]:
         """只执行单个步骤，返回该步骤的结构化结果。"""
         if step not in _STEP_KEYS:
             return {"status": "failed", "detail": f"unknown_step:{step}"}
         if not access_token:
             return {"status": "failed", "detail": "access_token_missing"}
+        if step == "active_day":
+            if not (account_id and local_date and timezone):
+                return {"status": "skipped", "detail": "active_day_context_missing"}
+            return await self._guard(
+                lambda: self.run_active_day(
+                    access_token,
+                    account_id=account_id, local_date=local_date, timezone=timezone,
+                )
+            )
         try:
             overview = await self._client.fetch(access_token)
         except Exception as error:
