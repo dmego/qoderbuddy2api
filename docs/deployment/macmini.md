@@ -205,9 +205,9 @@ CODEBUDDY_CHECKIN_ENABLED=true
 jitter 可以在管理台中持久化调整。`CODEBUDDY_CHECKIN_STATUS_METHOD` 保持为空，直到真实
 `CB-CHECKIN-01` Spike 确认该接口的方法和鉴权方式，避免猜测性 preflight 请求。
 
-真实验证后只在 [spike-results.md](../spike/spike-results.md) 记录 provider、账号 ID、HTTP
-状态、业务码、request ID、耗时和已确认的 header 名称；不要记录 Authorization、Cookie、
-refresh token、请求体、原始响应或浏览器导出的 HAR。
+真实验证后按脱敏规则记录：只保存 provider、账号 ID、HTTP 状态、业务码、request ID、
+耗时和已确认的 header 名称；不要记录 Authorization、Cookie、refresh token、请求体、
+原始响应或浏览器导出的 HAR。
 
 ## 8. 验收
 
@@ -228,6 +228,6 @@ refresh token、请求体、原始响应或浏览器导出的 HAR。
 7. **签到链路**：至少一个已授权 CodeBuddy 账号通过「验证签到」确认框，其
    check-in purpose 显示 `active + verified`，且 chat credential 未被复制成新的
    check-in credential 行。
-8. **协议证据**：WorkBuddy `daily-checkin` 的真实结果已按
-   [spike-results.md](../spike/spike-results.md) 规则脱敏记录；未确认的
-   `checkin-status` method 保持禁用。
+8. **协议证据**：WorkBuddy `daily-checkin` 的真实结果已按脱敏规则记录
+   （仅 provider、账号 ID、HTTP 状态、业务码、request ID、耗时与已确认的
+   header 名称）；未确认的 `checkin-status` method 保持禁用。
