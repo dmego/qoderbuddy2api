@@ -5,7 +5,7 @@
 
 ## 1. 背景与需求
 
-2api 管理台需求包含“Token/积分/配额监控”（设计文档 `macmini-multi-account-proxy-checkin.md` 11.5、Phase 3）。当前实现只对 Qoder 真实拉取 quota；CodeBuddy 的 `points` 快照是占位值：
+2api 管理台需求包含"Token/积分/配额监控"（见架构文档指标监控章节）。当前实现只对 Qoder 真实拉取 quota；CodeBuddy 的 `points` 快照是占位值：
 
 ```python
 # src/qb2api/checkin/metrics_collector.py

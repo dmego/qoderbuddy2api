@@ -118,7 +118,7 @@ Model IDs are canonical lowercase names (e.g. `deepseek-v4-flash`, `glm-5.2`,
 | --- | --- |
 | [Configuration guide](docs/configuration.md) | Keys, `.env` reference, remote access, client examples |
 | [Mac Mini deployment](docs/deployment/macmini.md) | Install, launchd/systemd, backup & restore, account onboarding |
-| [Architecture design](docs/design/macmini-multi-account-proxy-checkin.md) | Original architecture and security baseline |
+| [Architecture](docs/design/architecture.md) | System architecture and security model |
 
 ## Development
 

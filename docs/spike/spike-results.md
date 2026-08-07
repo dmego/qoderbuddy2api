@@ -16,8 +16,8 @@
 
 | Project | Path | Commit (if available) |
 | --- | --- | --- |
-| workbuddy_api | `~/vibeCoding/workbuddy_api` | see design §2.2 (`d5de25a` at design time) |
-| qoderwork-account-switcher | `~/vibeCoding/qoderwork-account-switcher` | see design §2.2 (`022c1d4` / v1.1.0 at design time) |
+| workbuddy_api | `~/vibeCoding/workbuddy_api` | local reference commit `d5de25a` |
+| qoderwork-account-switcher | `~/vibeCoding/qoderwork-account-switcher` | local reference commit `022c1d4` / v1.1.0 |
 
 ## Observed source evidence (2026-07-24)
 

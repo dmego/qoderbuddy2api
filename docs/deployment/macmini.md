@@ -209,15 +209,25 @@ jitter 可以在管理台中持久化调整。`CODEBUDDY_CHECKIN_STATUS_METHOD` 
 状态、业务码、request ID、耗时和已确认的 header 名称；不要记录 Authorization、Cookie、
 refresh token、请求体、原始响应或浏览器导出的 HAR。
 
-验收前完成：
+## 8. 验收
 
-- [ ] `.env`、data、logs 权限限制到运行用户；三类 key 不同。
-- [ ] 远程模式明确为可信 HTTP 或 HTTPS；若信任转发头，CIDR 与 header 覆盖均正确。
-- [ ] Worker 没有独立 unit，`/internal/*` 没有网络暴露。
-- [ ] Control health、Worker 模型列表、Control restart、Worker restart 均已确认。
-- [ ] 已运行 fresh/migrated smoke，已完成备份 restore dry-run。
-- [ ] 管理员没有保存 raw key、cookie 或 exporter JSON 的长期副本。
-- [ ] 至少一个已授权的 CodeBuddy 账号已通过“验证签到”确认框；其 check-in purpose 显示
-  `active + verified`，且 chat credential 未被复制到新的 check-in credential 行。
-- [ ] WorkBuddy `daily-checkin` 的真实结果已按 `CB-CHECKIN-01` 脱敏记录；未确认的
-  `checkin-status` method 没有被启用。
+部署完成后按以下顺序验证，全部通过即可投入日常使用：
+
+1. **权限与密钥**：`.env`、`data`、`logs` 权限仅限运行用户（目录 `0700`、文件
+   `0600`），Proxy / Admin / Credential 三把密钥互不相同。
+2. **传输模式**：确认远程访问为可信 HTTP 或 HTTPS；若信任转发头，CIDR 与
+   header 覆盖均正确，无公网端口映射。
+3. **进程边界**：Worker 没有独立 launchd/systemd unit，`/internal/*` 未对
+   网络暴露。
+4. **健康检查**：`/health` 返回 `component=control-plane`；管理台显示 Worker
+   `HEALTHY`；Control 与 Worker 各自 restart 后恢复。
+5. **数据备份**：执行 fresh / migrated smoke，创建备份并完成 restore dry-run
+   （`offline_restore_required` 为预期结果）。
+6. **凭据卫生**：管理员不保留 raw key、cookie 或导出 JSON 的长期副本；浏览器
+   存储中无 Admin Key 或凭据。
+7. **签到链路**：至少一个已授权 CodeBuddy 账号通过「验证签到」确认框，其
+   check-in purpose 显示 `active + verified`，且 chat credential 未被复制成新的
+   check-in credential 行。
+8. **协议证据**：WorkBuddy `daily-checkin` 的真实结果已按
+   [spike-results.md](../spike/spike-results.md) 规则脱敏记录；未确认的
+   `checkin-status` method 保持禁用。
