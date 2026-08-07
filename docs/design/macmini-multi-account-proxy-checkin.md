@@ -1394,8 +1394,6 @@ frontend/
 pyproject.toml            # async SQLite/runtime dependencies and scripts
 package-lock.json         # committed frontend lockfile
 
-tools/
-  qoder-checkin-exporter/ # Windows one-shot exporter; 不随服务常驻
 deploy/
   launchd/                 # Control Plane plist; Worker is child-owned by Supervisor
   systemd/                 # optional Linux development service

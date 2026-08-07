@@ -172,10 +172,8 @@ sudo systemctl status qb2api-control
 
 ## 7. 账号导入与验收
 
-Qoder chat PAT 与签到 access/refresh 是不同凭据。Windows 侧使用
-[Qoder exporter](../../tools/qoder-checkin-exporter/README.md) 生成最小临时 JSON；先建立
-durable Qoder chat account，再通过受支持的专用 Qoder check-in import 提交，服务端 probe
-失败时不能覆盖原凭据。导出文件完成后安全删除。
+Qoder chat PAT 与签到 access/refresh 是不同凭据。先建立 durable Qoder chat account，再
+通过受支持的专用 Qoder check-in import 提交，服务端 probe 失败时不能覆盖原凭据。
 
 WorkBuddy 凭据通过 `/admin/accounts/add` 的 CodeBuddy / WorkBuddy Check-in 专用流程导入，
 支持 Bearer、Cookie 和 Bearer + Cookie。只在 HTTPS 或显式可信 HTTP 的 Admin session 中

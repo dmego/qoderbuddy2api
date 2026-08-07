@@ -112,8 +112,6 @@ curl http://127.0.0.1:9999/v1/chat/completions \
 | --- | --- |
 | [配置指南](docs/configuration.md) | 密钥、`.env` 参考、远程访问、客户端示例 |
 | [Mac Mini 部署与运维](docs/deployment/macmini.md) | 安装、launchd/systemd、备份恢复、账号导入 |
-| [单进程迁移](docs/migration/single-process-to-control-worker.md) | 从旧单进程架构迁移 |
-| [Qoder 签到导出器](tools/qoder-checkin-exporter/README.md) | Windows QoderWork 凭据导出流程 |
 | [架构设计](docs/design/macmini-multi-account-proxy-checkin.md) | 原始架构与安全基线 |
 
 ## 开发验证
