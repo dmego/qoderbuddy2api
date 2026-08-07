@@ -194,7 +194,10 @@ describe("operations API contracts", () => {
   });
 });
 
-const model = { provider: "qoder", model_id: "model-a", display_name: "Model A", capabilities: ["chat"], source: "definition", enabled: true };
+const model = {
+  model_id: "model-a", display_name: "Model A", capabilities: ["chat"], source: "upstream", enabled: true,
+  routes: [{ provider: "qoder", upstream_id: "Model-A", enabled: true, source: "upstream" }],
+};
 const account = { provider: "qoder", account_id: "qd-1", label: "研发账号", source: "manual", enabled: true, summary_status: "action_required", purposes: { chat: { enabled: true, status: "active", verification_status: "verified" } } };
 
 function mountPage(component: Parameters<typeof mount>[0]) {

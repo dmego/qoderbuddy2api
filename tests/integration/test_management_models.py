@@ -18,12 +18,14 @@ async def test_model_usage_and_audit_query_contracts(management_context) -> None
         model_id="Qwen3.7-Max",
         display_name="Qwen Max Production",
         capabilities=["chat"],
+        source="upstream",
     )
     await repository.upsert_model(
         provider="qoder",
         model_id="Qwen3.7-Flash",
         display_name="Qwen Flash",
         capabilities=["chat"],
+        source="upstream",
     )
     for index, latency in enumerate((100, 200, 300), start=1):
         await repository.add_request_event({
@@ -51,7 +53,7 @@ async def test_model_usage_and_audit_query_contracts(management_context) -> None
     )
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://test") as client:
-        models = await client.get("/api/admin/models?search=max", headers=_headers())
+        models = await client.get("/api/admin/models?search=qwen", headers=_headers())
         queried_models = await client.get("/api/admin/models?query=flash", headers=_headers())
         summary = await client.get("/api/admin/usage/summary?status=succeeded", headers=_headers())
         failed_summary = await client.get("/api/admin/usage/summary?status=failed", headers=_headers())
@@ -64,8 +66,10 @@ async def test_model_usage_and_audit_query_contracts(management_context) -> None
         invalid_status = await client.get("/api/admin/usage/summary?status=unknown", headers=_headers())
         invalid_category = await client.get("/api/admin/audit?category=unknown", headers=_headers())
 
-    assert [item["model_id"] for item in models.json()["models"]] == ["Qwen3.7-Max"]
-    assert [item["model_id"] for item in queried_models.json()["models"]] == ["Qwen3.7-Flash"]
+    assert [item["model_id"] for item in models.json()["models"]] == ["qwen3.7-flash", "qwen3.7-max"]
+    queried_ids = [item["model_id"] for item in queried_models.json()["models"]]
+    assert "qwen3.7-flash" in queried_ids and "qwen3.7-max" not in queried_ids
+    assert models.json()["models"][1]["routes"][0]["provider"] == "qoder"
     assert summary.json()["summary"]["request_count"] == 3
     assert summary.json()["summary"]["latency_avg_ms"] == 200
     assert summary.json()["summary"]["latency_p95_ms"] == 300

@@ -12,6 +12,7 @@ def filter_models(
     source: str | None,
     capability: str | None,
     search: str | None,
+    provider: str | None = None,
 ) -> list[dict[str, Any]]:
     needle = search.casefold() if search is not None else None
     return [
@@ -23,6 +24,7 @@ def filter_models(
             source=source,
             capability=capability,
             needle=needle,
+            provider=provider,
         )
     ]
 
@@ -34,6 +36,7 @@ def _matches_model(
     source: str | None,
     capability: str | None,
     needle: str | None,
+    provider: str | None,
 ) -> bool:
     if enabled is not None and model["enabled"] is not enabled:
         return False
@@ -41,7 +44,13 @@ def _matches_model(
         return False
     if capability is not None and capability not in model["capabilities"]:
         return False
+    if provider is not None and not _has_route_provider(model, provider):
+        return False
     return needle is None or _matches_model_search(model, needle)
+
+
+def _has_route_provider(model: dict[str, Any], provider: str) -> bool:
+    return any(route["provider"] == provider for route in model.get("routes", []))
 
 
 def _matches_model_search(model: dict[str, Any], needle: str) -> bool:

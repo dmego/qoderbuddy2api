@@ -39,20 +39,20 @@ describe("operations console workflows", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input); const method = init?.method ?? "GET"; calls.push({ url, method });
       if (url.includes("/usage/summary")) return response({ summary: { request_count: 12, success_count: 11, error_count: 1, latency_avg_ms: 120, latency_p95_ms: 240 } });
-      if (method === "POST" && url.endsWith("/probe")) return response({ status: "succeeded", latency_ms: 132, checked_at: "2026-07-24T00:00:00Z" });
-      if (method === "PATCH") return response({ provider: "qoder", model_id: "model-a", enabled: false });
-      return response({ models: [{ provider: "qoder", model_id: "model-a", display_name: "Model A", capabilities: ["chat", "streaming"], source: "definition", enabled: true, last_seen_at: "2026-07-24T00:00:00Z" }], total: 1, next_cursor: null });
+      if (method === "POST" && url.endsWith("/probe")) return response({ status: "succeeded", model_id: "model-a", routes: [{ provider: "qoder", upstream_id: "Model-A", status: "succeeded", latency_ms: 132 }] });
+      if (method === "PATCH") return response({ model_id: "model-a", enabled: false });
+      return response({ models: [{ model_id: "model-a", display_name: "Model A", capabilities: ["chat", "streaming"], source: "upstream", enabled: true, routes: [{ provider: "qoder", upstream_id: "Model-A", enabled: true, source: "upstream" }], last_seen_at: "2026-07-24T00:00:00Z" }], total: 1, next_cursor: null });
     }));
     const wrapper = mount(ModelsPage, { global: { plugins: [createPinia(), VueQueryPlugin] } });
     await flushPromises();
 
     await buttonWithText(wrapper, "探测").trigger("click"); await flushPromises();
-    expect(wrapper.text()).toContain("132 ms");
+    expect(wrapper.text()).toContain("132ms");
     await wrapper.get('button[aria-label="停用 model-a"]').trigger("click");
     await confirmDialog();
 
     expect(calls.some((item) => item.method === "POST" && item.url.endsWith("/probe"))).toBe(true);
-    expect(calls.some((item) => item.method === "PATCH" && item.url.includes("/models/qoder/model-a"))).toBe(true);
+    expect(calls.some((item) => item.method === "PATCH" && item.url.endsWith("/models/model-a"))).toBe(true);
     wrapper.unmount();
   });
 

@@ -9,7 +9,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from qb2api.accounts.qoder_model_sync import sync_qoder_models
-from qb2api.models import load_models_from_config
+from qb2api.models import ModelCapabilities, ModelDefinition, load_models_from_config, load_unified_overrides
+from qb2api.models_catalog import UnifiedModel, build_unified_catalog
 from qb2api.openai import ChatCompletionRequest, ChatMessage
 from qb2api.provider_factory import ProviderFactory
 from qb2api.providers.qoder_auth import QoderError
@@ -51,16 +52,16 @@ async def list_models(
     limit: str | None = None,
 ) -> dict[str, Any]:
     await require_admin(request)
-    repository = _repository(request)
     selected_provider = provider_filter(provider)
     selected_search = _model_search(search, query)
-    models = await repository.list_models(selected_provider)
+    models = await _unified_models(admin_state(request))
     selected = filter_models(
         models,
         enabled=bool_filter(enabled),
         source=text_filter(source, detail="invalid_source"),
         capability=text_filter(capability, detail="invalid_capability"),
         search=selected_search,
+        provider=selected_provider,
     )
     selected_limit = bounded_int(limit, default=100, maximum=100)
     page, next_cursor = page_slice(
@@ -69,6 +70,183 @@ async def list_models(
         selected_limit,
     )
     return {"models": page, "limit": selected_limit, "next_cursor": next_cursor}
+
+
+async def _unified_models(state: Any) -> list[dict[str, Any]]:
+    """Admin-facing unified catalog view with per-route enabled state."""
+    settings = state.settings
+    per_provider = load_models_from_config(settings.model_config_path)
+    repository = state.account_repo
+    route_enabled: dict[tuple[str, str], bool] = {}
+    if repository is not None:
+        rows = await repository.list_models()
+        for row in rows:
+            route_enabled[(row["provider"], row["model_id"])] = bool(row["enabled"])
+        upstream = [
+            _catalog_row_definition(row)
+            for row in await repository.list_models("qoder")
+            if row.get("source") == "upstream"
+        ]
+        per_provider["qoder"] = upstream
+    overrides = load_unified_overrides(settings.model_config_path)
+    catalog = build_unified_catalog(per_provider, overrides)
+    return [_unified_row(entry, route_enabled) for entry in catalog.values()]
+
+
+def _catalog_row_definition(row: dict[str, Any]) -> ModelDefinition:
+    capabilities = row.get("capabilities") or []
+    metadata = row.get("metadata") or {}
+    return ModelDefinition(
+        id=row["model_id"],
+        name=row.get("display_name") or row["model_id"],
+        provider="qoder",
+        capabilities=ModelCapabilities(
+            **{
+                name: name in capabilities
+                for name in (
+                    "chat", "streaming", "tool_calling", "reasoning",
+                    "reasoning_effort", "context_window", "max_output_tokens",
+                )
+            }
+        ),
+        max_context=int(metadata.get("default_context_window") or 0) or 128000,
+        max_output=4096,
+        metadata={"cosy_key": metadata.get("cosy_key")},
+    )
+
+
+def _unified_row(
+    entry: UnifiedModel,
+    route_enabled: dict[tuple[str, str], bool],
+) -> dict[str, Any]:
+    routes = []
+    for route in entry.routes:
+        enabled = route_enabled.get((route.provider, route.upstream_id), True)
+        routes.append({
+            "provider": route.provider,
+            "upstream_id": route.upstream_id,
+            "enabled": enabled,
+            "source": "upstream" if route.provider == "qoder" else "definition",
+        })
+    return {
+        "model_id": entry.id,
+        "display_name": entry.name,
+        "capabilities": _capability_names(entry.capabilities),
+        "enabled": any(route["enabled"] for route in routes),
+        "source": "upstream" if any(route["provider"] == "qoder" for route in routes) else "definition",
+        "routes": routes,
+        "last_seen_at": None,
+    }
+
+
+def _capability_names(capabilities: ModelCapabilities) -> list[str]:
+    return [
+        name
+        for name, flag in (
+            ("chat", capabilities.chat),
+            ("streaming", capabilities.streaming),
+            ("tool_calling", capabilities.tool_calling),
+            ("reasoning", capabilities.reasoning),
+            ("reasoning_effort", capabilities.reasoning_effort),
+            ("context_window", capabilities.context_window),
+            ("max_output_tokens", capabilities.max_output_tokens),
+        )
+        if flag
+    ]
+
+
+@router.patch("/{model_id}")
+async def patch_unified_model(model_id: str, request: Request) -> dict[str, Any]:
+    await require_admin(request)
+    body = await json_object(request)
+    if set(body) != {"enabled"} or not isinstance(body["enabled"], bool):
+        raise HTTPException(status_code=400, detail="enabled_boolean_required")
+    state = admin_state(request)
+    repository = _repository(request)
+    entry = await _unified_entry(state, model_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="model_not_found")
+    async with repository.transaction():
+        for route in entry["routes"]:
+            if route["provider"] == "codebuddy":
+                await repository.upsert_model(
+                    provider="codebuddy",
+                    model_id=route["upstream_id"],
+                    display_name=entry["display_name"],
+                    capabilities=entry["capabilities"],
+                    source="definition",
+                    enabled=body["enabled"],
+                )
+            else:
+                await repository.set_model_enabled("qoder", route["upstream_id"], body["enabled"])
+        await _audit(
+            request,
+            action="model.update",
+            resource_type="unified",
+            resource_id=model_id,
+        )
+    await _refresh_runtime(state)
+    return {"model_id": model_id, "enabled": body["enabled"]}
+
+
+@router.post("/{model_id}/probe")
+async def probe_unified_model(model_id: str, request: Request) -> dict[str, Any]:
+    await require_admin(request)
+    if await json_object(request, allow_empty=True):
+        raise HTTPException(status_code=400, detail="probe_body_not_allowed")
+    state = admin_state(request)
+    entry = await _unified_entry(state, model_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="model_not_found")
+    routes = [route for route in entry["routes"] if route["enabled"]]
+    if not routes:
+        raise HTTPException(status_code=409, detail="model_disabled")
+    results = await _probe_routes(state, routes)
+    succeeded = all(result["status"] == "succeeded" for result in results)
+    await _audit(
+        request,
+        action="model.probe",
+        resource_type="unified",
+        resource_id=model_id,
+        result="succeeded" if succeeded else "failed",
+    )
+    return {"status": "succeeded" if succeeded else "failed", "model_id": model_id, "routes": results}
+
+
+async def _unified_entry(state: Any, model_id: str) -> dict[str, Any] | None:
+    return next(
+        (model for model in await _unified_models(state) if model["model_id"] == model_id),
+        None,
+    )
+
+
+async def _probe_routes(state: Any, routes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    results = []
+    for route in routes:
+        try:
+            result = await probe_model_for_account(
+                state, route["provider"], None, model_id=route["upstream_id"]
+            )
+            results.append({
+                "provider": route["provider"],
+                "upstream_id": route["upstream_id"],
+                "status": "succeeded",
+                "latency_ms": result["latency_ms"],
+            })
+        except ProbeError as error:
+            results.append({
+                "provider": route["provider"],
+                "upstream_id": route["upstream_id"],
+                "status": "failed",
+                "error_code": error.code,
+            })
+    return results
+
+
+async def _refresh_runtime(state: Any) -> None:
+    refresh = getattr(state, "refresh_provider_pools", None)
+    if refresh is not None:
+        await refresh()
 
 
 @router.patch("/{provider}/{model_id}")

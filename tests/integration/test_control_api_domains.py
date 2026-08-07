@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
@@ -43,7 +45,9 @@ def test_settings_models_usage_metrics_and_audit_are_secret_safe(tmp_path) -> No
         )
         assert invalid_jitter.status_code == 400
 
-        assert client.get("/api/admin/models", headers=headers).json()["models"] == []
+        models_payload = client.get("/api/admin/models", headers=headers).json()
+        assert models_payload["models"]
+        assert "admin-secret" not in json.dumps(models_payload)
         assert client.get("/api/admin/usage/summary", headers=headers).json()["summary"]["request_count"] == 0
         assert client.get("/api/admin/metrics/accounts", headers=headers).json()["snapshots"] == []
         refreshed = client.post("/api/admin/metrics/refresh", headers=headers)

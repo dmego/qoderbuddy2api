@@ -46,6 +46,9 @@ class RuntimeSnapshotService:
         models = load_models_from_config(self._runtime.settings.model_config_path)
         upstream = await self._upstream_catalog_models()
         models["qoder"] = upstream
+        models["codebuddy"] = await self._filter_catalog_enabled(
+            "codebuddy", models.get("codebuddy", [])
+        )
         proxy_keys, proxy_auth_required = await self._proxy_keys()
         return RuntimeSnapshot(
             snapshot_version=self._version,
@@ -68,6 +71,19 @@ class RuntimeSnapshotService:
             if model is not None:
                 models.append(model)
         return models
+
+    async def _filter_catalog_enabled(
+        self,
+        provider: str,
+        definitions: list[ModelDefinition],
+    ) -> list[ModelDefinition]:
+        """Drop definitions disabled in the admin catalog; unknown rows stay enabled."""
+        repository = self._runtime.account_repo
+        if repository is None or not definitions:
+            return definitions
+        rows = await repository.list_models(provider)
+        enabled_by_id = {row["model_id"]: bool(row["enabled"]) for row in rows}
+        return [definition for definition in definitions if enabled_by_id.get(definition.id, True)]
 
     async def _proxy_keys(self) -> tuple[tuple[RuntimeProxyKey, ...], bool]:
         keys: list[RuntimeProxyKey] = []
