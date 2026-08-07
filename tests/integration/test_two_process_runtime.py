@@ -72,9 +72,9 @@ def test_supervised_worker_handshake_loads_control_snapshot(tmp_path) -> None:
         )
         assert control["component"] == "control-plane"
         assert ready["snapshot_version"] >= 1
-        assert any(item["id"] == "codebuddy/auto" for item in models["data"])
+        assert any(item["id"] == "auto" for item in models["data"])
         assert anonymous_after_create.status_code == 401
-        assert any(item["id"] == "codebuddy/auto" for item in dynamic_models["data"])
+        assert any(item["id"] == "auto" for item in dynamic_models["data"])
         assert revoked["status"] == "succeeded"
         assert rejected.status_code == 401
         assert anonymous_after_revoke.status_code == 401

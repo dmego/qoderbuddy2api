@@ -123,7 +123,7 @@ def _log(
         return
     request_logger.log_request(
         model=request.model,
-        provider=context.provider_name,
+        provider=context.provider_name or request.telemetry.get("provider") or "unknown",
         stream=True,
         success=success,
         duration=duration,

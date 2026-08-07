@@ -264,9 +264,15 @@ async def _probe_model_id(state: Any, provider: str, model_id: str | None) -> st
         if not match["enabled"]:
             raise ProbeError(409, "model_disabled")
         return model_id
+    return await _fallback_probe_model(state, provider, models)
+
+
+async def _fallback_probe_model(state: Any, provider: str, models: list[dict[str, Any]]) -> str:
     enabled = next((item["model_id"] for item in models if item["enabled"]), None)
     if enabled is not None:
         return enabled
+    if provider != "codebuddy":
+        raise ProbeError(409, "provider_model_unavailable")
     definitions = load_models_from_config(state.settings.model_config_path).get(provider, [])
     if not definitions:
         raise ProbeError(409, "provider_model_unavailable")

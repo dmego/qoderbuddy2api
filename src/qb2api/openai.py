@@ -53,10 +53,14 @@ class ChatCompletionRequest(BaseModel):
     seed: int | None = None
     user: str | None = None
 
+    _selected_provider: str | None = PrivateAttr(default=None)
     _selected_account_id: str | None = PrivateAttr(default=None)
     _stream_committed: bool = PrivateAttr(default=False)
     _input_tokens: int | None = PrivateAttr(default=None)
     _output_tokens: int | None = PrivateAttr(default=None)
+
+    def record_provider(self, provider: str) -> None:
+        self._selected_provider = provider
 
     def record_slot(self, slot_key: str, *, committed: bool = False) -> None:
         self._selected_account_id = slot_key.split(":", 1)[-1]
@@ -82,6 +86,7 @@ class ChatCompletionRequest(BaseModel):
     @property
     def telemetry(self) -> dict[str, Any]:
         return {
+            "provider": self._selected_provider,
             "account_id": self._selected_account_id,
             "stream_committed": self._stream_committed,
             "input_tokens": self._input_tokens,

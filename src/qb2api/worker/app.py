@@ -147,7 +147,7 @@ def _emit(
         {
             "event_id": str(uuid.uuid4()),
             "request_id": request.state.telemetry_request_id,
-            "provider": context.get("provider"),
+            "provider": context.get("provider") or usage.get("provider") or "unknown",
             "account_id": usage.get("account_id"),
             "model_id": context.get("model_id"),
             "protocol": context.get("protocol"),

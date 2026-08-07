@@ -87,11 +87,11 @@ def test_worker_boots_from_snapshot_without_opening_sqlite(tmp_path) -> None:
     assert ready.status_code == 200
     assert ready.json()["snapshot_version"] == 4
     assert models.status_code == 200
-    assert any(item["id"] == "codebuddy/auto" for item in models.json()["data"])
+    assert any(item["id"] == "auto" for item in models.json()["data"])
     assert not (tmp_path / "qb2api.sqlite3").exists()
 
 
-async def test_snapshot_merges_upstream_catalog_models(tmp_path) -> None:
+async def test_snapshot_qoder_models_come_only_from_upstream(tmp_path) -> None:
     config_path = tmp_path / "models.json"
     config_path.write_text(
         json.dumps(
@@ -134,7 +134,7 @@ async def test_snapshot_merges_upstream_catalog_models(tmp_path) -> None:
         await repository.close()
 
     models = {model.id: model for model in snapshot.models["qoder"]}
-    assert "Qwen3.8-Max" in models
+    assert set(models) == {"Qwen3.8-Max"}  # stale config baseline is dropped
     upstream = models["Qwen3.8-Max"]
     assert upstream.provider == "qoder"
     assert upstream.name == "Qwen3.8-Max"
@@ -142,12 +142,11 @@ async def test_snapshot_merges_upstream_catalog_models(tmp_path) -> None:
     assert upstream.max_output == 4096
     assert upstream.capabilities.reasoning is True
     assert upstream.metadata == {"cosy_key": "qmodel_38max", "default_effort": "high"}
-    assert "Config-Only" in models
-    assert models["Config-Only"].max_context == 100000
 
     # Merged snapshot must survive the worker-side payload roundtrip.
     restored = RuntimeSnapshot.from_payload(snapshot.to_payload())
     restored_models = {model.id: model for model in restored.models["qoder"]}
+    assert set(restored_models) == {"Qwen3.8-Max"}
     assert restored_models["Qwen3.8-Max"].metadata == upstream.metadata
     assert restored_models["Qwen3.8-Max"].max_context == 131072
 

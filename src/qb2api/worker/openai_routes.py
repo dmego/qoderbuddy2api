@@ -31,14 +31,14 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
         raise HTTPException(400, f"Invalid request: {error}") from error
     state = _state(request)
     original_model = chat_request.model
-    provider_name, model_id = state.resolve_model(original_model)
-    provider = state.registry.get(provider_name)
-    if provider is None:
-        raise HTTPException(400, f"Provider not available: {provider_name}")
-    chat_request.model = model_id
-    request.state.telemetry_context = _telemetry_context(provider_name, model_id, chat_request)
+    resolved = state.resolve_model(original_model)
+    provider = resolved.provider
+    chat_request.model = resolved.upstream_model
+    if resolved.provider_name is not None:
+        chat_request.record_provider(resolved.provider_name)
+    request.state.telemetry_context = _telemetry_context(resolved.canonical_id, chat_request)
     context = StreamLogContext(
-        provider_name=provider_name,
+        provider_name=resolved.provider_name or "",
         model=original_model,
         reasoning_effort=getattr(chat_request, "reasoning_effort", None),
         tool_calls_count=len(chat_request.tools or []),
@@ -115,13 +115,11 @@ async def _complete(
 
 
 def _telemetry_context(
-    provider_name: str,
-    model_id: str,
+    canonical_id: str,
     chat_request: ChatCompletionRequest,
 ) -> dict[str, Any]:
     return {
-        "provider": provider_name,
-        "model_id": model_id,
+        "model_id": canonical_id,
         "protocol": "openai",
         "chat_request": chat_request,
     }

@@ -7,6 +7,8 @@ from pathlib import Path
 
 logger = logging.getLogger("qb2api")
 
+KNOWN_PROVIDERS = ("codebuddy", "qoder")
+
 
 @dataclass
 class ModelCapabilities:
@@ -31,15 +33,6 @@ class ModelDefinition:
     max_output: int = 4096
     metadata: dict | None = None
 
-    def to_info(self) -> dict:
-        """Convert to /v1/models format."""
-        return {
-            "id": f"{self.provider}/{self.id}",
-            "object": "model",
-            "created": 0,
-            "owned_by": self.provider,
-        }
-
 
 # Default model definitions (used when config file is missing)
 DEFAULT_CODEBUDDY_MODELS = [
@@ -59,66 +52,25 @@ DEFAULT_CODEBUDDY_MODELS = [
     ModelDefinition("hy3", "Hy3", "codebuddy", ModelCapabilities()),
 ]
 
-DEFAULT_QODER_MODELS = [
-    ModelDefinition(
-        "auto",
-        "Auto",
-        "qoder",
-        ModelCapabilities(tool_calling=True, reasoning_effort=True, context_window=True),
-    ),
-    ModelDefinition(
-        "Qwen3.8-Max-Preview",
-        "Qwen 3.8 Max Preview",
-        "qoder",
-        ModelCapabilities(tool_calling=True, reasoning_effort=True, context_window=True),
-    ),
-    ModelDefinition(
-        "Qwen3.7-Max",
-        "Qwen 3.7 Max",
-        "qoder",
-        ModelCapabilities(tool_calling=True, reasoning_effort=True, context_window=True),
-    ),
-    ModelDefinition("Qwen3.7-Plus", "Qwen 3.7 Plus", "qoder", ModelCapabilities(context_window=True)),
-    ModelDefinition("Qwen3.6-Flash", "Qwen 3.6 Flash", "qoder", ModelCapabilities(context_window=True)),
-    ModelDefinition(
-        "DeepSeek-V4-Pro",
-        "DeepSeek V4 Pro",
-        "qoder",
-        ModelCapabilities(tool_calling=True, context_window=True),
-    ),
-    ModelDefinition("DeepSeek-V4-Flash", "DeepSeek V4 Flash", "qoder", ModelCapabilities(context_window=True)),
-    ModelDefinition("GLM-5.2", "GLM-5.2", "qoder", ModelCapabilities(context_window=True)),
-    ModelDefinition(
-        "Kimi-K2.7-Code",
-        "Kimi K2.7 Code",
-        "qoder",
-        ModelCapabilities(tool_calling=True, context_window=True),
-    ),
-    ModelDefinition("MiniMax-M2.7", "MiniMax M2.7", "qoder", ModelCapabilities(context_window=True)),
-]
-
 
 def load_models_from_config(config_path: str | Path) -> dict[str, list[ModelDefinition]]:
-    """Load model definitions from config file."""
+    """Load model definitions from config file (known providers only)."""
     path = Path(config_path)
     if not path.exists():
-        return {
-            "codebuddy": DEFAULT_CODEBUDDY_MODELS,
-            "qoder": DEFAULT_QODER_MODELS,
-        }
+        return {"codebuddy": DEFAULT_CODEBUDDY_MODELS}
 
     try:
         with open(path) as f:
             data = json.load(f)
     except Exception as e:
         logger.warning(f"Failed to load model config: {e}, using defaults")
-        return {
-            "codebuddy": DEFAULT_CODEBUDDY_MODELS,
-            "qoder": DEFAULT_QODER_MODELS,
-        }
+        return {"codebuddy": DEFAULT_CODEBUDDY_MODELS}
 
     result = {}
-    for provider, provider_data in data.items():
+    for provider in KNOWN_PROVIDERS:
+        provider_data = data.get(provider)
+        if not isinstance(provider_data, dict):
+            continue
         models = []
         for m in provider_data.get("models", []):
             caps = m.get("capabilities", {})
@@ -142,3 +94,18 @@ def load_models_from_config(config_path: str | Path) -> dict[str, list[ModelDefi
         result[provider] = models
 
     return result
+
+
+def load_unified_overrides(config_path: str | Path) -> dict:
+    """Load the optional top-level ``unified`` section of the model config."""
+    path = Path(config_path)
+    if not path.exists():
+        return {}
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except Exception as e:
+        logger.warning(f"Failed to load unified model overrides: {e}")
+        return {}
+    section = data.get("unified")
+    return section if isinstance(section, dict) else {}

@@ -59,6 +59,15 @@ async def _start_control(application: FastAPI) -> _ControlContext:
         supervisor=supervisor,
         snapshot_service=snapshot_service,
     )
+    if runtime.model_sync_scheduler is not None:
+        runtime.model_sync_scheduler.set_refresh_callback(
+            partial(
+                _refresh_runtime,
+                runtime=runtime,
+                supervisor=supervisor,
+                snapshot_service=snapshot_service,
+            )
+        )
     if runtime.backup_service is not None:
         await runtime.backup_service.recover_interrupted()
     await _restore_supervisor(runtime=runtime, supervisor=supervisor)

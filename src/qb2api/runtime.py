@@ -17,6 +17,7 @@ from .checkin.metrics import MetricsScheduler
 from .checkin.scheduler import CheckinScheduler
 from .checkin.service import CheckinService
 from .config import Settings
+from .control.model_sync_scheduler import ModelSyncScheduler
 from .control.telemetry import UsageRollupService
 from .storage_permissions import ensure_private_directory
 
@@ -34,6 +35,7 @@ class RuntimeServices:
         self.checkin_scheduler: CheckinScheduler | None = None
         self.growth_scheduler: GrowthScheduler | None = None
         self.metrics_scheduler: MetricsScheduler | None = None
+        self.model_sync_scheduler: ModelSyncScheduler | None = None
         self.backup_service: BackupService | None = None
         self.usage_rollup_service: UsageRollupService | None = None
         self.metrics_refresh_tasks: set[asyncio.Task[Any]] = set()
@@ -102,6 +104,7 @@ class RuntimeServices:
         self._start_checkin_services()
         self._start_metrics_services()
         self._start_growth_services()
+        self._start_model_sync_services()
         self.usage_rollup_service.start()
 
     async def _load_runtime_settings(self, repository: AccountRepository) -> None:
@@ -164,6 +167,19 @@ class RuntimeServices:
         )
         self.growth_scheduler.start()
 
+    def _start_model_sync_services(self) -> None:
+        if not all(
+            (self.account_repo, self.account_registry, self.credential_resolver)
+        ):
+            return
+        self.model_sync_scheduler = ModelSyncScheduler(
+            settings=self.settings,
+            repo=self.account_repo,
+            registry=self.account_registry,
+            resolver=self.credential_resolver,
+        )
+        self.model_sync_scheduler.start()
+
     async def refresh_accounts(self) -> None:
         if self.account_registry is not None:
             await self.account_registry.rebuild()
@@ -174,7 +190,7 @@ class RuntimeServices:
             "settings", "account_repo", "credential_vault", "account_registry",
             "credential_resolver", "admin_sessions", "login_limiter", "oauth_flows",
             "codebuddy_oauth", "checkin_service", "checkin_scheduler", "growth_scheduler",
-            "metrics_scheduler",
+            "metrics_scheduler", "model_sync_scheduler",
             "backup_service", "usage_rollup_service",
         ):
             setattr(app.state, name, getattr(self, name))
@@ -189,6 +205,8 @@ class RuntimeServices:
             await self.checkin_scheduler.stop()
         if self.growth_scheduler is not None:
             await self.growth_scheduler.close()
+        if self.model_sync_scheduler is not None:
+            await self.model_sync_scheduler.stop()
         await self._cancel_metric_refresh_tasks()
         if self.metrics_scheduler is not None:
             await self.metrics_scheduler.stop()

@@ -45,8 +45,7 @@ class RuntimeSnapshotService:
             slots.extend(_env_slots(self._runtime.settings))
         models = load_models_from_config(self._runtime.settings.model_config_path)
         upstream = await self._upstream_catalog_models()
-        if upstream:
-            models = _merge_upstream_models(models, upstream)
+        models["qoder"] = upstream
         proxy_keys, proxy_auth_required = await self._proxy_keys()
         return RuntimeSnapshot(
             snapshot_version=self._version,
@@ -95,20 +94,6 @@ def _primary_token(provider: str, payload: dict[str, Any]) -> str | None:
     if provider == "qoder":
         return payload.get("pat") or payload.get("access_token")
     return payload.get("access_token") or payload.get("token")
-
-
-def _merge_upstream_models(
-    models: dict[str, list[ModelDefinition]],
-    upstream: list[ModelDefinition],
-) -> dict[str, list[ModelDefinition]]:
-    """Merge upstream catalog models into config models; upstream wins by id."""
-    merged = {model.id: model for model in upstream}
-    merged.update(
-        {model.id: model for model in models.get("qoder", []) if model.id not in merged}
-    )
-    result = {key: list(value) for key, value in models.items()}
-    result["qoder"] = list(merged.values())
-    return result
 
 
 def _to_model_definition(row: dict[str, Any]) -> ModelDefinition | None:

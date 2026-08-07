@@ -26,16 +26,17 @@ class TestModelResolution:
                 for model_id in model_ids
             ]
         state.model_definitions = model_defs
-        state._build_model_index()
+        state._rebuild_catalog()
         return state
 
     def test_explicit_provider_routing(self):
         state = self._setup_state({"codebuddy": ["deepseek-v3"], "qoder": ["auto"]})
 
-        provider, model = state.resolve_model("codebuddy/deepseek-v3")
+        resolved = state.resolve_model("codebuddy/deepseek-v3")
 
-        assert provider == "codebuddy"
-        assert model == "deepseek-v3"
+        assert resolved.canonical_id == "deepseek-v3"
+        assert resolved.provider.name == "codebuddy"
+        assert resolved.upstream_model == "deepseek-v3"
 
     def test_explicit_provider_unknown_model(self):
         from fastapi import HTTPException
@@ -58,20 +59,30 @@ class TestModelResolution:
     def test_bare_model_single_match(self):
         state = self._setup_state({"codebuddy": ["deepseek-v3"]})
 
-        provider, model = state.resolve_model("deepseek-v3")
+        resolved = state.resolve_model("deepseek-v3")
 
-        assert provider == "codebuddy"
-        assert model == "deepseek-v3"
+        assert resolved.canonical_id == "deepseek-v3"
+        assert resolved.provider.name == "codebuddy"
+        assert resolved.upstream_model == "deepseek-v3"
 
-    def test_bare_model_ambiguous(self):
-        from fastapi import HTTPException
-
+    def test_bare_model_shared_model_routes_via_router(self):
         state = self._setup_state({"codebuddy": ["auto"], "qoder": ["auto"]})
 
-        with pytest.raises(HTTPException) as exc_info:
-            state.resolve_model("auto")
-        assert exc_info.value.status_code == 400
-        assert "Ambiguous" in str(exc_info.value.detail)
+        resolved = state.resolve_model("auto")
+
+        assert resolved.canonical_id == "auto"
+        assert resolved.provider.name == "model-router"
+        assert resolved.upstream_model == "auto"
+        assert resolved.provider_name is None
+
+    def test_bare_legacy_upstream_id_still_resolves(self):
+        state = self._setup_state({"codebuddy": ["deepseek-v3"], "qoder": ["DeepSeek-V4-Flash"]})
+
+        resolved = state.resolve_model("DeepSeek-V4-Flash")
+
+        assert resolved.canonical_id == "deepseek-v4-flash"
+        assert resolved.provider.name == "qoder"
+        assert resolved.upstream_model == "DeepSeek-V4-Flash"
 
     def test_bare_model_unknown(self):
         from fastapi import HTTPException
@@ -135,4 +146,4 @@ class TestModelsFiltering:
     """Test that /v1/models only returns models from registered providers."""
 
     def test_empty_providers_returns_empty_models(self):
-        assert ProxyState(Settings()).available_models() == {}
+        assert ProxyState(Settings()).available_models() == []

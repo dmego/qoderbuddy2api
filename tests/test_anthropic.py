@@ -86,7 +86,7 @@ def setup_fake_provider(client: TestClient) -> None:
             ModelDefinition("deepseek-v4-flash", "DeepSeek V4 Flash", "codebuddy"),
         ]
     }
-    state._build_model_index()
+    state._rebuild_catalog()
 
 
 def test_anthropic_request_converts_system_tools_and_tool_results():

@@ -68,6 +68,10 @@ mkdir -p data logs && chmod 700 data logs
   - Anthropic Messages：`http://127.0.0.1:9999/v1/messages`
 - 直连 Worker（兼容，可选）：`http://127.0.0.1:10001/v1`
 
+模型列表为统一小写 ID（如 `deepseek-v4-flash`、`glm-5.2`、`qwen3.7-max`），不再带 `provider/` 前缀；
+codebuddy 与 qoder 共有的模型只暴露一个条目，请求内部按提供商轮询并在首个输出前自动故障转移；
+qoder 模型目录由官方接口定期同步（默认 6 小时），单端模型只会路由到对应提供商。
+
 客户端只填统一入口 `9999` 即可：Control Plane 会把 `/v1/*` 转发到 Worker。
 模型请求通过 `Authorization: Bearer …` 请求头只传递 Proxy Key；管理面与代理面
 仍是两个进程，进程级安全边界不变，只是对外呈现单端口。

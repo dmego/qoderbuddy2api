@@ -32,6 +32,7 @@ async def test_stream_records_slot_commit_and_real_usage():
     chunks = [chunk async for chunk in pool.stream(request)]
     assert chunks
     assert request.telemetry == {
+        "provider": None,
         "account_id": "cb-1",
         "stream_committed": True,
         "input_tokens": 3,

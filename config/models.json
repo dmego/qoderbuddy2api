@@ -73,58 +73,5 @@
       }
     ]
   },
-  "qoder": {
-    "models": [
-      {
-        "id": "auto",
-        "name": "Auto",
-        "capabilities": {"chat": true, "streaming": true, "reasoning_effort": true, "context_window": true}
-      },
-      {
-        "id": "Qwen3.8-Max-Preview",
-        "name": "Qwen 3.8 Max Preview",
-        "capabilities": {"chat": true, "streaming": true, "reasoning_effort": true, "context_window": true}
-      },
-      {
-        "id": "Qwen3.7-Max",
-        "name": "Qwen 3.7 Max",
-        "capabilities": {"chat": true, "streaming": true, "reasoning_effort": true, "context_window": true}
-      },
-      {
-        "id": "Qwen3.7-Plus",
-        "name": "Qwen 3.7 Plus",
-        "capabilities": {"chat": true, "streaming": true, "context_window": true}
-      },
-      {
-        "id": "Qwen3.6-Flash",
-        "name": "Qwen 3.6 Flash",
-        "capabilities": {"chat": true, "streaming": true, "context_window": true}
-      },
-      {
-        "id": "DeepSeek-V4-Pro",
-        "name": "DeepSeek V4 Pro",
-        "capabilities": {"chat": true, "streaming": true, "context_window": true}
-      },
-      {
-        "id": "DeepSeek-V4-Flash",
-        "name": "DeepSeek V4 Flash",
-        "capabilities": {"chat": true, "streaming": true, "context_window": true}
-      },
-      {
-        "id": "GLM-5.2",
-        "name": "GLM-5.2",
-        "capabilities": {"chat": true, "streaming": true, "context_window": true}
-      },
-      {
-        "id": "Kimi-K2.7-Code",
-        "name": "Kimi K2.7 Code",
-        "capabilities": {"chat": true, "streaming": true, "context_window": true}
-      },
-      {
-        "id": "MiniMax-M2.7",
-        "name": "MiniMax M2.7",
-        "capabilities": {"chat": true, "streaming": true, "context_window": true}
-      }
-    ]
-  }
+  "unified": {}
 }

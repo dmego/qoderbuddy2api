@@ -38,9 +38,8 @@ async def version() -> dict[str, str]:
 async def list_models(request: Request) -> ModelListResponse:
     state = _state(request)
     data = [
-        ModelInfo(id=f"{name}/{model.id}", owned_by=name)
-        for name, definitions in state.available_models().items()
-        for model in definitions
+        ModelInfo(id=model.id)
+        for model in state.available_models()
     ]
     return ModelListResponse(data=data)
 
@@ -60,10 +59,7 @@ async def show_model() -> dict[str, dict[str, list[str]]]:
 async def v1_props(request: Request) -> dict[str, Any]:
     state = _state(request)
     result = dict(_PROPS)
-    result["models"] = {
-        name: [model.id for model in definitions]
-        for name, definitions in state.available_models().items()
-    }
+    result["models"] = [model.id for model in state.available_models()]
     return result
 
 

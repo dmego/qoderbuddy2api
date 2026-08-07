@@ -44,7 +44,7 @@ def worker_client() -> Iterator[TestClient]:
         state.registry.clear()
         state.registry.register(_FakeProvider())
         state.model_definitions = {"test": [ModelDefinition("echo", "Echo", "test")]}
-        state._build_model_index()
+        state._rebuild_catalog()
         yield client
 
 
@@ -85,4 +85,4 @@ def test_worker_lists_models_from_its_own_provider_state(worker_client: TestClie
     response = worker_client.get("/v1/models")
 
     assert response.status_code == 200
-    assert [item["id"] for item in response.json()["data"]] == ["test/echo"]
+    assert [item["id"] for item in response.json()["data"]] == ["echo"]
