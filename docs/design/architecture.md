@@ -264,17 +264,10 @@ Vue 3 + TypeScript + Vite + Pinia + Vue Router + TanStack Vue Query + ECharts，
 - 签到与 chat 池互不耦合：签到失败不冷却模型 slot，模型故障不触发签到重试。
 - 未验证的外部契约（如 `checkin-status` method）保持禁用，直至 Spike 确认。
 
-## 12. 外部契约与证据
-
-上游协议事实以 [Spike 结果](../spike/spike-results.md) 为准（事实等级：已确认 /
-参考实现 / 验证门槛），研究记录见 [docs/analysis](../analysis/)。生产代码注释与
-测试引用事实 ID（`CB-CHECKIN-01`、`QD-CHECKIN-01`、`AUTH-01`）。
-
 ## 13. 参考文档
 
 | 文档 | 内容 |
 | --- | --- |
 | [配置指南](../configuration.md) | 密钥、`.env` 参考、远程访问、客户端示例 |
 | [Mac Mini 部署与运维](../deployment/macmini.md) | 安装、launchd/systemd、备份恢复、账号导入 |
-| [Spike 结果](../spike/spike-results.md) | 外部协议事实等级与脱敏记录规则 |
 | [活跃日自动化研究](../analysis/2026-08-05-workbuddy-active-day-automation.md) | 登录自动化协议与实现边界 |
