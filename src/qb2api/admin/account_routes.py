@@ -1,0 +1,552 @@
+"""Admin account listing, editing, promotion, probing, and deletion."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from typing import Any
+
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
+
+from qb2api.accounts.imports import persist_qoder_checkin
+from qb2api.accounts.promote import promote_env_account
+from qb2api.accounts.repo_credentials import CredentialVersionConflict
+from qb2api.checkin.service import CheckinInProgressError, CheckinTarget
+
+from .account_support import account_audit, empty_mutation_body, filter_accounts, published_view
+from .catalog_routes import ProbeError, probe_model_for_account
+from .dependencies import admin_state, require_admin
+from .import_support import derive_qoder_checkin, verify_qoder_checkin
+from .mutation_audit import add_audit, audit_operation, refresh_after_mutation
+from .validation import (
+    bounded_int,
+    choice_filter,
+    cursor_value,
+    json_object,
+    label,
+    page_slice,
+    provider_filter,
+    text_filter,
+)
+from .views import account_view_dict, find_account_view
+
+router = APIRouter()
+_PATCH_FIELDS = frozenset({"label", "enabled", "purposes"})
+_PURPOSES = frozenset({"chat", "checkin"})
+
+
+@router.get("/accounts")
+async def list_accounts(
+    request: Request,
+    *,
+    provider: str | None = None,
+    source: str | None = None,
+    status: str | None = None,
+    purpose: str | None = None,
+    query: str | None = None,
+    cursor: str | None = None,
+    limit: str | None = None,
+) -> dict[str, Any]:
+    await require_admin(request)
+    views = admin_state(request).account_registry.list_views()
+    selected = filter_accounts(
+        [account_view_dict(view) for view in views],
+        provider=provider_filter(provider),
+        source=choice_filter(
+            source,
+            frozenset({"env", "oauth", "manual", "import"}),
+            detail="invalid_source",
+        ),
+        status=choice_filter(
+            status,
+            frozenset({"active", "disabled", "action_required", "pending"}),
+            detail="invalid_status",
+        ),
+        purpose=choice_filter(purpose, _PURPOSES, detail="invalid_purpose"),
+        query=text_filter(query, detail="invalid_query"),
+    )
+    selected_limit = bounded_int(limit, default=100, maximum=100)
+    page, next_cursor = page_slice(
+        selected,
+        cursor_value(cursor, allow_zero=True),
+        selected_limit,
+    )
+    return {"accounts": page, "limit": selected_limit, "next_cursor": next_cursor}
+
+
+@router.get("/accounts/{provider}/{account_id}")
+async def get_account(provider: str, account_id: str, request: Request) -> dict[str, Any]:
+    await require_admin(request)
+    view = find_account_view(admin_state(request), provider, account_id)
+    if view is None:
+        raise HTTPException(status_code=404, detail="account_not_found")
+    return account_view_dict(view)
+
+
+@router.delete("/accounts/{provider}/{account_id}")
+async def delete_account(provider: str, account_id: str, request: Request) -> dict[str, str]:
+    await require_admin(request)
+    state = admin_state(request)
+    if state.account_registry.is_env_account(provider, account_id):
+        raise HTTPException(status_code=400, detail="cannot_delete_env_account")
+    resource_id = f"{provider}:{account_id}"
+    async with state.account_repo.transaction():
+        if not await state.account_repo.delete_account(provider, account_id):
+            raise HTTPException(status_code=404, detail="account_not_found")
+        await add_audit(
+            state.account_repo, action="account.delete", resource_type="account",
+            resource_id=resource_id,
+        )
+    state.credential_resolver.invalidate(provider, account_id)
+    await refresh_after_mutation(
+        state, mutation_action="account.delete", resource_type="account",
+        resource_id=resource_id,
+    )
+    return {"status": "ok"}
+
+
+@router.post("/accounts/{provider}/{account_id}/promote")
+async def promote_account(provider: str, account_id: str, request: Request) -> dict[str, Any]:
+    await require_admin(request)
+    state = admin_state(request)
+    body = await json_object(request, allow_empty=True)
+    selected_label = label(body.get("label"), default=account_id)
+    try:
+        new_id = await promote_env_account(
+            state.account_registry,
+            state.account_repo,
+            state.credential_vault,
+            provider=provider,
+            account_id=account_id,
+            label=selected_label,
+            audit_action="account.promote",
+            rebuild=False,
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail="account_not_found") from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail="account_promotion_rejected") from error
+    await refresh_after_mutation(
+        state, mutation_action="account.promote", resource_type="account",
+        resource_id=f"{provider}:{new_id}",
+    )
+    return {
+        "status": "ok",
+        "account": published_view(state, provider, new_id),
+        "promoted_from": account_id,
+    }
+
+
+@router.post("/accounts/{provider}/{account_id}/verify-checkin")
+async def verify_checkin(
+    provider: str,
+    account_id: str,
+    request: Request,
+) -> Any:
+    await require_admin(request)
+    state = admin_state(request)
+    try:
+        async with audit_operation(
+            state.account_repo, action="account.verify_checkin",
+            resource_type="account", resource_id=f"{provider}:{account_id}",
+            failure_code="checkin_verification_failed",
+        ):
+            batch = await state.checkin_service.run_batch(
+                trigger="verify",
+                targets=[CheckinTarget(provider=provider, account_id=account_id)],
+                skip_already_done=False,
+            )
+    except CheckinInProgressError:
+        return JSONResponse(status_code=409, content={"error": "checkin_run_in_progress"})
+    await refresh_after_mutation(
+        state, mutation_action="account.verify_checkin", resource_type="account",
+        resource_id=f"{provider}:{account_id}",
+    )
+    return {"status": "ok", "run_id": batch.run_id, "results": batch.results}
+
+
+@router.post("/accounts/{provider}/{account_id}/rederive-checkin")
+async def rederive_checkin(
+    provider: str,
+    account_id: str,
+    request: Request,
+) -> Any:
+    await require_admin(request)
+    state = admin_state(request)
+    if provider != "qoder":
+        return JSONResponse(status_code=400, content={"error": "unsupported_provider"})
+    if state.account_registry.is_env_account(provider, account_id):
+        raise HTTPException(status_code=400, detail="cannot_modify_env_account")
+    if find_account_view(state, provider, account_id) is None:
+        raise HTTPException(status_code=404, detail="account_not_found")
+    try:
+        credential = await state.credential_resolver.credential("qoder", account_id, "chat")
+    except LookupError:
+        raise HTTPException(status_code=400, detail="chat_credential_missing")
+    pat = credential.payload.get("pat")
+    if not pat:
+        raise HTTPException(status_code=400, detail="pat_missing_in_credential")
+    derived = await derive_qoder_checkin(state.settings, pat)
+    if derived is None:
+        raise HTTPException(status_code=502, detail="checkin_derive_failed")
+    access_token, refresh_token = derived
+    if not await verify_qoder_checkin(state, account_id, access_token):
+        raise HTTPException(status_code=400, detail="checkin_credential_rejected")
+    current = await state.account_repo.get_credential("qoder", account_id, "checkin")
+    expected_version = int(current["credential_version"]) if current else 0
+    try:
+        await persist_qoder_checkin(
+            state.account_repo,
+            state.credential_vault,
+            account_id=account_id,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            verified_at=datetime.now(UTC).replace(microsecond=0).isoformat(),
+            expected_version=expected_version,
+        )
+    except CredentialVersionConflict as error:
+        raise HTTPException(status_code=409, detail="credential_version_conflict") from error
+    state.credential_resolver.invalidate("qoder", account_id, "checkin")
+    await refresh_after_mutation(
+        state, mutation_action="account.rederive_checkin", resource_type="account",
+        resource_id=f"{provider}:{account_id}",
+    )
+    return {"status": "ok", "account": published_view(state, provider, account_id)}
+
+
+@router.get("/accounts/{provider}/{account_id}/growth")
+async def growth_overview(provider: str, account_id: str, request: Request) -> dict[str, Any]:
+    """实时拉取 WorkBuddy 成长中心任务与档案（只读）。"""
+    await require_admin(request)
+    state = admin_state(request)
+    token = await _resolve_codebuddy_token(state, provider, account_id)
+    from qb2api.checkin.growth import GrowthUnavailableError, WorkBuddyGrowthClient
+    client = WorkBuddyGrowthClient(
+        base_url=state.settings.codebuddy_checkin_base,
+        timeout=float(state.settings.checkin_request_timeout_seconds),
+    )
+    try:
+        result = await client.fetch(token)
+    except GrowthUnavailableError as error:
+        raise HTTPException(status_code=502, detail=f"growth_unavailable:{error}") from error
+    finally:
+        await client.aclose()
+    local_day = await state.account_repo.get_workbuddy_active_day(
+        provider="codebuddy", account_id=account_id,
+        local_date=_growth_local_date(state), timezone=state.settings.checkin_timezone,
+    )
+    result = dict(result)
+    result["active_day_local"] = _active_day_local_view(local_day)
+    return result
+
+
+@router.post("/accounts/{provider}/{account_id}/growth/execute")
+async def growth_execute(provider: str, account_id: str, request: Request) -> dict[str, Any]:
+    """手动触发一次成长中心自动化（执行所有已启用步骤）。"""
+    await require_admin(request)
+    state = admin_state(request)
+    _validate_growth_account(state, provider, account_id)
+    token = await _resolve_codebuddy_token(state, provider, account_id)
+    from qb2api.checkin.growth_automation import GrowthAutomation
+    automation = GrowthAutomation(settings=state.settings, repository=state.account_repo)
+    try:
+        result = await automation.run(
+            token,
+            account_id=account_id,
+            local_date=_growth_local_date(state),
+            timezone=state.settings.checkin_timezone,
+        )
+    finally:
+        await automation.close()
+    await state.account_repo.insert_growth_log(
+        provider=provider, account_id=account_id,
+        triggered_by="manual", results=result,
+    )
+    await _refresh_growth_metrics(
+        state, provider=provider, account_id=account_id, results=result,
+    )
+    return {"status": "ok", "result": result}
+
+
+@router.post("/accounts/{provider}/{account_id}/growth/run/{step}")
+async def growth_run_step(
+    provider: str, account_id: str, step: str, *, request: Request,
+) -> dict[str, Any]:
+    """手动触发单个成长中心自动化步骤。"""
+    await require_admin(request)
+    state = admin_state(request)
+    _validate_growth_account(state, provider, account_id)
+    token = await _resolve_codebuddy_token(state, provider, account_id)
+    from qb2api.checkin.growth_automation import GrowthAutomation
+    automation = GrowthAutomation(settings=state.settings, repository=state.account_repo)
+    try:
+        result = await automation.run_step(
+            token, step,
+            account_id=account_id,
+            local_date=_growth_local_date(state),
+            timezone=state.settings.checkin_timezone,
+        )
+    finally:
+        await automation.close()
+    results = {step: result}
+    await state.account_repo.insert_growth_log(
+        provider=provider, account_id=account_id,
+        triggered_by=f"manual:{step}", results=results,
+    )
+    await _refresh_growth_metrics(
+        state, provider=provider, account_id=account_id, results=results,
+    )
+    return {"status": "ok", "step": step, "result": result}
+
+
+@router.get("/accounts/{provider}/{account_id}/growth/history")
+async def growth_history(
+    provider: str,
+    account_id: str,
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+) -> dict[str, Any]:
+    """查询某账号最近的成长自动化执行记录（分页）。"""
+    await require_admin(request)
+    state = admin_state(request)
+    if find_account_view(state, provider, account_id) is None:
+        raise HTTPException(status_code=404, detail="account_not_found")
+    total = await state.account_repo.count_growth_logs(
+        provider=provider, account_id=account_id,
+    )
+    logs = await state.account_repo.list_growth_logs(
+        provider=provider, account_id=account_id, limit=page_size, offset=(page - 1) * page_size,
+    )
+    return {
+        "logs": logs,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "pages": (total + page_size - 1) // page_size if total else 0,
+    }
+
+
+@router.post("/accounts/{provider}/{account_id}/growth/active-day/rerun")
+async def growth_active_day_rerun(
+    provider: str, account_id: str, *, request: Request,
+) -> dict[str, Any]:
+    """手动强制重跑当日活跃日 ACP：绕过当天幂等锁，消耗一次真实对话额度。"""
+    await require_admin(request)
+    state = admin_state(request)
+    _validate_growth_account(state, provider, account_id)
+    token = await _resolve_codebuddy_token(state, provider, account_id)
+    from qb2api.checkin.growth_automation import GrowthAutomation
+    automation = GrowthAutomation(settings=state.settings, repository=state.account_repo)
+    try:
+        result = await automation.rerun_active_day(
+            token, account_id=account_id,
+            local_date=_growth_local_date(state), timezone=state.settings.checkin_timezone,
+        )
+    finally:
+        await automation.close()
+    await state.account_repo.insert_growth_log(
+        provider=provider, account_id=account_id,
+        triggered_by="manual:active_day_rerun", results={"active_day": result},
+    )
+    return {"status": "ok", "step": "active_day", "result": result}
+
+
+def _active_day_local_view(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    return {
+        "local_date": row.get("local_date"),
+        "status": row.get("status"),
+        "error_code": row.get("error_code"),
+        "confirmed": row.get("confirmed"),
+        "confirm_attempts": row.get("confirm_attempts"),
+        "finished_at": row.get("finished_at"),
+    }
+
+
+def _validate_growth_account(state: Any, provider: str, account_id: str) -> None:
+    if provider != "codebuddy":
+        raise HTTPException(status_code=400, detail="unsupported_provider")
+    if state.account_registry.is_env_account(provider, account_id):
+        raise HTTPException(status_code=400, detail="env_account_read_only")
+    if find_account_view(state, provider, account_id) is None:
+        raise HTTPException(status_code=404, detail="account_not_found")
+
+
+def _growth_local_date(state: Any) -> str:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    return datetime.now(ZoneInfo(state.settings.checkin_timezone)).date().isoformat()
+
+
+async def _refresh_growth_metrics(
+    state: Any, *, provider: str, account_id: str, results: dict,
+) -> None:
+    scheduler = getattr(state, "metrics_scheduler", None)
+    if scheduler is None:
+        return
+    earned = sum(
+        (step.get("reward_credits") or 0)
+        for step in results.values()
+        if isinstance(step, dict)
+    )
+    if not earned:
+        return
+    try:
+        await scheduler.refresh_once()
+    except Exception:
+        pass
+
+
+async def _resolve_codebuddy_token(state: Any, provider: str, account_id: str) -> str:
+    if find_account_view(state, provider, account_id) is None:
+        raise HTTPException(status_code=404, detail="account_not_found")
+    if provider != "codebuddy":
+        raise HTTPException(status_code=400, detail="unsupported_provider")
+    token = None
+    for purpose in ("checkin", "chat"):
+        try:
+            credential = await state.credential_resolver.credential("codebuddy", account_id, purpose)
+        except LookupError:
+            continue
+        candidate = credential.payload.get("access_token") or credential.payload.get("token")
+        if isinstance(candidate, str) and candidate.strip():
+            token = candidate
+            break
+    if not isinstance(token, str) or not token.strip():
+        raise HTTPException(status_code=400, detail="access_token_missing")
+    return token
+
+
+@router.post("/accounts/{provider}/{account_id}/refresh")
+async def refresh_account(provider: str, account_id: str, request: Request) -> dict[str, Any]:
+    await require_admin(request)
+    await empty_mutation_body(request, "refresh_body_not_allowed")
+    state = admin_state(request)
+    if find_account_view(state, provider, account_id) is None:
+        raise HTTPException(status_code=404, detail="account_not_found")
+    state.credential_resolver.invalidate(provider, account_id)
+    async with audit_operation(
+        state.account_repo, action="account.refresh", resource_type="account",
+        resource_id=f"{provider}:{account_id}", failure_code="account_refresh_failed",
+    ):
+        await state.refresh_provider_pools()
+    return {
+        "status": "succeeded",
+        "account": published_view(state, provider, account_id),
+    }
+
+
+@router.post("/accounts/{provider}/{account_id}/probe")
+async def probe_account(provider: str, account_id: str, request: Request) -> dict[str, Any]:
+    await require_admin(request)
+    await empty_mutation_body(request, "probe_body_not_allowed")
+    state = admin_state(request)
+    if find_account_view(state, provider, account_id) is None:
+        raise HTTPException(status_code=404, detail="account_not_found")
+    try:
+        result = await probe_model_for_account(state, provider, account_id)
+    except ProbeError as error:
+        await account_audit(
+            state,
+            "account.probe",
+            provider=provider,
+            account_id=account_id,
+            result="failed",
+        )
+        raise HTTPException(status_code=error.status_code, detail=error.code) from error
+    await account_audit(
+        state,
+        "account.probe",
+        provider=provider,
+        account_id=account_id,
+    )
+    return result
+
+
+@router.patch("/accounts/{provider}/{account_id}")
+async def patch_account(provider: str, account_id: str, request: Request) -> dict[str, Any]:
+    await require_admin(request)
+    state = admin_state(request)
+    if state.account_registry.is_env_account(provider, account_id):
+        raise HTTPException(status_code=400, detail="cannot_patch_env_account")
+    body = await json_object(request)
+    if set(body) - _PATCH_FIELDS:
+        raise HTTPException(status_code=400, detail="unsupported_fields")
+    account = await _find_account(state, provider, account_id)
+    purposes = await state.account_repo.list_purposes(provider, account_id)
+    async with state.account_repo.transaction():
+        await _update_account(state, account, body)
+        await _update_purposes(
+            state,
+            provider=provider,
+            account_id=account_id,
+            purposes=purposes,
+            body=body,
+        )
+        await account_audit(
+            state,
+            "account.update",
+            provider=provider,
+            account_id=account_id,
+        )
+    await refresh_after_mutation(
+        state, mutation_action="account.update", resource_type="account",
+        resource_id=f"{provider}:{account_id}",
+    )
+    return published_view(state, provider, account_id)
+
+
+async def _find_account(state: Any, provider: str, account_id: str) -> dict[str, Any]:
+    accounts = await state.account_repo.list_accounts(provider)
+    account = next((row for row in accounts if row["account_id"] == account_id), None)
+    if account is None:
+        raise HTTPException(status_code=404, detail="account_not_found")
+    return account
+
+
+async def _update_account(state: Any, account: dict[str, Any], body: dict[str, Any]) -> None:
+    await state.account_repo.upsert_account(
+        provider=account["provider"],
+        account_id=account["account_id"],
+        label=label(body.get("label"), default=account["label"]),
+        source=account.get("source") or "manual",
+        enabled=bool(body.get("enabled", account["enabled"])),
+        masked_identity=account.get("masked_identity"),
+        identity_hash=account.get("identity_hash"),
+    )
+
+
+async def _update_purposes(
+    state: Any,
+    *,
+    provider: str,
+    account_id: str,
+    purposes: list[dict[str, Any]],
+    body: dict[str, Any],
+) -> None:
+    patches = body.get("purposes", {})
+    if not isinstance(patches, dict) or set(patches) - _PURPOSES:
+        raise HTTPException(status_code=400, detail="invalid_purposes")
+    for current in purposes:
+        patch = patches.get(current["purpose"])
+        if patch is None:
+            continue
+        if not isinstance(patch, dict) or set(patch) - {"enabled"}:
+            raise HTTPException(status_code=400, detail="invalid_purpose_patch")
+        await state.account_repo.upsert_purpose(
+            provider=provider,
+            account_id=account_id,
+            purpose=current["purpose"],
+            enabled=bool(patch.get("enabled", current["enabled"])),
+            status=current["status"],
+            verification_status=current["verification_status"],
+            capabilities=current.get("capabilities"),
+            verified_at=current.get("verified_at"),
+            expires_at=current.get("expires_at"),
+            last_success_at=current.get("last_success_at"),
+            failure_count=current.get("failure_count", 0),
+            last_error=current.get("last_error"),
+        )

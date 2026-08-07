@@ -1,183 +1,169 @@
-<p align="center">
-  <img src="https://img.shields.io/badge/Python-3.11%2B-blue?style=flat-square&logo=python" alt="Python">
-  <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License">
-  <img src="https://img.shields.io/badge/FastAPI-0.115%2B-009688?style=flat-square&logo=fastapi" alt="FastAPI">
-</p>
+# qoderbuddy2api
 
-<h1 align="center">qoderbuddy2api</h1>
+`qoderbuddy2api` is a local operations platform for CodeBuddy and Qoder CN
+accounts. A persistent Control Plane owns the administration UI, encrypted
+credentials, SQLite, scheduling, backup, and Worker supervision. Its Proxy
+Worker serves OpenAI- and Anthropic-compatible model traffic.
 
-<p align="center">
-  <strong>CodeBuddy & Qoder CN → OpenAI / Anthropic-Compatible API Proxy</strong><br>
-  Unlock enterprise LLMs for Claude Code, Codex, and OpenAI or Anthropic-compatible clients.
-</p>
+Python 3.11+ is required. The product is for one trusted operator on a Mac
+Mini or development machine, not for public multi-tenant Internet exposure.
 
----
+## Topology and credentials
 
-## Why?
-
-CodeBuddy and Qoder CN provide access to top-tier models (DeepSeek-V4, Qwen3.8, Qwen3.7, Kimi-K2.7-Code, GLM-5.2, MiniMax-M2.7), but their native APIs are not compatible with OpenAI or Anthropic SDKs. **qoderbuddy2api** bridges this gap with a local lightweight proxy.
-
-- 🚀 **Drop-in replacement** — works with Claude Code, Codex, Continue, Aider, and any OpenAI SDK
-- 🧩 **Native Anthropic Messages** — `/v1/messages` for Claude-style clients
-- 🔧 **Tool calling** — full function calling support for Claude Code agent workflows
-- ⚖️ **Load balanced** — round-robin across multiple API keys with automatic failover
-
-## Quick Start
-
-### Local
-
-```bash
-pip install qoderbuddy2api
-cp .env.example .env   # edit with your API keys
-qb2api                 # starts on port 9999
+```text
+Browser (admin) ─────┐
+CLI clients (/v1) ───┴──> Control Plane :9999
+                          ├─ Admin UI, SQLite, audit, backup, supervisor
+                          └─ /v1/* forwarded to Proxy Worker 127.0.0.1:10001
 ```
 
-### Environment
+The Control Plane is the only persistent service. It starts and owns the
+Worker; do not create a second launchd/systemd Worker unit. The Worker normally
+remains loopback-only and does not open SQLite or receive the Admin Key or the
+credential encryption key.
 
-Create `.env` from the template, then fill in your tokens:
+Use three different values:
+
+| Variable | Scope |
+| --- | --- |
+| `QB2API_PROXY_API_KEY` | Model client requests to the Worker |
+| `QB2API_ADMIN_KEY` | Initial admin login and admin automation |
+| `QB2API_CREDENTIAL_KEY` | Encryption of durable provider credentials |
+
+Never put raw keys, tokens, cookies, Authorization values, prompts, or
+completions in a URL, browser LocalStorage/sessionStorage, Git, screenshots,
+or ordinary logs.
+
+## Local quick start
 
 ```bash
+git clone https://github.com/dmego/qoderbuddy2api.git
+cd qoderbuddy2api
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev]'
 cp .env.example .env
+chmod 600 .env
+mkdir -p data logs && chmod 700 data logs
 ```
 
-**Where to get tokens:**
-
-- **CodeBuddy** — copy your session token from CodeBuddy account settings. Looks like `ck_xxx…`
-- **Qoder CN** — generate a Personal Access Token at [Qoder CN Integrations](https://qoder.com.cn/account/integrations). Looks like `pt_xxx…`
-
-```ini
-# Single key
-CODEBUDDY_TOKEN=ck_your_key
-QODER_TOKEN=pt_your_key
-
-# Multiple keys (round-robin load balancing)
-CODEBUDDY_TOKEN=ck_key1,ck_key2,ck_key3
-QODER_TOKEN=pt_key1,pt_key2,pt_key3
-
-# Optional: protect the API with a bearer token
-QB2API_API_KEY=your-secret
-```
-
-## Usage
-
-### With Claude Code
-
-```json
-{
-  "providers": {
-    "qoderbuddy2api": {
-      "baseURL": "http://localhost:9999/v1",
-      "apiKey": "optional-if-set"
-    }
-  }
-}
-```
-
-### Direct API
+Generate two independent HTTP keys and a Fernet credential key locally, then
+put them in `.env`:
 
 ```bash
-# List models
-curl http://localhost:9999/v1/models
-
-# Streaming chat
-curl -N http://localhost:9999/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"codebuddy/deepseek-v3","messages":[{"role":"user","content":"Hello!"}],"stream":true}'
-
-# Tool calling (non-streaming)
-curl http://localhost:9999/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"qoder/auto","messages":[{"role":"user","content":"Tokyo weather?"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}],"tool_choice":"auto"}'
-
-# Anthropic Messages API
-curl http://localhost:9999/v1/messages \
-  -H "Content-Type: application/json" \
-  -d '{"model":"codebuddy/deepseek-v4-flash","max_tokens":512,"messages":[{"role":"user","content":"Hello!"}]}'
+.venv/bin/python -c 'import secrets; print(secrets.token_urlsafe(32))'
+.venv/bin/python -c 'import secrets; print(secrets.token_urlsafe(32))'
+.venv/bin/python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
 ```
 
-## Supported Models
-
-### CodeBuddy (14 models)
-
-| Model | Capabilities |
-|-------|-------------|
-| `codebuddy/auto` | Auto-routing |
-| `codebuddy/deepseek-v3` | Chat, streaming, **tool calling** |
-| `codebuddy/deepseek-v4-pro` | Chat, streaming |
-| `codebuddy/deepseek-v4-flash` | Chat, streaming |
-| `codebuddy/deepseek-r1` | Chat, **reasoning** |
-| `codebuddy/glm-5.1`, `glm-5.2`, `glm-5v-turbo` | Chat, streaming |
-| `codebuddy/kimi-k2.6`, `kimi-k2.7` | Chat (k2.7: reasoning) |
-| `codebuddy/minimax-m3`, `minimax-m2.7` | Chat (m2.7: reasoning) |
-| `codebuddy/hy3` | Chat |
-| `codebuddy/deepseek-v3-0324` | Chat |
-
-### Qoder CN (10 models)
-
-| Model | Capabilities |
-|-------|-------------|
-| `qoder/auto` | Auto-routing, **tool calling**, reasoning effort, context window |
-| `qoder/Qwen3.8-Max-Preview` | **Tool calling**, reasoning effort, context window |
-| `qoder/Qwen3.7-Max` | **Tool calling**, reasoning effort, context window |
-| `qoder/DeepSeek-V4-Pro` | **Tool calling**, context window |
-| `qoder/Kimi-K2.7-Code` | **Tool calling**, context window |
-| `qoder/Qwen3.7-Plus` | Chat, context window |
-| `qoder/Qwen3.6-Flash` | Chat, context window |
-| `qoder/DeepSeek-V4-Flash` | Chat, context window |
-| `qoder/GLM-5.2` | Chat, context window |
-| `qoder/MiniMax-M2.7` | Chat, context window |
-
-Prefix with `codebuddy/` or `qoder/` for explicit routing, or use bare model name for auto-discovery.
-
-## Architecture
-
-```
-Client (Claude Code / OpenAI SDK)
-        │
-        ▼
-   qoderbuddy2api (FastAPI)
-        │
-   ┌────┴────────────┐
-   │                 │
-   ▼                 ▼
-CodeBuddy          Qoder CN
-(HTTPS)           (COSY Protocol)
-```
-
-## Advanced
-
-### Load Balancing
-
-Comma-separate multiple tokens to enable round-robin:
-
-```ini
-QODER_TOKEN=pt_account1,pt_account2,pt_account3
-```
-
-Failed instances are cooled down for 30 seconds before retry.
-
-### API Key Protection
-
-```ini
-QB2API_API_KEY=your-secret
-```
-
-With a key configured, all non-health endpoints require `Authorization: Bearer <key>`.
-
-### Service Management
+Set `QB2API_ADMIN_KEY` and `QB2API_CREDENTIAL_KEY` before enabling the Admin
+UI, durable accounts, check-in, or backup. Start from the repository root so
+the process reads `.env`:
 
 ```bash
-./server.sh start     # start in foreground
-./server.sh stop      # stop by port
-./server.sh status    # show status
+.venv/bin/qb2api --mode control
+```
+
+Default addresses:
+
+- Control health: `http://127.0.0.1:9999/health`
+- Admin UI: `http://127.0.0.1:9999/admin/`
+- Unified proxy entry (recommended): `http://127.0.0.1:9999/v1`
+  - Models: `http://127.0.0.1:9999/v1/models`
+  - OpenAI base URL: `http://127.0.0.1:9999/v1`
+  - Anthropic Messages: `http://127.0.0.1:9999/v1/messages`
+- Direct Worker (compatible, optional): `http://127.0.0.1:10001/v1`
+
+客户端只填统一入口 `9999` 即可：Control Plane 会把 `/v1/*` 转发到 Worker。
+模型请求通过 `Authorization: Bearer …` 只发送 Proxy Key；进程级安全边界保持不变
+（管理面与代理面仍是两个进程，只是对外呈现单端口）。
+
+## Trusted remote HTTP and HTTPS
+
+HTTPS is recommended for every non-loopback browser. With the default
+`QB2API_ADMIN_COOKIE_SECURE=auto`, loopback HTTP is allowed and remote HTTP
+login is rejected.
+
+Trusted Tailscale/LAN HTTP is explicitly supported when TLS is unavailable:
+
+```ini
+QB2API_CONTROL_HOST=100.101.102.103
+QB2API_CONTROL_PORT=9999
+QB2API_ADMIN_COOKIE_SECURE=false
+```
+
+This is a deliberate transport-risk exception: the session remains `HttpOnly`
+and `SameSite=Lax`, but the first Admin Key login is not encrypted. Use it only
+on a trusted tailnet/LAN. Never combine it with public DNS, public port
+forwarding, shared Wi-Fi, or a public reverse proxy.
+
+For HTTPS, bind Control Plane to loopback and use a TLS proxy. Only after its
+direct peer CIDR is known should it trust forwarded headers:
+
+```ini
+QB2API_CONTROL_HOST=127.0.0.1
+QB2API_ADMIN_COOKIE_SECURE=auto
+QB2API_TRUSTED_PROXY_HEADERS=true
+QB2API_TRUSTED_PROXY_NETWORKS=127.0.0.1/32
+```
+
+The reverse proxy must overwrite `X-Forwarded-For` and
+`X-Forwarded-Proto`; never enable this trust for arbitrary clients or a broad
+network range.
+
+## Operations, backup, and smoke
+
+Use the Service page (or the Admin-Key-protected service API) only to manage
+the Worker. Restart the Control Plane through launchd/systemd. A Control Plane
+restart stops its Worker and deliberately revokes browser sessions, so signing
+in again is expected.
+
+Backup restore is validation-only through the API: it checks checksum, SQLite
+integrity, and schema compatibility, then returns `offline_restore_required`.
+Actual restoration requires the Control Plane to be stopped before copying a
+validated SQLite backup over the active database.
+
+```bash
+PYTHON_BIN=.venv/bin/python bash scripts/smoke_fresh_install.sh
+PYTHON_BIN=.venv/bin/python bash scripts/smoke_migrated_install.sh
+```
+
+The smokes use a temporary data directory, verify Control/Worker startup, a
+Worker crash followed by supervised restart, and backup dry-run validation.
+They delete their artifacts unless `QB2API_SMOKE_KEEP=1` is set.
+
+## Runbooks
+
+- [Mac Mini deployment and operations](docs/deployment/macmini.md)
+- [Single-process migration](docs/migration/single-process-to-control-worker.md)
+- [launchd Control Plane template](deploy/launchd/cn.qb2api.control.plist)
+- [optional systemd development template](deploy/systemd/qb2api-control.service)
+- [Qoder Windows check-in exporter](tools/qoder-checkin-exporter/README.md)
+
+Static environment tokens are transient chat slots. Use the Admin UI to
+promote/import an account that needs durable identity, check-in, or credential
+rotation. Qoder chat PATs and Qoder check-in access/refresh credentials are
+different values. Import WorkBuddy check-in credentials from
+`/admin/accounts/add` with the CodeBuddy / WorkBuddy Check-in workflow. It
+accepts bearer, cookie, or bearer + cookie mode and persists only after the
+server validates success or an already-checked-in result. Never store those
+credentials in `.env`, a URL, browser storage, or a generic endpoint.
+
+The administrative console is a high-density local control plane. Its grouped
+navigation covers runtime, account pool, proxy/models, automation, and
+governance. On a phone the navigation is an explicit drawer; table data remains
+scrollable and dangerous operations retain their confirmation dialogs. The UI
+does not persist an Admin Key or provider credentials in browser storage.
+
+## Development verification
+
+```bash
+pytest -q
+ruff check src tests
+python -m compileall -q src/qb2api
+cd frontend && npm run test && npm run typecheck && npm run lint && npm run build && npm run test:e2e
+git diff --check
 ```
 
 ## License
 
-MIT — see [LICENSE](LICENSE) for details.
-
----
-
-<p align="center">
-  <sub>Built for developers who want more model freedom.</sub>
-</p>
+MIT — see [LICENSE](LICENSE).

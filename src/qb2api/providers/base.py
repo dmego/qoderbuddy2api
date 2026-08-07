@@ -1,7 +1,7 @@
 """Provider base class and registry."""
 
 from abc import ABC, abstractmethod
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 from ..openai import ChatCompletionRequest
 

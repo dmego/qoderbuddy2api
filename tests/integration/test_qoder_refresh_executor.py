@@ -1,0 +1,403 @@
+"""Qoder refresh classification and credential CAS integration contracts."""
+
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+from cryptography.fernet import Fernet
+
+from qb2api.accounts.registry import AccountRegistry
+from qb2api.accounts.repository import AccountRepository, CredentialVersionConflict
+from qb2api.accounts.resolver import CredentialResolver
+from qb2api.accounts.vault import CredentialVault
+from qb2api.checkin.executors import CheckinExecutor
+from qb2api.checkin.models import CheckInOutcome, CheckInResult, RefreshResult
+from qb2api.config import Settings
+
+
+class _UnusedWorkBuddy:
+    async def close(self) -> None:
+        return None
+
+
+class _RefreshingQoderClient:
+    def __init__(
+        self,
+        *,
+        refresh: RefreshResult,
+        success_token: str | None = None,
+    ) -> None:
+        self.refresh_result = refresh
+        self.success_token = success_token
+        self.access_tokens: list[str] = []
+
+    async def checkin(self, *, access_token: str, account_id: str) -> CheckInResult:
+        self.access_tokens.append(access_token)
+        if self.success_token and access_token == self.success_token:
+            return CheckInResult(
+                outcome=CheckInOutcome.CLAIMED,
+                provider="qoder",
+                account_id=account_id,
+                http_status=200,
+            )
+        return CheckInResult(
+            outcome=CheckInOutcome.NEEDS_REAUTH,
+            provider="qoder",
+            account_id=account_id,
+            http_status=401,
+        )
+
+    async def refresh(self, **_values) -> RefreshResult:
+        return self.refresh_result
+
+    async def close(self) -> None:
+        return None
+
+
+class _RacingRefreshQoderClient(_RefreshingQoderClient):
+    def __init__(self, winner_committed: asyncio.Event) -> None:
+        super().__init__(refresh=RefreshResult(), success_token="winner-access")
+        self._winner_committed = winner_committed
+        self._both_refreshing = asyncio.Event()
+        self._refresh_calls = 0
+
+    async def refresh(self, **_values) -> RefreshResult:
+        self._refresh_calls += 1
+        call_number = self._refresh_calls
+        if call_number == 2:
+            self._both_refreshing.set()
+        await self._both_refreshing.wait()
+        if call_number == 1:
+            return RefreshResult(
+                access_token="winner-access",
+                refresh_token="winner-refresh",
+            )
+        await self._winner_committed.wait()
+        return RefreshResult(
+            http_status=401,
+            outcome=CheckInOutcome.NEEDS_REAUTH,
+            message="stale refresh token rejected",
+        )
+
+
+class _DisabledQoderClient(_RefreshingQoderClient):
+    async def checkin(self, *, access_token: str, account_id: str) -> CheckInResult:
+        return CheckInResult(
+            outcome=CheckInOutcome.FAILED,
+            provider="qoder",
+            account_id=account_id,
+            http_status=200,
+            raw_status="DISABLED",
+            message="Qoder daily check-in is disabled",
+        )
+
+
+@pytest.fixture
+async def qoder_context(tmp_path):
+    repository = AccountRepository(str(tmp_path / "accounts.sqlite3"))
+    await repository.connect()
+    await repository.migrate()
+    vault = CredentialVault(Fernet.generate_key().decode())
+    await _seed(repository, vault)
+    registry = AccountRegistry(repository, vault)
+    await registry.rebuild()
+    yield repository, vault, registry
+    await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_does_not_mark_purpose_needs_reauth(qoder_context) -> None:
+    repository, vault, registry = qoder_context
+    qoder = _RefreshingQoderClient(
+        refresh=RefreshResult(
+            http_status=429,
+            outcome=CheckInOutcome.RATE_LIMITED,
+            message="rate limited",
+        )
+    )
+    executor = _executor(repository, vault, registry, qoder=qoder)
+
+    result = await executor.run("qoder", "qd-main")
+    purposes = await repository.list_purposes("qoder", "qd-main")
+    checkin = next(item for item in purposes if item["purpose"] == "checkin")
+
+    assert result.outcome == CheckInOutcome.RATE_LIMITED
+    assert checkin["status"] == "active"
+    await executor.close()
+
+
+@pytest.mark.asyncio
+async def test_invalid_refresh_marks_qoder_checkin_reauth(qoder_context) -> None:
+    repository, vault, registry = qoder_context
+    qoder = _RefreshingQoderClient(
+        refresh=RefreshResult(
+            http_status=400,
+            outcome=CheckInOutcome.NEEDS_REAUTH,
+            message="Qoder refresh credential rejected",
+        )
+    )
+    executor = _executor(repository, vault, registry, qoder=qoder)
+
+    result = await executor.run("qoder", "qd-main")
+    purposes = await repository.list_purposes("qoder", "qd-main")
+    checkin = next(item for item in purposes if item["purpose"] == "checkin")
+
+    assert result.outcome == CheckInOutcome.NEEDS_REAUTH
+    assert result.business_code == "qoder_checkin_reauth_required"
+    assert result.message == "Qoder 签到凭据已失效，请重新派生或导入"
+    assert checkin["status"] == "needs_reauth"
+    await executor.close()
+
+
+@pytest.mark.asyncio
+async def test_expired_qoder_credential_rederives_from_chat_pat(qoder_context, monkeypatch) -> None:
+    repository, vault, registry = qoder_context
+    async with repository.transaction():
+        await repository.upsert_purpose(
+            provider="qoder", account_id="qd-main", purpose="chat", enabled=True,
+            status="active", verification_status="not_required", capabilities=["proxy.chat"],
+        )
+        await repository.upsert_credential(
+            provider="qoder", account_id="qd-main", purpose="chat", mode="pat",
+            encrypted_payload=vault.encrypt({"pat": "pat-qd-main"}),
+        )
+    await registry.rebuild()
+
+    async def derive(pat: str) -> tuple[str, str]:
+        assert pat == "pat-qd-main"
+        return "derived-access", "derived-refresh"
+
+    monkeypatch.setattr("qb2api.checkin.executors.derive_qoder_checkin", derive, raising=False)
+    qoder = _RefreshingQoderClient(
+        refresh=RefreshResult(
+            http_status=400,
+            outcome=CheckInOutcome.NEEDS_REAUTH,
+            message="Qoder refresh credential rejected",
+        ),
+        success_token="derived-access",
+    )
+    executor = _executor(repository, vault, registry, qoder=qoder)
+
+    result = await executor.run("qoder", "qd-main")
+
+    assert result.outcome == CheckInOutcome.CLAIMED
+    assert qoder.access_tokens == ["access-qd-main", "derived-access"]
+    stored = await repository.get_credential("qoder", "qd-main", "checkin")
+    assert stored is not None
+    assert vault.decrypt(stored["encrypted_payload"]) == {
+        "access_token": "derived-access", "refresh_token": "derived-refresh",
+    }
+    await executor.close()
+
+
+@pytest.mark.asyncio
+async def test_missing_qoder_checkin_credential_derives_from_chat_pat(qoder_context, monkeypatch) -> None:
+    repository, vault, registry = qoder_context
+    await repository.delete_credential("qoder", "qd-main", "checkin")
+    async with repository.transaction():
+        await repository.upsert_purpose(
+            provider="qoder", account_id="qd-main", purpose="chat", enabled=True,
+            status="active", verification_status="not_required", capabilities=["proxy.chat"],
+        )
+        await repository.upsert_credential(
+            provider="qoder", account_id="qd-main", purpose="chat", mode="pat",
+            encrypted_payload=vault.encrypt({"pat": "pat-qd-main"}),
+        )
+    await registry.rebuild()
+
+    async def derive(pat: str) -> tuple[str, str]:
+        assert pat == "pat-qd-main"
+        return "derived-access", "derived-refresh"
+
+    monkeypatch.setattr("qb2api.checkin.executors.derive_qoder_checkin", derive)
+    qoder = _RefreshingQoderClient(refresh=RefreshResult(), success_token="derived-access")
+    executor = _executor(repository, vault, registry, qoder=qoder)
+
+    result = await executor.run("qoder", "qd-main")
+
+    assert result.outcome == CheckInOutcome.CLAIMED
+    assert qoder.access_tokens == ["derived-access"]
+    stored = await repository.get_credential("qoder", "qd-main", "checkin")
+    assert stored is not None
+    assert vault.decrypt(stored["encrypted_payload"])["refresh_token"] == "derived-refresh"
+    await executor.close()
+
+
+@pytest.mark.asyncio
+async def test_disabled_qoder_checkin_keeps_account_active_with_clear_error(qoder_context) -> None:
+    repository, vault, registry = qoder_context
+    executor = _executor(repository, vault, registry, qoder=_DisabledQoderClient(refresh=RefreshResult()))
+
+    result = await executor.run("qoder", "qd-main")
+    purposes = await repository.list_purposes("qoder", "qd-main")
+    checkin = next(item for item in purposes if item["purpose"] == "checkin")
+
+    assert result.outcome == CheckInOutcome.FAILED
+    assert result.business_code == "qoder_checkin_disabled"
+    assert result.message == "Qoder 今日签到活动已关闭"
+    assert checkin["status"] == "active"
+    assert checkin["last_error"] == "qoder_checkin_disabled"
+    await executor.close()
+
+
+@pytest.mark.asyncio
+async def test_cas_conflict_uses_winning_credential(qoder_context) -> None:
+    repository, vault, registry = qoder_context
+    qoder = _RefreshingQoderClient(
+        refresh=RefreshResult(
+            access_token="stale-refresh-result",
+            refresh_token="stale-rotated-refresh",
+        ),
+        success_token="winner-access",
+    )
+    original_upsert = repository.upsert_credential
+
+    async def competing_upsert(**values):
+        if values.get("expected_version") is not None:
+            await original_upsert(
+                provider="qoder",
+                account_id="qd-main",
+                purpose="checkin",
+                mode="access_refresh",
+                encrypted_payload=vault.encrypt(
+                    {
+                        "access_token": "winner-access",
+                        "refresh_token": "winner-refresh",
+                    }
+                ),
+                has_refresh_token=True,
+                expected_version=values["expected_version"],
+            )
+            raise CredentialVersionConflict("injected competing refresh")
+        return await original_upsert(**values)
+
+    repository.upsert_credential = competing_upsert  # type: ignore[method-assign]
+    executor = _executor(repository, vault, registry, qoder=qoder)
+
+    result = await executor.run("qoder", "qd-main")
+    stored = await repository.get_credential("qoder", "qd-main", "checkin")
+    assert stored is not None
+    payload = vault.decrypt(stored["encrypted_payload"])
+
+    assert result.outcome == CheckInOutcome.CLAIMED
+    assert qoder.access_tokens == ["access-qd-main", "winner-access"]
+    assert payload == {
+        "access_token": "winner-access",
+        "refresh_token": "winner-refresh",
+    }
+    await executor.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_refresh_failure_retries_committed_winner(qoder_context) -> None:
+    repository, vault, registry = qoder_context
+    winner_committed = asyncio.Event()
+    qoder = _RacingRefreshQoderClient(winner_committed)
+    original_upsert = repository.upsert_credential
+
+    async def tracking_upsert(**values):
+        version = await original_upsert(**values)
+        if values.get("expected_version") is not None:
+            winner_committed.set()
+        return version
+
+    repository.upsert_credential = tracking_upsert  # type: ignore[method-assign]
+    executor = _executor(repository, vault, registry, qoder=qoder)
+
+    results = await asyncio.gather(
+        executor.run("qoder", "qd-main"),
+        executor.run("qoder", "qd-main"),
+    )
+    purposes = await repository.list_purposes("qoder", "qd-main")
+    checkin = next(item for item in purposes if item["purpose"] == "checkin")
+
+    assert [result.outcome for result in results] == [
+        CheckInOutcome.CLAIMED,
+        CheckInOutcome.CLAIMED,
+    ]
+    assert qoder.access_tokens.count("winner-access") == 2
+    assert checkin["status"] == "active"
+    await executor.close()
+
+
+@pytest.mark.asyncio
+async def test_terminal_refresh_auth_failure_records_once(qoder_context) -> None:
+    repository, vault, registry = qoder_context
+    qoder = _RefreshingQoderClient(
+        refresh=RefreshResult(
+            http_status=401,
+            outcome=CheckInOutcome.NEEDS_REAUTH,
+            message="refresh rejected",
+        )
+    )
+    updates: list[dict] = []
+    original_upsert = repository.upsert_purpose
+
+    async def tracking_upsert(**values):
+        updates.append(values.copy())
+        return await original_upsert(**values)
+
+    repository.upsert_purpose = tracking_upsert  # type: ignore[method-assign]
+    executor = _executor(repository, vault, registry, qoder=qoder)
+
+    result = await executor.run("qoder", "qd-main")
+    purposes = await repository.list_purposes("qoder", "qd-main")
+    checkin = next(item for item in purposes if item["purpose"] == "checkin")
+
+    assert result.outcome == CheckInOutcome.NEEDS_REAUTH
+    assert len(updates) == 1
+    assert updates[0]["last_error"] == "qoder_checkin_reauth_required"
+    assert checkin["last_error"] == "qoder_checkin_reauth_required"
+    await executor.close()
+
+
+async def _seed(repository: AccountRepository, vault: CredentialVault) -> None:
+    async with repository.transaction():
+        await repository.upsert_account(
+            provider="qoder",
+            account_id="qd-main",
+            label="qd-main",
+            source="manual",
+            enabled=True,
+        )
+        await repository.upsert_purpose(
+            provider="qoder",
+            account_id="qd-main",
+            purpose="checkin",
+            enabled=True,
+            status="active",
+            verification_status="verified",
+            capabilities=["checkin.qoder"],
+        )
+        await repository.upsert_credential(
+            provider="qoder",
+            account_id="qd-main",
+            purpose="checkin",
+            mode="access_refresh",
+            encrypted_payload=vault.encrypt(
+                {
+                    "access_token": "access-qd-main",
+                    "refresh_token": "refresh-qd-main",
+                }
+            ),
+            has_refresh_token=True,
+        )
+
+
+def _executor(
+    repository: AccountRepository,
+    vault: CredentialVault,
+    registry: AccountRegistry,
+    *,
+    qoder: _RefreshingQoderClient,
+) -> CheckinExecutor:
+    return CheckinExecutor(
+        settings=Settings(codebuddy_tokens=[], qoder_tokens=[]),
+        repo=repository,
+        registry=registry,
+        resolver=CredentialResolver(repository, vault, registry),
+        vault=vault,
+        workbuddy=_UnusedWorkBuddy(),  # type: ignore[arg-type]
+        qoder=qoder,  # type: ignore[arg-type]
+    )
