@@ -58,7 +58,7 @@ class CodeBuddyProvider(Provider):
         self.token = token or ""
         self.endpoint = endpoint
         self._credential_getter = credential_getter
-        self._client = httpx.AsyncClient(timeout=httpx.Timeout(300, connect=10))
+        self._client = httpx.AsyncClient(timeout=httpx.Timeout(300, connect=10), trust_env=False)
 
     async def _resolve_token(self) -> str:
         if self._credential_getter is not None:

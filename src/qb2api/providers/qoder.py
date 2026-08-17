@@ -121,7 +121,7 @@ class QoderProvider(Provider):
         url = f"{GATEWAY}{CHAT_PATH}?{CHAT_QUERY}"
         timeout = httpx.Timeout(self.timeout, connect=15)
         chunk_count = 0
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
             async with client.stream(
                 "POST",
                 url,

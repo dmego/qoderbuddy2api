@@ -48,7 +48,7 @@ class QoderSession:
 
     def __init__(self, pat: str):
         self.pat = pat
-        self._client = httpx.AsyncClient(timeout=30)
+        self._client = httpx.AsyncClient(timeout=30, trust_env=False)
         self.machine_id = str(uuid.uuid4())
         self.machine_token = base64.urlsafe_b64encode(
             (str(uuid.uuid4()) + str(uuid.uuid4())).encode()
