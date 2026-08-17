@@ -121,6 +121,9 @@ QB2API_TRUSTED_PROXY_NETWORKS=127.0.0.1/32
 
 - **macOS（推荐）**：launchd 模板 `deploy/launchd/cn.qb2api.control.plist`，替换
   `REPLACE_ME` 后使用。步骤见 [部署手册 §4](deployment/macmini.md)。
+- **macOS / Docker（可选）**：仓库根目录 `docker-compose.yml`（OrbStack 或 Docker
+  Desktop），复用本机 `./data`、`./logs`、`./config` 与 `.env`，`restart:
+  unless-stopped` 在电脑重启后自动拉起。步骤见 [部署手册 §9](deployment/macmini.md)。
 - **Linux（可选开发）**：`deploy/systemd/qb2api-control.service`，步骤见
   [部署手册 §5](deployment/macmini.md)。
 

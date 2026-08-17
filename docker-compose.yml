@@ -1,0 +1,63 @@
+# qoderbuddy2api 容器化部署（OrbStack / Docker Desktop on macOS）
+#
+# 目标：和宿主机直接运行完全等价地复用本机已有的数据文件：
+#   - ./data   -> SQLite、worker.internal、backups（不复制，直接 bind mount）
+#   - ./logs   -> 请求日志
+#   - ./config -> models.json
+#   - .env     -> 原有全部配置原样传入
+#
+# 切换前必须先停掉宿主机上的旧进程（双进程同时开同一个 SQLite/WAL 会损坏数据）：
+#   pkill -f 'qb2api --mode control'
+#   或如果你用的是 launchd： launchctl bootout "gui/$(id -u)/cn.qb2api.control"
+#
+# 启动 / 停止：
+#   docker compose up -d --build
+#   docker compose down        # 仅停容器，不删数据；加 -v 才会删 volume（本文件用 bind mount，down 不会动 ./data）
+#
+# 电脑重启后自动拉起：
+#   restart: unless-stopped 依赖 Docker 引擎随系统自启。OrbStack 默认开启
+#   "Start Docker Engine at login"，无需额外设置；若关了，在 OrbStack 设置里打开即可。
+#   注意：除非手动 docker compose stop，否则即使容器短暂失败也会自动重启；
+#   想让它停止后不再拉起，用 docker compose stop 而非 down。
+#
+# 安全边界（与 AGENTS.md / 部署手册一致）：
+#   - 只有 9999（管理台 + 统一 /v1 入口）发布到宿主机，
+#     Loopback Worker 10001 留在容器内，不对外发布。
+#   - Worker internal token 由 ./data/worker.internal 复用，不写入镜像。
+#   - 上游请求在容器内直连（不继承宿主机 shell 的 socks 代理）。
+
+name: qb2api
+
+services:
+  qb2api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: qb2api-control:latest
+    container_name: qb2api-control
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      QB2API_MODE: control
+      # .env 里的相对路径在这里必须改成容器内挂载点
+      QB2API_CONTROL_HOST: 0.0.0.0
+      QB2API_CONTROL_PORT: "9999"
+      QB2API_WORKER_HOST: 127.0.0.1
+      QB2API_WORKER_PORT: "10001"
+      QB2API_DATA_DIR: /data
+      QB2API_LOG_DIR: /logs
+      QB2API_MODEL_CONFIG: /config/models.json
+    ports:
+      - "9999:9999"
+    volumes:
+      # 复用本机已有数据，镜像不携带任何数据
+      - ./data:/data
+      - ./logs:/logs
+      - ./config:/config
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; (u.urlopen('http://127.0.0.1:9999/health', timeout=3).status == 200) or exit(1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

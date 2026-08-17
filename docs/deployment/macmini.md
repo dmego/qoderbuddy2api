@@ -231,3 +231,35 @@ jitter 可以在管理台中持久化调整。`CODEBUDDY_CHECKIN_STATUS_METHOD` 
 8. **协议证据**：WorkBuddy `daily-checkin` 的真实结果已按脱敏规则记录
    （仅 provider、账号 ID、HTTP 状态、业务码、request ID、耗时与已确认的
    header 名称）；未确认的 `checkin-status` method 保持禁用。
+
+## 9. 容器化部署（OrbStack / Docker Desktop，macOS 可选）
+
+仓库根目录的 `docker-compose.yml` 把 Control Plane 跑在容器里，但数据、
+日志、配置与密钥全部复用本机已有文件：`./data`、`./logs`、`./config` 以
+bind mount 挂入，`.env` 原样注入。镜像只携带应用代码，不包含任何凭据或数据。
+
+切换前提是本机已有可直接运行的宿主机部署（`.env`、`data/`、`logs/`、`config/`
+均已就位）。`docker compose up` 前必须先停掉宿主机旧进程，避免双进程同时打开
+同一个 SQLite/WAL：
+
+```bash
+pkill -f 'qb2api --mode control'   # 或 launchctl bootout "gui/$(id -u)/cn.qb2api.control"
+docker compose up -d --build
+docker compose logs -f             # 看到 worker handshake 200 与 /internal/health/ready 200
+```
+
+配置要点：
+
+- `env_file: .env` 注入原有全部变量，`environment` 只把控制面相对路径改写为容器内
+  挂载点（`QB2API_DATA_DIR=/data` 等），其余保持启动默认一致。
+- 仅发布 `9999`（管理台 + 统一 `/v1` 入口）；Proxy Worker 的 `10001` 保留在容器
+  loopback，不对外发布，`/internal/*` 仍走内部 token。
+- 容器不继承宿主机 shell 的环境代理，上游请求直连；镜像由工作区构建，包含
+  provider `trust_env=False` 修复。
+- 容器内以 root 运行即可：OrbStack 会把新建文件映射回宿主机用户属主
+  （`0700`/`0600`），不会破坏本机文件所有权。整机内存占用约 100 MiB。
+
+重启电脑后自动拉起依赖 `restart: unless-stopped` 与 Docker 引擎随登录自启：
+OrbStack 默认开启「Start Docker Engine at login」。要永久停用服务而不是仅仅
+停止，用 `docker compose stop` 而非 `down`（`down` 只停容器，bind mount 的
+`./data` 数据不受影响）。
