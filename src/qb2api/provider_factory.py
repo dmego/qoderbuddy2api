@@ -22,6 +22,7 @@ class ProviderFactory:
         return CodeBuddyProvider(
             token=token,
             endpoint=self._settings.codebuddy_endpoint,
+            default_reasoning_effort=self._settings.codebuddy_default_reasoning_effort,
         )
 
     def codebuddy_dynamic(self, account_id: str) -> Provider:
@@ -38,6 +39,7 @@ class ProviderFactory:
         return CodeBuddyProvider(
             endpoint=self._settings.codebuddy_endpoint,
             credential_getter=credential_getter,
+            default_reasoning_effort=self._settings.codebuddy_default_reasoning_effort,
         )
 
     def qoder(self, pat: str) -> Provider:

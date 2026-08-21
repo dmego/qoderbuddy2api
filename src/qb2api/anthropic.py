@@ -114,6 +114,9 @@ def _anthropic_response(
 
 def _response_content(message: dict[str, Any]) -> list[dict[str, Any]]:
     content: list[dict[str, Any]] = []
+    thinking = message.get("reasoning_content")
+    if thinking:
+        content.append({"type": "thinking", "thinking": str(thinking), "signature": ""})
     text = message.get("content")
     if text:
         content.append({"type": "text", "text": str(text)})

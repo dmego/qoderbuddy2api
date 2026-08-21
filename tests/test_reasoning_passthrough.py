@@ -133,12 +133,57 @@ async def test_str_chunk_is_encoded_and_filtered() -> None:
     assert b"reasoning_content" not in out[1]
 
 
+async def test_anthropic_stream_forwards_thinking_block() -> None:
+    """Anthropic SSE conversion exposes upstream reasoning as a thinking block."""
+    from qb2api.anthropic_stream import openai_stream_to_anthropic
+
+    async def gen() -> AsyncIterator[bytes]:
+        yield _REASONING_CHUNK
+        yield b"data: [DONE]\n\n"
+
+    events = [event async for event in openai_stream_to_anthropic(gen(), model="hy3")]
+    text = b"".join(events).decode()
+    assert "content_block_start" in text
+    assert '"type":"thinking"' in text or '"type": "thinking"' in text
+    assert "think..." in text
+
+
+async def test_anthropic_nonstream_includes_thinking() -> None:
+    """Non-streaming Anthropic response includes the reasoning as thinking."""
+    from qb2api.anthropic import openai_to_anthropic
+
+    response = {
+        "id": "chatcmpl-1",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": "hi",
+                "reasoning_content": "think...",
+            },
+            "finish_reason": "stop",
+        }],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+    out = openai_to_anthropic(response, model="hy3")
+    assert out["content"][0]["type"] == "thinking"
+    assert out["content"][0]["thinking"] == "think..."
+    assert out["content"][1]["type"] == "text"
+
+
 def test_config_env_binding(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("QB2API_STREAM_REASONING", raising=False)
-    assert Settings.from_env(env_file="").stream_reasoning is False
+    # Default flips reasoning passthrough ON so thinking models expose steps.
+    assert Settings.from_env(env_file="").stream_reasoning is True
 
     monkeypatch.setenv("QB2API_STREAM_REASONING", "1")
     assert Settings.from_env(env_file="").stream_reasoning is True
 
     monkeypatch.setenv("QB2API_STREAM_REASONING", "false")
     assert Settings.from_env(env_file="").stream_reasoning is False
+
+    monkeypatch.setenv("QB2API_CODEBUDDY_DEFAULT_REASONING_EFFORT", "high")
+    assert Settings.from_env(env_file="").codebuddy_default_reasoning_effort == "high"
+
+    monkeypatch.delenv("QB2API_CODEBUDDY_DEFAULT_REASONING_EFFORT", raising=False)
+    assert Settings.from_env(env_file="").codebuddy_default_reasoning_effort == "low"

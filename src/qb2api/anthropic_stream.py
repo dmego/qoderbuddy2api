@@ -53,6 +53,7 @@ class _StreamState:
     def __init__(self) -> None:
         self.active_blocks: list[int] = []
         self.text_index: int | None = None
+        self.thinking_index: int | None = None
         self.tool_indexes: dict[int, int] = {}
         self.next_index = 0
         self.stopped = False
@@ -93,6 +94,8 @@ class _StreamState:
 
     def process_delta(self, delta: dict[str, Any]) -> list[bytes]:
         events: list[bytes] = []
+        if delta.get("reasoning_content"):
+            events.extend(self._thinking_delta(delta["reasoning_content"]))
         if delta.get("content"):
             events.extend(self._text_delta(delta["content"]))
         for tool_call in delta.get("tool_calls") or []:
@@ -142,6 +145,33 @@ class _StreamState:
                     "type": "content_block_delta",
                     "index": self.text_index,
                     "delta": {"type": "text_delta", "text": text},
+                },
+            )
+        )
+        return events
+
+    def _thinking_delta(self, text: str) -> list[bytes]:
+        """Forward upstream reasoning_content as an Anthropic thinking block."""
+        events: list[bytes] = []
+        if self.thinking_index is None:
+            self.thinking_index = self._reserve_block()
+            events.append(
+                _sse(
+                    "content_block_start",
+                    {
+                        "type": "content_block_start",
+                        "index": self.thinking_index,
+                        "content_block": {"type": "thinking", "thinking": "", "signature": ""},
+                    },
+                )
+            )
+        events.append(
+            _sse(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": self.thinking_index,
+                    "delta": {"type": "thinking_delta", "thinking": text},
                 },
             )
         )

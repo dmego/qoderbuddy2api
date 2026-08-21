@@ -99,6 +99,9 @@ def _provider_values() -> dict[str, object]:
         "qoder_tokens": _parse_tokens(os.getenv("QODER_TOKEN")),
         "qoder_timeout": _env_int("QODER_TIMEOUT", 300),
         "provider_drain_timeout_seconds": _env_int("PROVIDER_DRAIN_TIMEOUT_SECONDS", 330),
+        "codebuddy_default_reasoning_effort": os.getenv(
+            "QB2API_CODEBUDDY_DEFAULT_REASONING_EFFORT", "low"
+        ).strip().lower(),
     }
 
 
@@ -148,7 +151,7 @@ def _observability_values() -> dict[str, object]:
         "metrics_history_retention_days": _env_int("QB2API_METRICS_HISTORY_RETENTION_DAYS", 90),
         "usage_rollup_interval_seconds": _env_int("QB2API_USAGE_ROLLUP_INTERVAL_SECONDS", 60),
         "usage_detail_retention_days": _env_int("QB2API_USAGE_DETAIL_RETENTION_DAYS", 90),
-        "stream_reasoning": _env_bool("QB2API_STREAM_REASONING", False),
+        "stream_reasoning": _env_bool("QB2API_STREAM_REASONING", True),
         "log_requests": _env_bool("QB2API_LOG_REQUESTS", True),
         "log_dir": os.getenv("QB2API_LOG_DIR", "./logs"),
         "model_config_path": os.getenv("QB2API_MODEL_CONFIG", "./config/models.json"),
@@ -247,8 +250,13 @@ class Settings:
     usage_rollup_interval_seconds: int = 60
     usage_detail_retention_days: int = 90
 
-    # Streaming — forward reasoning_content when QB2API_STREAM_REASONING=1
-    stream_reasoning: bool = False
+    # Streaming — forward reasoning_content (default on for thinking models)
+    stream_reasoning: bool = True
+
+    # CodeBuddy/WorkBuddy: inject this reasoning_effort when the client does
+    # not specify one, so supported models actually emit reasoning steps.
+    # "low" covers all models (hy3 ignores medium); empty disables injection.
+    codebuddy_default_reasoning_effort: str = "low"
 
     # Logging
     log_requests: bool = True

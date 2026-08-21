@@ -48,6 +48,40 @@ class TestCodeBuddyScrub:
         assert body["messages"][0]["content"] == "You are a helpful assistant."
         assert "Claude Code" in body["messages"][1]["content"]
 
+    def test_build_body_injects_default_effort_when_absent(self):
+        provider = CodeBuddyProvider(token="dummy", default_reasoning_effort="high")
+        request = ChatCompletionRequest(
+            model="hy3",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        body = provider._build_body(request)
+
+        assert body["reasoning_effort"] == "high"
+
+    def test_build_body_respects_client_supplied_effort(self):
+        provider = CodeBuddyProvider(token="dummy", default_reasoning_effort="high")
+        request = ChatCompletionRequest(
+            model="hy3",
+            messages=[{"role": "user", "content": "hi"}],
+            reasoning_effort="low",
+        )
+
+        body = provider._build_body(request)
+
+        assert body["reasoning_effort"] == "low"
+
+    def test_build_body_no_effort_when_default_empty(self):
+        provider = CodeBuddyProvider(token="dummy", default_reasoning_effort="")
+        request = ChatCompletionRequest(
+            model="hy3",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        body = provider._build_body(request)
+
+        assert "reasoning_effort" not in body
+
 
 class TestQoderToolCalls:
     """Test Qoder model mapping and COSY headers."""

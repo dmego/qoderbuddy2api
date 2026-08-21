@@ -52,12 +52,14 @@ class CodeBuddyProvider(Provider):
         token: str | None = None,
         endpoint: str = "https://copilot.tencent.com",
         credential_getter: CredentialGetter | None = None,
+        default_reasoning_effort: str | None = None,
     ):
         if not token and credential_getter is None:
             raise ValueError("CodeBuddyProvider requires token or credential_getter")
         self.token = token or ""
         self.endpoint = endpoint
         self._credential_getter = credential_getter
+        self.default_reasoning_effort = (default_reasoning_effort or "").strip().lower() or None
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(300, connect=10), trust_env=False)
 
     async def _resolve_token(self) -> str:
@@ -119,6 +121,10 @@ class CodeBuddyProvider(Provider):
         body.update(_request_values(request, self.REQUEST_KEYS))
         body.update(_tool_values(request))
         body.update(_request_values(request, self.PASSTHROUGH_KEYS))
+        if self.default_reasoning_effort and "reasoning_effort" not in body:
+            # WorkBuddy models only emit reasoning_content when reasoning_effort
+            # is set; inject a default so supported models actually think.
+            body["reasoning_effort"] = self.default_reasoning_effort
         return body
 
     async def _build_headers(self) -> dict:
