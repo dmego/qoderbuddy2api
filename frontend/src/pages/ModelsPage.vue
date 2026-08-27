@@ -62,7 +62,9 @@ const syncUpstream = useMutation({
     if (result.providers) {
       const q = result.providers.qoder;
       const c = result.providers.codebuddy;
-      detail = `WorkBuddy ${c ? `新增 ${c.added ?? 0}` : "失败"} · Qoder ${q && q.status === "succeeded" ? `更新 ${q.added ?? 0}` : "失败"}`;
+      const wb = c && c.status === "succeeded" ? `WorkBuddy 新增 ${c.added ?? 0}` : "WorkBuddy 失败";
+      const qd = q && q.status === "succeeded" ? `Qoder 更新 ${q.added ?? 0}` : q?.error === "QoderError" ? "Qoder 无可用凭据" : "Qoder 未同步";
+      detail = `${wb} · ${qd}`;
     } else if (provider.value === "codebuddy") {
       detail = `探测 ${result.probed ?? 0} · 新增 ${result.added} · 更新 ${result.updated} · 移除 ${result.removed ?? 0}`;
     } else {
