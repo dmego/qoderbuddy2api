@@ -55,7 +55,7 @@ const refresh = useMutation({
 const syncUpstream = useMutation({
   mutationFn: () => {
     const endpoint = provider.value === "codebuddy" ? "/models/sync/codebuddy" : provider.value === "qoder" ? "/models/sync/qoder" : "/models/sync";
-    return apiRequest<{ added: number; updated: number; removed?: number; disabled?: number; probed?: number; providers?: Record<string, { status: string; added?: number }> }>(endpoint, { method: "POST" });
+    return apiRequest<{ added: number; updated: number; removed?: number; disabled?: number; probed?: number; providers?: Record<string, { status: string; added?: number; error?: string }> }>(endpoint, { method: "POST" });
   },
   onSuccess: async (result) => {
     let detail: string;
