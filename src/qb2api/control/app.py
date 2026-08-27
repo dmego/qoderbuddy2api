@@ -108,6 +108,16 @@ def _install_static(application: FastAPI) -> None:
 def _register_middleware(application: FastAPI) -> None:
     application.middleware("http")(authenticate_request)
     application.middleware("http")(forward_proxy_requests)
+    application.middleware("http")(_disable_admin_asset_cache)
+
+
+async def _disable_admin_asset_cache(request: Request, call_next: Callable) -> Response:
+    response = await call_next(request)
+    path = request.url.path
+    if request.method == "GET" and (path == "/admin" or path.startswith("/admin/")):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+    return response
 
 
 async def forward_proxy_requests(request: Request, call_next: Callable):

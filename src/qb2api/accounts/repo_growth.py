@@ -29,6 +29,62 @@ class GrowthRepositoryMixin:
                 (provider, account_id, local_date, timezone, now, now),
             )
             return cursor.rowcount == 1
+    async def record_workbuddy_active_day_attempt(
+        self,
+        *,
+        provider: str,
+        account_id: str,
+        local_date: str,
+        timezone: str,
+    ) -> int:
+        """记录指定 local_date 的一次 ACP 尝试。"""
+        now = now_iso()
+        async with self._operation(write=True) as db:
+            await db.execute(
+                """
+                UPDATE workbuddy_active_days
+                SET run_attempts=run_attempts+1, status='running', error_code=NULL,
+                    confirmed=NULL, confirmed_at=NULL, updated_at=?
+                WHERE provider=? AND account_id=? AND local_date=? AND timezone=?
+                """,
+                (now, provider, account_id, local_date, timezone),
+            )
+            cursor = await db.execute(
+                """
+                SELECT run_attempts FROM workbuddy_active_days
+                WHERE provider=? AND account_id=? AND local_date=? AND timezone=?
+                """,
+                (provider, account_id, local_date, timezone),
+            )
+            row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
+    async def record_workbuddy_active_day_observation(
+        self,
+        *,
+        provider: str,
+        account_id: str,
+        local_date: str,
+        timezone: str,
+        official_score: int | None,
+        official_streak_days: int | None,
+        official_updated_at: str | None,
+    ) -> None:
+        """记录绑定到 local_date 的官方观察值，不改变尝试次数。"""
+        now = now_iso()
+        async with self._operation(write=True) as db:
+            await db.execute(
+                """
+                UPDATE workbuddy_active_days
+                SET official_score=?, official_streak_days=?, official_updated_at=?,
+                    official_observed_at=?, updated_at=?
+                WHERE provider=? AND account_id=? AND local_date=? AND timezone=?
+                """,
+                (
+                    official_score, official_streak_days, official_updated_at,
+                    now, now, provider, account_id, local_date, timezone,
+                ),
+            )
 
     async def finish_workbuddy_active_day(
         self,

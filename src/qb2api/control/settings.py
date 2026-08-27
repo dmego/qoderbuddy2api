@@ -60,7 +60,6 @@ class SettingsApplier:
         "growth.scheduler_enabled": "growth_scheduler_enabled",
         "growth.scheduler_interval_seconds": "growth_scheduler_interval_seconds",
         "growth.auto_active_day": "growth_auto_active_day",
-        "growth.auto_active_day_recheckin": "growth_auto_active_day_recheckin",
         "growth.active_day_confirm_attempts": "growth_active_day_confirm_attempts",
     }
     _SCHEDULER_KEYS = frozenset(

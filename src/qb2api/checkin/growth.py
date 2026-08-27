@@ -219,6 +219,7 @@ def _heatmap(data: dict[str, Any]) -> dict[str, Any]:
         "today": _heatmap_today(data.get("today")),
         "range_start": _range_field(data.get("range"), "start_date"),
         "range_end": _range_field(data.get("range"), "end_date"),
+        "updated_at": data.get("updated_at"),
     }
 
 

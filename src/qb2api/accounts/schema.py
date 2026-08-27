@@ -130,6 +130,11 @@ CREATE TABLE IF NOT EXISTS workbuddy_active_days (
     confirmed TEXT,
     confirmed_at TEXT,
     confirm_attempts INTEGER NOT NULL DEFAULT 0,
+    run_attempts INTEGER NOT NULL DEFAULT 0,
+    official_score INTEGER,
+    official_streak_days INTEGER,
+    official_updated_at TEXT,
+    official_observed_at TEXT,
     PRIMARY KEY (provider, account_id, local_date, timezone)
 );
 
