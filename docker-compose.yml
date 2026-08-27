@@ -1,39 +1,29 @@
-# qoderbuddy2api 容器化部署（OrbStack / Docker Desktop on macOS）
+# qoderbuddy2api — Docker Compose 部署
 #
-# 目标：和宿主机直接运行完全等价地复用本机已有的数据文件：
-#   - ./data   -> SQLite、worker.internal、backups（不复制，直接 bind mount）
-#   - ./logs   -> 请求日志
-#   - ./config -> models.json
-#   - .env     -> 原有全部配置原样传入
+# 官方镜像：ghcr.io/dmego/qoderbuddy2api （支持 linux/amd64 与 linux/arm64）
+# 每次打 v* 发布 tag 或推送 main 时由 GitHub Actions 自动构建推送。
 #
-# 切换前必须先停掉宿主机上的旧进程（双进程同时开同一个 SQLite/WAL 会损坏数据）：
-#   pkill -f 'qb2api --mode control'
-#   或如果你用的是 launchd： launchctl bootout "gui/$(id -u)/cn.qb2api.control"
+# 部署方式（推荐）：
+#   1. cp .env.example .env && chmod 600 .env
+#      填入 QB2API_PROXY_API_KEY / QB2API_ADMIN_KEY / QB2API_CREDENTIAL_KEY
+#   2. docker compose up -d
 #
-# 启动 / 停止：
-#   docker compose up -d --build
-#   docker compose down        # 仅停容器，不删数据；加 -v 才会删 volume（本文件用 bind mount，down 不会动 ./data）
+# 状态外挂（bind mount，镜像不携带任何运行数据）：
+#   ./data   -> /data     SQLite、worker.internal、备份
+#   ./logs   -> /logs     请求 / 服务日志
+#   ./config -> /config   模型目录 models.json（可在管理台"从上游同步"更新）
 #
-# 电脑重启后自动拉起：
-#   restart: unless-stopped 依赖 Docker 引擎随系统自启。OrbStack 默认开启
-#   "Start Docker Engine at login"，无需额外设置；若关了，在 OrbStack 设置里打开即可。
-#   注意：除非手动 docker compose stop，否则即使容器短暂失败也会自动重启；
-#   想让它停止后不再拉起，用 docker compose stop 而非 down。
-#
-# 安全边界（与 AGENTS.md / 部署手册一致）：
-#   - 只有 9999（管理台 + 统一 /v1 入口）发布到宿主机，
-#     Loopback Worker 10001 留在容器内，不对外发布。
-#   - Worker internal token 由 ./data/worker.internal 复用，不写入镜像。
-#   - 上游请求在容器内直连（不继承宿主机 shell 的 socks 代理）。
+# 安全边界：
+#   - 仅发布 9999（管理台 /admin + 统一 /v1 入口）；
+#     Proxy Worker 10001 留在容器内 loopback，不对宿主机发布。
+#   - Worker 内部 token 首次启动自动生成到 ./data/worker.internal（0600）。
+#   - 容器内上游请求直连，不继承宿主机 shell 的代理环境。
 
 name: qb2api
 
 services:
   qb2api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: qb2api-control:latest
+    image: ghcr.io/dmego/qoderbuddy2api:latest
     container_name: qb2api-control
     restart: unless-stopped
     env_file:
@@ -51,7 +41,6 @@ services:
     ports:
       - "9999:9999"
     volumes:
-      # 复用本机已有数据，镜像不携带任何数据
       - ./data:/data
       - ./logs:/logs
       - ./config:/config

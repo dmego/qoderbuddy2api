@@ -1,7 +1,6 @@
 # 配置指南
 
-本文是 qoderbuddy2api 的配置参考。快速上手见仓库根目录 [README](../README.md) 与
-[README.zh](../README.zh.md)；完整部署与运维见 [Mac Mini 部署手册](deployment/macmini.md)。
+[README.zh](../README.zh.md)；部署方式为官方 Docker 镜像，见 [Docker 部署](../README.md#docker-deployment)。
 
 ## 1. 三类密钥
 
@@ -23,8 +22,7 @@ python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().
 
 安全边界：
 
-- 不要把 raw key、token、Cookie、Authorization、prompt 或 completion 写入 URL、浏览器
-  存储、Git、截图、launchd/systemd 文件或普通日志。
+  存储、Git、截图、服务文件或普通日志。
 - 丢失 `QB2API_CREDENTIAL_KEY` 后无法解密已存动态凭据；轮换它不会迁移旧数据。
 - `QB2API_API_KEY` 是已废弃的 Proxy-only 别名，不要当作 Admin Key 使用。
 
@@ -116,15 +114,18 @@ QB2API_TRUSTED_PROXY_NETWORKS=127.0.0.1/32
 反向代理必须覆盖 `X-Forwarded-For` 与 `X-Forwarded-Proto`；不要对宽泛网段或任意客户端
 开启该信任。
 
-## 5. 常驻服务
+官方部署方式是 Docker 镜像（支持 `linux/amd64` 与 `linux/arm64`），推荐使用
+[`docker-compose.yml`](../docker-compose.yml) 一键启动：
 
-- **macOS（推荐）**：launchd 模板 `deploy/launchd/cn.qb2api.control.plist`，替换
-  `REPLACE_ME` 后使用。步骤见 [部署手册 §4](deployment/macmini.md)。
-- **macOS / Docker（可选）**：仓库根目录 `docker-compose.yml`（OrbStack 或 Docker
-  Desktop），复用本机 `./data`、`./logs`、`./config` 与 `.env`，`restart:
-  unless-stopped` 在电脑重启后自动拉起。步骤见 [部署手册 §9](deployment/macmini.md)。
-- **Linux（可选开发）**：`deploy/systemd/qb2api-control.service`，步骤见
-  [部署手册 §5](deployment/macmini.md)。
+```bash
+docker compose up -d
+```
+
+镜像可从 [GHCR](https://github.com/dmego/qoderbuddy2api/pkgs/container/qoderbuddy2api)
+拉取（`ghcr.io/dmego/qoderbuddy2api:latest`）；每次打 tag 发版后自动构建推送。
+数据、日志、模型配置全部通过 bind mount 外挂（`./data`、`./logs`、`./config`），
+`.env` 原样传入，`restart: unless-stopped` 保证宿主机重启后自动拉起。
+具体步骤见 [README.md · Docker deployment](../README.md#docker-deployment)。
 
 ## 6. 客户端接入示例
 

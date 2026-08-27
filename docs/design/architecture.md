@@ -5,7 +5,7 @@
 
 ## 1. 概述
 
-qoderbuddy2api 是一个运行在本机（Mac Mini / 开发机）的**多账号模型网关与运维控制台**：
+qoderbuddy2api 是一个运行在自托管主机（本机 / 私有服务器）的**多账号模型网关与运维控制台**：
 把 CodeBuddy 与 Qoder 的多个账号收敛为一个 OpenAI / Anthropic 兼容入口，并提供账号、
 凭据、签到、成长中心自动化、用量与积分的统一管理面。
 
@@ -251,8 +251,9 @@ Vue 3 + TypeScript + Vite + Pinia + Vue Router + TanStack Vue Query + ECharts，
 
 - 配置来源：`.env` 启动配置 → `runtime_settings` 运行时覆盖；完整参考见
   [配置指南](../configuration.md)。
-- 部署形态：macOS launchd（推荐）、Linux systemd（可选）、Docker 镜像；步骤见
-  [Mac Mini 部署与运维](../deployment/macmini.md)。
+- 部署形态：官方 Docker 镜像（`ghcr.io/dmego/qoderbuddy2api`，amd64/arm64），推荐
+  `docker-compose.yml` 一键启动；数据/日志/模型配置 bind mount 外挂，见
+  [README · Docker deployment](../../README.md#docker-deployment)。
 - 模型请求客户端：统一 base URL `http://127.0.0.1:9999/v1` + `QB2API_PROXY_API_KEY`。
 
 ## 11. 边界与非目标
@@ -260,7 +261,7 @@ Vue 3 + TypeScript + Vite + Pinia + Vue Router + TanStack Vue Query + ECharts，
 - 面向单管理员本机控制台，不支持公网多租户暴露、注册计费、商业化分发。
 - 不绕过验证码/风控/设备伪造；不自动抓取跨域 HttpOnly Cookie。
 - 不把 Control Plane 的进程停止伪装成可恢复操作；控制面生命周期由
-  launchd/systemd/人工维护。
+  Docker 容器 / 运维者维护。
 - 签到与 chat 池互不耦合：签到失败不冷却模型 slot，模型故障不触发签到重试。
 - 未验证的外部契约（如 `checkin-status` method）保持禁用，直至 Spike 确认。
 
@@ -269,5 +270,4 @@ Vue 3 + TypeScript + Vite + Pinia + Vue Router + TanStack Vue Query + ECharts，
 | 文档 | 内容 |
 | --- | --- |
 | [配置指南](../configuration.md) | 密钥、`.env` 参考、远程访问、客户端示例 |
-| [Mac Mini 部署与运维](../deployment/macmini.md) | 安装、launchd/systemd、备份恢复、账号导入 |
 | [活跃日自动化研究](../analysis/2026-08-05-workbuddy-active-day-automation.md) | 登录自动化协议与实现边界 |
