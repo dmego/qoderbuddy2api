@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from qb2api.checkin.active_day import ActiveDayError
-from qb2api.checkin.growth_automation import GrowthAutomation
+from qb2api.checkin.growth_automation import GrowthAutomation, _today_lit
 from qb2api.config import Settings
 
 
@@ -234,7 +234,12 @@ async def test_run_active_day_skips_when_already_lit_externally() -> None:
         Settings(growth_auto_active_day=True), FakeGrowthClient({}),
         repository=repository, active_day_client=active_day,
     )
-    overview = {"heatmap": {"today": {"is_active": True, "score": 2, "status_text": "今日已活跃"}}}
+    overview = {
+        "heatmap": {
+            "cells": [{"date": "2026-08-05", "score": 2}],
+            "today": {"date": "2026-08-04", "is_active": True, "status_text": "今日已活跃"},
+        },
+    }
 
     result = await automation.run_active_day(
         "token", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai",
@@ -259,13 +264,109 @@ async def test_confirm_active_day_marks_lit_when_today_counted() -> None:
         status="succeeded",
     )
 
-    overview = {"heatmap": {"today": {"is_active": True}}}
+    overview = {"heatmap": {"cells": [{"date": "2026-08-05", "score": 2}]}}
     result = await automation.confirm_active_day(
         "token", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai", overview=overview,
     )
 
     assert result["status"] == "lit"
     assert repository.touched[-1]["confirmed"] == "lit"
+
+
+@pytest.mark.asyncio
+async def test_today_lit_ignores_utc_misaligned_yesterday() -> None:
+    # 官方 today 按上游日界线；本地 08-06 凌晨时 today 仍是 08-05 且 is_active=True。
+    overview = {
+        "heatmap": {
+            "cells": [{"date": "2026-08-06", "score": 0}],
+            "today": {"date": "2026-08-05", "is_active": True, "score": 2},
+        },
+    }
+    assert not _today_lit(overview, "2026-08-06")
+    assert _today_lit(overview, "2026-08-05")
+
+
+@pytest.mark.asyncio
+async def test_today_lit_cell_score_decides() -> None:
+    assert _today_lit(
+        {"heatmap": {"cells": [{"date": "2026-08-05", "score": 2}]}}, "2026-08-05",
+    )
+    assert not _today_lit(
+        {"heatmap": {"cells": [{"date": "2026-08-05", "score": 0}]}}, "2026-08-05",
+    )
+    assert not _today_lit({"heatmap": {}}, "2026-08-05")
+
+
+@pytest.mark.asyncio
+async def test_run_active_day_rechecks_checkin_when_not_lit() -> None:
+    repository = FakeRepository()
+    active_day = FakeActiveDayClient()
+    settings = Settings(growth_auto_active_day=True, growth_auto_active_day_recheckin=True)
+    automation = GrowthAutomation(settings, FakeGrowthClient({}), repository=repository, active_day_client=active_day)
+    recheck_calls: list[bool] = []
+
+    async def fake_recheck(_token: str) -> bool:
+        recheck_calls.append(True)
+        return True
+
+    automation._recheckin_unlit = fake_recheck  # 实例属性覆写方法
+    result = await automation.run_active_day(
+        "token", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai",
+    )
+
+    assert recheck_calls == [True]
+    assert result["status"] == "succeeded"
+    assert active_day.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_run_active_day_recheck_skips_when_already_lit() -> None:
+    repository = FakeRepository()
+    active_day = FakeActiveDayClient()
+    settings = Settings(growth_auto_active_day=True, growth_auto_active_day_recheckin=True)
+    automation = GrowthAutomation(settings, FakeGrowthClient({}), repository=repository, active_day_client=active_day)
+    recheck_calls: list[bool] = []
+
+    async def fake_recheck(_token: str) -> bool:
+        recheck_calls.append(True)
+        return False
+
+    automation._recheckin_unlit = fake_recheck
+    result = await automation.run_active_day(
+        "token", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai",
+        overview={"heatmap": {"cells": [{"date": "2026-08-05", "score": 0}]}},
+    )
+
+    assert recheck_calls == [True]
+    assert result["status"] == "succeeded"
+    assert active_day.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_confirm_active_day_does_not_mis_lit_on_utc_yesterday() -> None:
+    repository = FakeRepository()
+    settings = Settings(growth_auto_active_day=True, growth_active_day_confirm_attempts=2)
+    automation = GrowthAutomation(settings, FakeGrowthClient({}), repository=repository)
+    await repository.claim_workbuddy_active_day(
+        provider="codebuddy", account_id="cb-1", local_date="2026-08-06", timezone="Asia/Shanghai",
+    )
+    await repository.finish_workbuddy_active_day(
+        provider="codebuddy", account_id="cb-1", local_date="2026-08-06", timezone="Asia/Shanghai",
+        status="succeeded",
+    )
+    overview = {
+        "heatmap": {
+            "cells": [{"date": "2026-08-06", "score": 0}],
+            "today": {"date": "2026-08-05", "is_active": True},
+        },
+    }
+
+    first = await automation.confirm_active_day(
+        "token", account_id="cb-1", local_date="2026-08-06", timezone="Asia/Shanghai", overview=overview,
+    )
+
+    assert first["status"] == "pending"
+    assert repository.row.get("confirmed") is None
 
 
 @pytest.mark.asyncio

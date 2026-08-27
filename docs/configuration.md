@@ -69,8 +69,7 @@ mkdir -p data logs && chmod 700 data logs
 | `QB2API_MODEL_SYNC_INTERVAL_SECONDS` | `21600` | 同步间隔（秒） |
 | `CHECKIN_ENABLED` | `false` | 全局签到调度开关（也可在管理台设置） |
 | `CHECKIN_AT` / `CHECKIN_TIMEZONE` | `00:10` / `Asia/Shanghai` | 每日签到时间与时区 |
-| `GROWTH_AUTO_ACTIVE_DAY` | `true` | 登录自动化（每日活跃日）：经成长调度器每天执行一次 WorkBuddy 对话点亮当天 |
-| `GROWTH_ACTIVE_DAY_CONFIRM_ATTEMPTS` | `3` | 活跃日上游确认尝试上限，达上限标记 `not_lit` |
+| `GROWTH_AUTO_ACTIVE_DAY_RECHECKIN` | `true` | 活跃日未点亮时先补一次签到再走 ACP；已签到则跳过。按本地日期格子而非官方 `today` 判断，避免 UTC 日界线误判 |
 
 其余签到/指标/用量变量见 `.env.example` 内注释；管理台「设置」页可持久化运行时配置
 （签到时间、成长自动化开关、兑换档位等），优先级高于启动默认值。

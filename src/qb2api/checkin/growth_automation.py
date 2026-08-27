@@ -16,6 +16,7 @@ from qb2api.config import Settings
 
 from .active_day import ActiveDayError, WorkBuddyActiveDayClient
 from .growth import GrowthUnavailableError, WorkBuddyGrowthClient
+from .models import CheckInOutcome
 
 logger = logging.getLogger("qb2api.checkin.growth_automation")
 
@@ -24,18 +25,23 @@ _STEP_KEYS = ("tasks", "lottery", "travel", "redeem", "buddy_open", "active_day"
 
 
 def _today_lit(overview: dict[str, Any], local_date: str) -> bool:
-    """成长中心今天是否已被上游记账点亮（is_active / 当日 score>0）。"""
+    """成长中心当天(local_date)是否已被上游记账点亮（格子 score>0）。
+
+    只以热力图格子里该日期的 score 为准；heatmap.today 只有在它携带的日期与本地
+    日期一致时才可信——官方 today 按上游日界线计算，凌晨(本地 00:00-08:00)会把
+    "UTC 昨日已点亮"误判为本地当天已点亮，导致漏跑 ACP / 误标 confirmed。
+    """
     heatmap = overview.get("heatmap") or {}
-    today = heatmap.get("today") or {}
-    if today.get("is_active") is True:
-        return True
-    score = today.get("score")
-    if isinstance(score, (int, float)) and score > 0:
-        return True
     for cell in heatmap.get("cells") or []:
         if isinstance(cell, dict) and cell.get("date") == local_date:
-            s = cell.get("score")
-            return isinstance(s, (int, float)) and s > 0
+            score = cell.get("score")
+            return isinstance(score, (int, float)) and score > 0
+    today = heatmap.get("today") or {}
+    if today.get("date") == local_date:
+        if today.get("is_active") is True:
+            return True
+        score = today.get("score")
+        return isinstance(score, (int, float)) and score > 0
     return False
 
 
@@ -90,7 +96,15 @@ class GrowthAutomation:
         )
         if not claimed:
             return {"status": "already_claimed"}
-        # 前置检查：当天若已被外部点亮（人工使用/其它进程），省掉这次 ACP。
+        if (
+            not (overview is not None and _today_lit(overview, local_date))
+            and self._settings.growth_auto_active_day_recheckin
+        ):
+            try:
+                if await self._recheckin_unlit(access_token):
+                    overview = None  # 签到成功后重新拉取成长中心
+            except Exception as error:
+                logger.info("active-day recheckin skipped %s: %s", account_id, type(error).__name__)
         if overview is None:
             try:
                 overview = await self._client.fetch(access_token)
@@ -121,6 +135,22 @@ class GrowthAutomation:
             status="succeeded",
         )
         return {"status": "succeeded"}
+
+    async def _recheckin_unlit(self, access_token: str) -> bool:
+        """兜底补签一次；成功或已签到返回 True，失败返回 False(不抛错)。"""
+        from .codebuddy import WorkBuddyClient
+
+        client = WorkBuddyClient(
+            base_url=self._settings.codebuddy_checkin_base,
+            timeout=float(self._settings.checkin_request_timeout_seconds),
+        )
+        try:
+            result = await client.checkin(auth_mode="bearer", access_token=access_token)
+        except Exception:
+            return False
+        finally:
+            await client.aclose()
+        return result.outcome in {CheckInOutcome.CLAIMED, CheckInOutcome.ALREADY_CHECKED_IN}
 
     async def confirm_active_day(
         self,
