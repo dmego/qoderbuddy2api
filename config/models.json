@@ -4,72 +4,134 @@
       {
         "id": "auto",
         "name": "Auto",
-        "capabilities": {"chat": true, "streaming": true}
+        "capabilities": {
+          "chat": true,
+          "streaming": true
+        }
       },
       {
         "id": "deepseek-v3",
         "name": "DeepSeek V3",
-        "capabilities": {"chat": true, "streaming": true, "tool_calling": true}
+        "capabilities": {
+          "chat": true,
+          "streaming": true,
+          "tool_calling": true
+        }
       },
       {
         "id": "deepseek-v3-0324",
         "name": "DeepSeek V3 (0324)",
-        "capabilities": {"chat": true, "streaming": true}
+        "capabilities": {
+          "chat": true,
+          "streaming": true
+        }
       },
       {
         "id": "deepseek-v4-pro",
         "name": "DeepSeek V4 Pro",
-        "capabilities": {"chat": true, "streaming": true}
+        "capabilities": {
+          "chat": true,
+          "streaming": true
+        }
       },
       {
         "id": "deepseek-v4-flash",
         "name": "DeepSeek V4 Flash",
-        "capabilities": {"chat": true, "streaming": true}
+        "capabilities": {
+          "chat": true,
+          "streaming": true
+        }
       },
       {
         "id": "deepseek-r1",
         "name": "DeepSeek R1",
-        "capabilities": {"chat": true, "streaming": true, "reasoning": true}
+        "capabilities": {
+          "chat": true,
+          "streaming": true,
+          "reasoning": true
+        }
       },
       {
         "id": "glm-5.1",
         "name": "GLM-5.1",
-        "capabilities": {"chat": true, "streaming": true}
+        "capabilities": {
+          "chat": true,
+          "streaming": true
+        }
       },
       {
         "id": "glm-5.2",
         "name": "GLM-5.2",
-        "capabilities": {"chat": true, "streaming": true}
+        "capabilities": {
+          "chat": true,
+          "streaming": true
+        }
+      },
+      {
+        "id": "glm-5.3",
+        "name": "GLM-5.3",
+        "capabilities": {
+          "chat": true,
+          "streaming": true
+        }
+      },
+      {
+        "id": "glm-5.3-flash",
+        "name": "GLM-5.3 Flash",
+        "capabilities": {
+          "chat": true,
+          "streaming": true
+        }
       },
       {
         "id": "glm-5v-turbo",
         "name": "GLM-5v-Turbo",
-        "capabilities": {"chat": true, "streaming": true}
+        "capabilities": {
+          "chat": true,
+          "streaming": true
+        }
       },
       {
         "id": "minimax-m3",
         "name": "MiniMax M3",
-        "capabilities": {"chat": true, "streaming": true}
+        "capabilities": {
+          "chat": true,
+          "streaming": true
+        }
       },
       {
         "id": "minimax-m2.7",
         "name": "MiniMax M2.7",
-        "capabilities": {"chat": true, "streaming": true, "reasoning": true}
+        "capabilities": {
+          "chat": true,
+          "streaming": true,
+          "reasoning": true
+        }
       },
       {
         "id": "kimi-k2.6",
         "name": "Kimi K2.6",
-        "capabilities": {"chat": true, "streaming": true}
+        "capabilities": {
+          "chat": true,
+          "streaming": true
+        }
       },
       {
         "id": "kimi-k2.7",
         "name": "Kimi K2.7",
-        "capabilities": {"chat": true, "streaming": true, "reasoning": true}
+        "capabilities": {
+          "chat": true,
+          "streaming": true,
+          "reasoning": true
+        }
       },
       {
         "id": "hy3",
         "name": "Hy3",
-        "capabilities": {"chat": true, "streaming": true}
+        "capabilities": {
+          "chat": true,
+          "streaming": true
+        }
       }
     ]
   },
