@@ -230,7 +230,7 @@ function stepLabel(key: StepKey): string {
 
 function activeDayStatusLabel(local: ActiveDayLocal): string {
   const st = local.status ?? "";
-  if (st === "succeeded") return `${local.confirmed === "lit" ? "已点亮" : local.confirmed === "not_lit" ? "未点亮(确认失败)" : "成功·待确认"}`;
+  if (st === "succeeded") return `${local.confirmed === "lit" ? "已点亮" : local.confirmed === "not_lit" ? "未点亮·将自动重试" : "成功·待确认"}`;
   if (st === "skipped_external") return "当天已点亮·跳过";
   if (st === "failed") return `失败·${local.error_code ?? "?"}`;
   if (st === "running") return "执行中";
@@ -305,7 +305,7 @@ function navigateToAccount(): void {
         <!-- 摘要卡片 -->
         <div class="summary-grid">
           <article class="summary-tile"><Sprout :size="18" /><span>成长等级</span><strong>{{ growth.data.value.profile?.level ?? '--' }}</strong><small>已完成 {{ growth.data.value.profile?.completed ?? '--' }}/{{ growth.data.value.profile?.total ?? '--' }}</small></article>
-          <article class="summary-tile"><CalendarDays :size="18" /><span>连登天数</span><strong>{{ growth.data.value.streak?.days ?? 0 }}</strong><small v-if="growth.data.value.streak?.next_tier">距 {{ growth.data.value.streak.next_tier }} 还差 {{ growth.data.value.streak.next_tier_remaining ?? '--' }} 天</small><small v-else>已达最高档</small></article>
+          <article class="summary-tile"><CalendarDays :size="18" /><span>连登天数</span><strong>{{ growth.data.value.streak?.days ?? "--" }}</strong><small v-if="growth.data.value.streak?.next_tier">距 {{ growth.data.value.streak.next_tier }} 还差 {{ growth.data.value.streak.next_tier_remaining ?? '--' }} 天</small><small v-else>已达最高档</small></article>
           <article class="summary-tile"><Dice5 :size="18" /><span>可抽奖</span><strong>{{ growth.data.value.lottery?.available_chances ?? 0 }}</strong><small>累计抽 {{ growth.data.value.lottery?.total_draws ?? 0 }} 次</small></article>
           <article class="summary-tile"><Trophy :size="18" /><span>补登卡</span><strong>{{ growth.data.value.streak?.makeup_balance ?? 0 }}/{{ growth.data.value.streak?.makeup_max ?? 4 }}</strong><small>可用于补登历史天数</small></article>
         </div>
@@ -395,7 +395,7 @@ function navigateToAccount(): void {
           <PanelHeader title="连登地图" description="活跃热力图 · 连续登录天数 · 抽奖机会。" />
           <div class="streak-toolbar">
             <div class="streak-stats">
-              <span class="streak-days">连登 {{ growth.data.value.streak?.days ?? 0 }} 天</span>
+              <span class="streak-days">连登 {{ growth.data.value.streak?.days ?? "--" }} 天</span>
               <template v-if="growth.data.value.streak?.next_tier"> · 距 {{ growth.data.value.streak.next_tier }} 还差 {{ growth.data.value.streak.next_tier_remaining ?? '--' }} 天</template>
               · 补登卡 {{ growth.data.value.streak?.makeup_balance ?? 0 }}/{{ growth.data.value.streak?.makeup_max ?? 4 }}
             </div>

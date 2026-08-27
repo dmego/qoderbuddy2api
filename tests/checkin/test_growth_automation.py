@@ -33,40 +33,60 @@ class FakeGrowthClient:
 
 
 class FakeRepository:
+    """按 local_date 分行的内存仓储，支持跨日预算重置场景。"""
+
     def __init__(self) -> None:
         self.claims = 0
         self.finished: list[dict[str, str | None]] = []
         self.touched: list[dict[str, str | None]] = []
         self.replaced: list[dict[str, str | None]] = []
-        self.row: dict[str, object] | None = None
+        self.rows: dict[str, dict[str, object]] = {}
+        self.last_key: str | None = None
+
+    def _row_for(self, kwargs: dict) -> dict[str, object] | None:
+        return self.rows.get(kwargs["local_date"])
+
+    @property
+    def row(self) -> dict[str, object] | None:
+        return self.rows.get(self.last_key)
 
     async def claim_workbuddy_active_day(self, **kwargs) -> bool:
         self.claims += 1
-        if self.row is None:
-            self.row = {**kwargs, "status": "running", "confirm_attempts": 0}
-        return self.claims == 1
+        self.last_key = kwargs["local_date"]
+        if kwargs["local_date"] in self.rows:
+            return False
+        self.rows[kwargs["local_date"]] = {
+            **kwargs, "status": "running", "confirm_attempts": 0,
+        }
+        return True
 
     async def finish_workbuddy_active_day(self, **kwargs) -> None:
         self.finished.append(kwargs)
-        if self.row is not None:
-            self.row["status"] = kwargs["status"]
-            self.row["error_code"] = kwargs.get("error_code")
+        row = self._row_for(kwargs)
+        if row is not None:
+            row["status"] = kwargs["status"]
+            row["error_code"] = kwargs.get("error_code")
             if kwargs.get("confirmed"):
-                self.row["confirmed"] = kwargs["confirmed"]
+                row["confirmed"] = kwargs["confirmed"]
 
-    async def get_workbuddy_active_day(self, **_kwargs) -> dict | None:
-        return dict(self.row) if self.row else None
+    async def get_workbuddy_active_day(self, **kwargs) -> dict | None:
+        self.last_key = kwargs["local_date"]
+        row = self.rows.get(kwargs["local_date"])
+        return dict(row) if row else None
 
     async def touch_workbuddy_active_day_confirmation(self, **kwargs) -> None:
         self.touched.append(kwargs)
-        if self.row is not None:
-            self.row["confirm_attempts"] = int(self.row.get("confirm_attempts") or 0) + 1
+        row = self._row_for(kwargs)
+        if row is not None:
+            row["confirm_attempts"] = int(row.get("confirm_attempts") or 0) + 1
             if kwargs.get("confirmed"):
-                self.row["confirmed"] = kwargs["confirmed"]
+                row["confirmed"] = kwargs["confirmed"]
 
     async def replace_workbuddy_active_day_result(self, **kwargs) -> None:
         self.replaced.append(kwargs)
-        self.row = {**kwargs, "confirmed": None, "confirm_attempts": 0}
+        key = kwargs["local_date"]
+        self.last_key = key
+        self.rows[key] = {**kwargs, "confirmed": None, "confirm_attempts": 0}
 
 
 class FakeActiveDayClient:
@@ -152,13 +172,16 @@ async def test_claimed_tasks_are_not_claimed_again() -> None:
 
 
 @pytest.mark.asyncio
-async def test_active_day_is_daily_idempotent_and_records_safe_failure() -> None:
+async def test_active_day_failure_is_retried_within_daily_budget() -> None:
+    """当日失败不再死锁：预算内可反复重试，官方点亮后收敛为 skipped_external。"""
     repository = FakeRepository()
     active_day = FakeActiveDayClient(ActiveDayError("rpc_timeout"))
     settings = Settings(growth_auto_active_day=True)
     automation = GrowthAutomation(
         settings, FakeGrowthClient({}), repository=repository, active_day_client=active_day
     )
+    # 补签兜底关闭，专注 ACP 失败重试路径
+    object.__setattr__(settings, "growth_auto_active_day_recheckin", False)
 
     first = await automation.run_active_day(
         "token", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai"
@@ -167,10 +190,10 @@ async def test_active_day_is_daily_idempotent_and_records_safe_failure() -> None
         "token", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai"
     )
 
-    assert first == {"status": "failed", "error_code": "rpc_timeout"}
-    assert second == {"status": "already_claimed"}
-    assert active_day.calls == 1
-    assert repository.finished[0]["error_code"] == "rpc_timeout"
+    assert first["status"] == "failed"
+    assert second["status"] == "failed"
+    assert active_day.calls == 2  # 失败重试
+    assert repository.row["confirm_attempts"] >= 2
 
 
 @pytest.mark.asyncio
@@ -178,23 +201,18 @@ async def test_run_runs_active_day_when_enabled_with_context() -> None:
     repository = FakeRepository()
     active_day = FakeActiveDayClient()
     settings = Settings(growth_auto_active_day=True)
+    lit_overview = {"heatmap": {"cells": [{"date": "2026-08-05", "score": 2}]}}
     automation = GrowthAutomation(
-        settings, FakeGrowthClient({}), repository=repository, active_day_client=active_day
+        settings, FakeGrowthClient(lit_overview), repository=repository, active_day_client=active_day
     )
 
     result = await automation.run(
-        "token", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai"
+        "token", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai",
     )
 
-    assert result["active_day"]["status"] == "succeeded"
-    assert active_day.calls == 1
-
-    # 同一账号同一天再次执行幂等。
-    second = await automation.run(
-        "token", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai"
-    )
-    assert second["active_day"]["status"] == "already_claimed"
-    assert active_day.calls == 1
+    # 官方已点亮 -> 直接跳过，不消耗 ACP
+    assert result["active_day"]["status"] == "skipped_external"
+    assert active_day.calls == 0
 
 
 @pytest.mark.asyncio
@@ -420,3 +438,116 @@ async def test_rerun_active_day_forces_conversation_and_resets_confirm() -> None
     assert repository.replaced[0]["status"] == "succeeded"
     assert repository.row["confirmed"] is None
     assert repository.row["confirm_attempts"] == 0
+
+
+@pytest.mark.asyncio
+async def test_active_day_gives_up_after_daily_budget() -> None:
+    repository = FakeRepository()
+    active_day = FakeActiveDayClient(ActiveDayError("rpc_timeout"))
+    settings = Settings(growth_auto_active_day=True, growth_active_day_max_attempts=4)
+    automation = GrowthAutomation(
+        settings, FakeGrowthClient({}), repository=repository, active_day_client=active_day
+    )
+    object.__setattr__(settings, "growth_auto_active_day_recheckin", False)
+
+    for expected in (
+        {"status": "failed", "error_code": "rpc_timeout"},
+        {"status": "failed", "error_code": "rpc_timeout"},
+        {"status": "failed", "error_code": "rpc_timeout"},
+        {"status": "failed", "error_code": "rpc_timeout"},
+        {"status": "gave_up", "attempts": 4},
+    ):
+        result = await automation.run_active_day(
+            "token", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai"
+        )
+        assert result == expected
+
+    # 预算耗尽后不再调用 ACP；跨日(local_date 变化)预算自然重置。
+    cross_day = await automation.run_active_day(
+        "token", account_id="cb-1", local_date="2026-08-06", timezone="Asia/Shanghai"
+    )
+    assert cross_day["status"] == "failed"  # 新的一天预算重置
+    assert active_day.calls == 5  # 前日 4 次失败 + 新日首试
+
+
+@pytest.mark.asyncio
+async def test_active_day_retry_converges_when_recheckin_lights_official() -> None:
+    repository = FakeRepository()
+    active_day = FakeActiveDayClient(ActiveDayError("first-fail"))
+    overview_holder = {"ov": {"heatmap": {"cells": [{"date": "2026-08-05", "score": 0}]}}}
+
+    class FlipClient(FakeGrowthClient):
+        async def fetch(self, _token):
+            return overview_holder["ov"]
+
+    settings = Settings(
+        growth_auto_active_day=True,
+        growth_auto_active_day_recheckin=True,
+        growth_active_day_max_attempts=6,
+    )
+    automation = GrowthAutomation(settings, FlipClient({}), repository=repository, active_day_client=active_day)
+
+    async def recheck_then_light(_token):
+        # 第二次起：补签成功并让官方点亮
+        if active_day.calls >= 1:
+            overview_holder["ov"] = {"heatmap": {"cells": [{"date": "2026-08-05", "score": 2}]}}
+            return True
+        return False
+
+    automation._recheckin_unlit = recheck_then_light
+
+    first = await automation.run_active_day(
+        "token", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai"
+    )
+    assert first["status"] == "failed"
+
+    second = await automation.run_active_day(
+        "token", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai"
+    )
+    assert second["status"] == "skipped_external"
+    assert repository.row["confirmed"] == "lit"
+
+
+@pytest.mark.asyncio
+async def test_active_day_retro_fixes_previous_day_label() -> None:
+    """昨日本地误标 lit 而官方空 -> 自动改 not_lit；官方亮 -> 保持 lit。"""
+    from datetime import date, timedelta
+
+    today = "2026-08-27"
+    yesterday = (date(2026, 8, 27) - timedelta(days=1)).isoformat()
+    repository = FakeRepository()
+    active_day = FakeActiveDayClient()
+    automation = GrowthAutomation(
+        Settings(growth_auto_active_day=True), FakeGrowthClient({}),
+        repository=repository, active_day_client=active_day,
+    )
+    object.__setattr__(settings := Settings(growth_auto_active_day=True), "growth_auto_active_day_recheckin", False)
+    automation._settings = settings
+
+    # 构造昨日行: succeeded + lit，但官方昨格 score=0（模拟历史上 UTC 日界线误判）
+    await repository.claim_workbuddy_active_day(
+        provider="codebuddy", account_id="cb-1",
+        local_date=yesterday, timezone="Asia/Shanghai",
+    )
+    await repository.finish_workbuddy_active_day(
+        provider="codebuddy", account_id="cb-1",
+        local_date=yesterday, timezone="Asia/Shanghai",
+        status="succeeded", confirmed="lit",
+    )
+
+    overview = {
+        "heatmap": {"cells": [
+            {"date": yesterday, "score": 0},
+            {"date": today, "score": 0},
+        ]},
+    }
+    await automation.run_active_day(
+        "token", account_id="cb-1", local_date=today, timezone="Asia/Shanghai",
+        overview=overview,
+    )
+
+    yrow = await repository.get_workbuddy_active_day(
+        provider="codebuddy", account_id="cb-1",
+        local_date=yesterday, timezone="Asia/Shanghai",
+    )
+    assert yrow["confirmed"] == "not_lit"

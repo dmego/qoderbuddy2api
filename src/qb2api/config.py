@@ -161,13 +161,14 @@ def _observability_values() -> dict[str, object]:
         "growth_auto_lottery": _env_bool("GROWTH_AUTO_LOTTERY", True),
         "growth_auto_travel": _env_bool("GROWTH_AUTO_TRAVEL", True),
         "growth_auto_redeem": _env_bool("GROWTH_AUTO_REDEEM", True),
-        "growth_redeem_tier": os.getenv("GROWTH_REDEEM_TIER", "28d"),
+        "growth_redeem_tier": os.getenv("GROWTH_REDEEM_TIER", "14d"),
         "growth_auto_buddy_open": _env_bool("GROWTH_AUTO_BUDDY_OPEN", False),
         "growth_scheduler_enabled": _env_bool("GROWTH_SCHEDULER_ENABLED", True),
         "growth_scheduler_interval_seconds": _env_int("GROWTH_SCHEDULER_INTERVAL_SECONDS", 1800),
         "growth_auto_active_day_recheckin": _env_bool("GROWTH_AUTO_ACTIVE_DAY_RECHECKIN", True),
         "growth_auto_active_day": _env_bool("GROWTH_AUTO_ACTIVE_DAY", True),
         "growth_active_day_confirm_attempts": _env_int("GROWTH_ACTIVE_DAY_CONFIRM_ATTEMPTS", 3),
+        "growth_active_day_max_attempts": _env_int("GROWTH_ACTIVE_DAY_MAX_ATTEMPTS", 6),
     }
 
 
@@ -273,12 +274,13 @@ class Settings:
     growth_auto_lottery: bool = True
     growth_auto_travel: bool = True
     growth_auto_redeem: bool = True
-    growth_redeem_tier: str = "28d"
+    growth_redeem_tier: str = "14d"
     growth_auto_buddy_open: bool = False
     growth_scheduler_enabled: bool = True
     growth_scheduler_interval_seconds: int = 1800
     growth_auto_active_day: bool = True
     growth_active_day_confirm_attempts: int = 3
+    growth_active_day_max_attempts: int = 6
     growth_auto_active_day_recheckin: bool = True
 
     @property
