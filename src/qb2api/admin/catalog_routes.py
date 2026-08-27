@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
+from qb2api.accounts.codebuddy_model_sync import sync_codebuddy_models
 from qb2api.accounts.qoder_model_sync import sync_qoder_models
 from qb2api.models import ModelCapabilities, ModelDefinition, load_models_from_config, load_unified_overrides
 from qb2api.models_catalog import UnifiedModel, build_unified_catalog
@@ -298,39 +299,72 @@ async def refresh_models(request: Request) -> dict[str, Any]:
 @router.post("/sync/{provider}")
 async def sync_upstream_models(provider: str, request: Request) -> dict[str, Any]:
     await require_admin(request)
-    if provider != "qoder":
-        raise HTTPException(status_code=400, detail="unsupported_provider")
     state = admin_state(request)
-    try:
-        report = await sync_qoder_models(
-            state.account_repo,
-            state.account_registry,
-            state.credential_resolver,
-        )
-    except QoderError as error:
+    if provider == "qoder":
+        try:
+            report = await sync_qoder_models(
+                state.account_repo,
+                state.account_registry,
+                state.credential_resolver,
+            )
+        except QoderError as error:
+            await _audit(
+                request,
+                action="model.sync",
+                resource_type=provider,
+                resource_id="catalog",
+                result="failed",
+                metadata={"error_code": error.status_code},
+            )
+            raise HTTPException(status_code=error.status_code, detail="sync_failed") from error
         await _audit(
             request,
             action="model.sync",
             resource_type=provider,
             resource_id="catalog",
-            result="failed",
-            metadata={"error_code": error.status_code},
+            metadata={"added": report.added, "updated": report.updated, "disabled": report.disabled},
         )
-        raise HTTPException(status_code=error.status_code, detail="sync_failed") from error
-    await _audit(
-        request,
-        action="model.sync",
-        resource_type=provider,
-        resource_id="catalog",
-        metadata={"added": report.added, "updated": report.updated, "disabled": report.disabled},
-    )
-    return {
-        "status": "succeeded",
-        "added": report.added,
-        "updated": report.updated,
-        "disabled": report.disabled,
-        "models": report.models,
-    }
+        return {
+            "status": "succeeded",
+            "added": report.added,
+            "updated": report.updated,
+            "disabled": report.disabled,
+            "models": report.models,
+        }
+    if provider == "codebuddy":
+        try:
+            report = await sync_codebuddy_models(
+                state.account_repo,
+                state.account_registry,
+                state.credential_resolver,
+                models_config_path=state.settings.model_config_path,
+            )
+        except Exception as error:
+            await _audit(
+                request,
+                action="model.sync",
+                resource_type=provider,
+                resource_id="catalog",
+                result="failed",
+                metadata={"error": type(error).__name__},
+            )
+            raise HTTPException(status_code=502, detail="sync_failed") from error
+        await _audit(
+            request,
+            action="model.sync",
+            resource_type=provider,
+            resource_id="catalog",
+            metadata={"added": report.added, "updated": report.updated, "removed": report.removed},
+        )
+        return {
+            "status": "succeeded",
+            "added": report.added,
+            "updated": report.updated,
+            "removed": report.removed,
+            "probed": report.probed,
+            "models": report.models,
+        }
+    raise HTTPException(status_code=400, detail="unsupported_provider")
 
 
 @router.post("/{provider}/{model_id}/probe")

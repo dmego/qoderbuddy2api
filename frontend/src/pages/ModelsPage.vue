@@ -53,13 +53,17 @@ const refresh = useMutation({
   onError: (error) => notify("模型目录刷新失败", { message: String(error), tone: "error" }),
 });
 const syncUpstream = useMutation({
-  mutationFn: () => apiRequest<{ added: number; updated: number; disabled: number }>("/models/sync/qoder", { method: "POST" }),
+  mutationFn: () => apiRequest<{ added: number; updated: number; removed?: number; disabled?: number; probed?: number }>(`/models/sync/${provider.value === "codebuddy" ? "codebuddy" : "qoder"}`, { method: "POST" }),
   onSuccess: async (result) => {
-    notify("上游同步完成", { message: `新增 ${result.added} · 更新 ${result.updated} · 停用 ${result.disabled}`, tone: "success" });
+    const detail = provider.value === "codebuddy"
+      ? `探测 ${result.probed ?? 0} · 新增 ${result.added} · 更新 ${result.updated} · 移除 ${result.removed ?? 0}`
+      : `新增 ${result.added} · 更新 ${result.updated} · 停用 ${result.disabled ?? 0}`;
+    notify("上游同步完成", { message: detail, tone: "success" });
     await queryClient.invalidateQueries({ queryKey: ["models"] });
   },
-  onError: (error) => notify("上游同步失败", { message: String(error).includes("401") || String(error).includes("403") ? "Qoder 凭据失效，请在账号页检查" : String(error), tone: "error" }),
+  onError: (error) => notify("上游同步失败", { message: String(error).includes("401") || String(error).includes("403") ? `${provider.value === "qoder" ? "Qoder" : "WorkBuddy"} 凭据失效，请在账号页检查` : String(error), tone: "error" }),
 });
+
 const toggle = useMutation({
   mutationFn: (model: Model) => apiRequest<Record<string, unknown>>(`/models/${encodeURIComponent(model.model_id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !model.enabled }) }),
   onSuccess: async (result, model) => { lastOperation.value = { action: `${model.enabled ? "停用" : "启用"}模型`, status: "succeeded", ...result }; notify(`模型已${model.enabled ? "停用" : "启用"}`, { message: model.model_id, tone: "success" }); selected.value = null; await queryClient.invalidateQueries({ queryKey: ["models"] }); },
@@ -86,7 +90,7 @@ function enabledRouteCount(model: Model): number { return model.routes.filter((r
   <section class="page-content">
     <header class="page-header">
       <div><h1>模型管理</h1><p>统一模型目录：同一模型跨提供商合并展示，请求内部自动轮询；可分别核对各路线可用性。</p></div>
-      <div class="header-actions"><button class="secondary-button" type="button" :disabled="models.isFetching.value" @click="models.refetch()"><RefreshCcw :class="{ spin: models.isFetching.value }" :size="16" />读取目录</button><button type="button" :disabled="refresh.isPending.value" @click="refresh.mutate()"><Boxes :size="16" />刷新目录</button><button type="button" :disabled="syncUpstream.isPending.value || (provider !== '' && provider !== 'qoder')" aria-label="从上游同步" @click="syncUpstream.mutate()"><RefreshCcw :class="{ spin: syncUpstream.isPending.value }" :size="16" />从上游同步</button></div>
+      <div class="header-actions"><button class="secondary-button" type="button" :disabled="models.isFetching.value" @click="models.refetch()"><RefreshCcw :class="{ spin: models.isFetching.value }" :size="16" />读取目录</button><button type="button" :disabled="refresh.isPending.value" @click="refresh.mutate()"><Boxes :size="16" />刷新目录</button><button type="button" :disabled="syncUpstream.isPending.value || (provider !== '' && provider !== 'qoder' && provider !== 'codebuddy')" aria-label="从上游同步" @click="syncUpstream.mutate()"><RefreshCcw :class="{ spin: syncUpstream.isPending.value }" :size="16" />从上游同步</button></div>
     </header>
 
     <section class="data-panel filter-panel">

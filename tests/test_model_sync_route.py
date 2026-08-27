@@ -8,7 +8,8 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from qb2api.accounts.qoder_model_sync import SyncReport
+from qb2api.accounts.codebuddy_model_sync import SyncReport as CodebuddySyncReport
+from qb2api.accounts.qoder_model_sync import SyncReport as QoderSyncReport
 from qb2api.admin import catalog_routes
 from qb2api.admin.auth import AdminSessionStore
 from qb2api.admin.router import router as admin_router
@@ -33,7 +34,7 @@ async def sync_context():
 @pytest.mark.asyncio
 async def test_sync_qoder_route_success(sync_context, monkeypatch) -> None:
     app, repository = sync_context
-    report = SyncReport(
+    report = QoderSyncReport(
         added=2,
         updated=1,
         disabled=0,
@@ -66,11 +67,33 @@ async def test_sync_qoder_route_rejects_other_provider(sync_context) -> None:
     app, repository = sync_context
 
     async with _client(app) as client:
-        response = await client.post("/api/admin/models/sync/codebuddy", headers=_headers())
+        response = await client.post("/api/admin/models/sync/unknown-provider", headers=_headers())
 
     assert response.status_code == 400
     assert response.json()["detail"] == "unsupported_provider"
     repository.add_audit_event.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_codebuddy_route_success(sync_context, monkeypatch) -> None:
+    app, repository = sync_context
+    report = CodebuddySyncReport(
+        added=1, updated=0, removed=0, probed=3,
+        models=[{"model_id": "glm-5.3-flash", "exists": True, "reasoning": True}],
+    )
+    monkeypatch.setattr(catalog_routes, "sync_codebuddy_models", AsyncMock(return_value=report))
+
+    async with _client(app) as client:
+        response = await client.post("/api/admin/models/sync/codebuddy", headers=_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "succeeded"
+    assert body["added"] == 1
+    assert body["probed"] == 3
+    audit = repository.add_audit_event.await_args.kwargs
+    assert audit["resource_type"] == "codebuddy"
+    assert audit["metadata"] == {"added": 1, "updated": 0, "removed": 0}
 
 
 @pytest.mark.asyncio
