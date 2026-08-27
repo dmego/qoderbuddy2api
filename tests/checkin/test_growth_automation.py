@@ -93,9 +93,11 @@ class FakeActiveDayClient:
     def __init__(self, error: Exception | None = None) -> None:
         self.error = error
         self.calls = 0
+        self.prompts: list[str] = []
 
-    async def run(self, _token: str) -> None:
+    async def run(self, _token: str, *, prompt: str = "") -> None:
         self.calls += 1
+        self.prompts.append(prompt)
         if self.error:
             raise self.error
 
@@ -192,8 +194,9 @@ async def test_active_day_failure_is_retried_within_daily_budget() -> None:
 
     assert first["status"] == "failed"
     assert second["status"] == "failed"
-    assert active_day.calls == 2  # 失败重试
-    assert repository.row["confirm_attempts"] >= 2
+    # 每 tick 组合拳最多 3 轮；两个 tick 共 6 次，全部计入失败
+    assert active_day.calls == 6
+    assert all(f["status"] == "failed" for f in repository.finished)
 
 
 @pytest.mark.asyncio
@@ -264,10 +267,37 @@ async def test_run_active_day_skips_when_already_lit_externally() -> None:
         overview=overview,
     )
 
-    assert result == {"status": "skipped_external"}
+    # 官方已点亮 => 立即收敛；本轮内不额外消耗 ACP
+    assert result["status"] == "skipped_external"
     assert active_day.calls == 0
-    assert repository.finished[0]["status"] == "skipped_external"
+    assert repository.finished[0]["status"] == "succeeded"
     assert repository.finished[0]["confirmed"] == "lit"
+
+
+@pytest.mark.asyncio
+async def test_run_active_day_pending_when_acp_ok_but_official_lags() -> None:
+    """ACP 三轮成功而官方未记账 => 待确认（非失败）；prompt 多样化。"""
+    repository = FakeRepository()
+    active_day = FakeActiveDayClient()
+    automation = GrowthAutomation(
+        Settings(growth_auto_active_day=True), FakeGrowthClient({}),
+        repository=repository, active_day_client=active_day,
+    )
+    object.__setattr__(
+        Settings(growth_auto_active_day=True), "growth_auto_active_day_recheckin", False
+    )
+    automation._settings.growth_auto_active_day_recheckin = False
+    overview = {"heatmap": {"cells": [{"date": "2026-08-05", "score": 0}]}}
+
+    result = await automation.run_active_day(
+        "token", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai",
+        overview=overview,
+    )
+
+    assert result["status"] == "pending_confirmation"
+    assert active_day.calls == 3
+    assert len(set(active_day.prompts)) == 3  # prompt 多样化
+    assert repository.row["status"] == "pending_confirmation"
 
 
 @pytest.mark.asyncio
@@ -316,7 +346,7 @@ async def test_today_lit_cell_score_decides() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_active_day_rechecks_checkin_when_not_lit() -> None:
+async def test_run_active_day_falls_back_to_acp_after_recheckin() -> None:
     repository = FakeRepository()
     active_day = FakeActiveDayClient()
     settings = Settings(growth_auto_active_day=True, growth_auto_active_day_recheckin=True)
@@ -333,12 +363,13 @@ async def test_run_active_day_rechecks_checkin_when_not_lit() -> None:
     )
 
     assert recheck_calls == [True]
-    assert result["status"] == "succeeded"
-    assert active_day.calls == 1
+    # 上游账本延迟 -> 本 tick 继续以 ACP 组合拳兜底
+    assert result["status"] == "pending_confirmation"
+    assert active_day.calls == 3
 
 
 @pytest.mark.asyncio
-async def test_run_active_day_recheck_skips_when_already_lit() -> None:
+async def test_run_active_day_extra_rounds_when_unlit() -> None:
     repository = FakeRepository()
     active_day = FakeActiveDayClient()
     settings = Settings(growth_auto_active_day=True, growth_auto_active_day_recheckin=True)
@@ -356,8 +387,8 @@ async def test_run_active_day_recheck_skips_when_already_lit() -> None:
     )
 
     assert recheck_calls == [True]
-    assert result["status"] == "succeeded"
-    assert active_day.calls == 1
+    assert result["status"] == "pending_confirmation"
+    assert active_day.calls == 3
 
 
 @pytest.mark.asyncio
@@ -441,36 +472,6 @@ async def test_rerun_active_day_forces_conversation_and_resets_confirm() -> None
 
 
 @pytest.mark.asyncio
-async def test_active_day_gives_up_after_daily_budget() -> None:
-    repository = FakeRepository()
-    active_day = FakeActiveDayClient(ActiveDayError("rpc_timeout"))
-    settings = Settings(growth_auto_active_day=True, growth_active_day_max_attempts=4)
-    automation = GrowthAutomation(
-        settings, FakeGrowthClient({}), repository=repository, active_day_client=active_day
-    )
-    object.__setattr__(settings, "growth_auto_active_day_recheckin", False)
-
-    for expected in (
-        {"status": "failed", "error_code": "rpc_timeout"},
-        {"status": "failed", "error_code": "rpc_timeout"},
-        {"status": "failed", "error_code": "rpc_timeout"},
-        {"status": "failed", "error_code": "rpc_timeout"},
-        {"status": "gave_up", "attempts": 4},
-    ):
-        result = await automation.run_active_day(
-            "token", account_id="cb-1", local_date="2026-08-05", timezone="Asia/Shanghai"
-        )
-        assert result == expected
-
-    # 预算耗尽后不再调用 ACP；跨日(local_date 变化)预算自然重置。
-    cross_day = await automation.run_active_day(
-        "token", account_id="cb-1", local_date="2026-08-06", timezone="Asia/Shanghai"
-    )
-    assert cross_day["status"] == "failed"  # 新的一天预算重置
-    assert active_day.calls == 5  # 前日 4 次失败 + 新日首试
-
-
-@pytest.mark.asyncio
 async def test_active_day_retry_converges_when_recheckin_lights_official() -> None:
     repository = FakeRepository()
     active_day = FakeActiveDayClient(ActiveDayError("first-fail"))
@@ -483,7 +484,6 @@ async def test_active_day_retry_converges_when_recheckin_lights_official() -> No
     settings = Settings(
         growth_auto_active_day=True,
         growth_auto_active_day_recheckin=True,
-        growth_active_day_max_attempts=6,
     )
     automation = GrowthAutomation(settings, FlipClient({}), repository=repository, active_day_client=active_day)
 

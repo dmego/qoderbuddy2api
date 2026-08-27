@@ -62,7 +62,6 @@ class SettingsApplier:
         "growth.auto_active_day": "growth_auto_active_day",
         "growth.auto_active_day_recheckin": "growth_auto_active_day_recheckin",
         "growth.active_day_confirm_attempts": "growth_active_day_confirm_attempts",
-        "growth.active_day_max_attempts": "growth_active_day_max_attempts",
     }
     _SCHEDULER_KEYS = frozenset(
         {

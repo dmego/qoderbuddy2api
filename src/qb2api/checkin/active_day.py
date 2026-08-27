@@ -12,8 +12,8 @@ from .active_day_protocol import ActiveDayError, handle_message
 from .active_day_protocol import parse_sse_payload as _parse_sse_payload
 from .base import join_url
 
-_PROMPT = "你好"
 _MODEL = "hy3"
+_DEFAULT_PROMPT = "你好"
 
 
 class WorkBuddyActiveDayClient:
@@ -48,11 +48,11 @@ class WorkBuddyActiveDayClient:
         if self._owns_client:
             await self._client.aclose()
 
-    async def run(self, access_token: str) -> None:
+    async def run(self, access_token: str, *, prompt: str = _DEFAULT_PROMPT) -> None:
         if not access_token or not access_token.strip():
             raise ActiveDayError("access_token_missing")
         try:
-            await self._run_protocol(access_token)
+            await self._run_protocol(access_token, prompt=prompt)
         except ActiveDayError:
             raise
         except TimeoutError as error:
@@ -64,8 +64,8 @@ class WorkBuddyActiveDayClient:
         finally:
             await self._disconnect()
 
-    async def _run_protocol(self, access_token: str) -> None:
-        conversation_id = await self._create_conversation(access_token)
+    async def _run_protocol(self, access_token: str, *, prompt: str = _DEFAULT_PROMPT) -> None:
+        conversation_id = await self._create_conversation(access_token, prompt=prompt)
         session = await self._session_info(access_token, conversation_id)
         self._link = session.get("link")
         if not isinstance(self._link, str) or not self._link:
@@ -91,16 +91,16 @@ class WorkBuddyActiveDayClient:
         self._turn_done.clear()
         await self._rpc(
             "session/prompt",
-            {"sessionId": session_id, "prompt": [{"type": "text", "text": _PROMPT}]},
+            {"sessionId": session_id, "prompt": [{"type": "text", "text": prompt}]},
             wait_response=False,
         )
         await asyncio.wait_for(self._turn_done.wait(), timeout=self.timeout)
         if self._stream_error:
             raise self._stream_error
 
-    async def _create_conversation(self, access_token: str) -> str:
+    async def _create_conversation(self, access_token: str, *, prompt: str = _DEFAULT_PROMPT) -> str:
         body = {
-            "prompt": _PROMPT,
+            "prompt": prompt,
             "model": _MODEL,
             "plugins": [{"name": "weixinpay", "marketplace": "codebuddy-builtin"}],
         }

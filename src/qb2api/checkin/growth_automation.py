@@ -20,6 +20,17 @@ from .models import CheckInOutcome
 
 logger = logging.getLogger("qb2api.checkin.growth_automation")
 
+_MIN_ACP_ROUNDS = 3
+_ACP_PROMPTS = (
+    "你好",
+    "你是什么模型",
+    "今天几号",
+    "hello",
+    "帮我讲个笑话",
+)
+
+
+
 _REDEEM_DAYS = {"7d": 7, "14d": 14, "28d": 28}
 _STEP_KEYS = ("tasks", "lottery", "travel", "redeem", "buddy_open", "active_day")
 
@@ -91,11 +102,13 @@ class GrowthAutomation:
                 base_url=self._settings.codebuddy_endpoint,
                 timeout=float(self._settings.checkin_request_timeout_seconds),
             )
-        # ---- 当日激活日：可重入语义 -------------------------------------
-        # 每 tick：
-        #   1. 官方当天格子已点亮(cells 为准) -> 完成(无论谁点亮)，并做昨日误标回溯校正；
-        #   2. 未点亮 -> 只要当日尝试预算未尽就再次执行(补签到兜底 + ACP 对话)，
-        #      直到官方记账或预算耗尽；跨日按 local_date 隔离，绝不串天。
+        # ---- 当日激活日（无上限重试 + 每日至少 3 轮多样化对话） ----------
+        # 规则：
+        #   * 任一时刻以官方热力图 cells[local_date].score 为唯一事实源；
+        #   * 已点亮且当日对话轮数 >= 3：直接收敛完成；
+        #   * 未点亮：反复执行(补签兜底 + ACP)，无次数上限(hy3 免费)，
+        #     prompt 按 confirm_attempts 轮换取材，贴近真人行为；
+        #   * 昨日回溯校正顺手执行（幂等）。
         if overview is None:
             try:
                 overview = await self._client.fetch(access_token)
@@ -104,88 +117,89 @@ class GrowthAutomation:
         row = await self._repository.get_workbuddy_active_day(
             provider="codebuddy", account_id=account_id, local_date=local_date, timezone=timezone,
         )
+        rounds_done = int((row or {}).get("confirm_attempts") or 0)
 
-        # 昨日回溯校正：本地标 lit 而官方昨格空 -> 改 not_lit；反之补 lit。幂等收敛。
         if overview is not None:
             await self._reconcile_previous_day(
                 overview=overview, account_id=account_id,
                 current_date=local_date, timezone=timezone,
             )
 
-        # 1) 官方已点亮
-        if overview is not None and _today_lit(overview, local_date):
-            if row is None:
-                await self._repository.claim_workbuddy_active_day(
-                    provider="codebuddy", account_id=account_id, local_date=local_date, timezone=timezone
-                )
-                await self._repository.finish_workbuddy_active_day(
-                    provider="codebuddy", account_id=account_id, local_date=local_date, timezone=timezone,
-                    status="skipped_external", confirmed="lit",
-                )
-            elif row.get("confirmed") != "lit":
-                await self._repository.touch_workbuddy_active_day_confirmation(
-                    provider="codebuddy", account_id=account_id, local_date=local_date, timezone=timezone,
-                    confirmed="lit",
-                )
-            return {"status": "skipped_external"}
-
-        # 2) 未点亮：尝试预算检查
-        attempts = int((row or {}).get("confirm_attempts") or 0)
-        max_attempts = int(getattr(self._settings, "growth_active_day_max_attempts", 6))
-        if attempts >= max_attempts:
-            return {"status": "gave_up", "attempts": attempts}
-        if row is None:
-            inserted = await self._repository.claim_workbuddy_active_day(
-                provider="codebuddy", account_id=account_id, local_date=local_date, timezone=timezone
-            )
-            if not inserted:
-                row = await self._repository.get_workbuddy_active_day(
-                    provider="codebuddy", account_id=account_id, local_date=local_date, timezone=timezone,
-                )
-                attempts = int((row or {}).get("confirm_attempts") or 0)
-        # 本次尝试计入预算（失败可再来，直到上限）
-        await self._repository.touch_workbuddy_active_day_confirmation(
-            provider="codebuddy", account_id=account_id, local_date=local_date, timezone=timezone,
-        )
-
-        # 3) 补签到兜底(可选)：官方接口偶发延迟记账时用它先顶上
-        if self._settings.growth_auto_active_day_recheckin:
+        lit_now = overview is not None and _today_lit(overview, local_date)
+        if not lit_now and self._settings.growth_auto_active_day_recheckin:
             try:
                 if await self._recheckin_unlit(access_token):
-                    overview = None  # 刷新成长中心视图
-                    try:
-                        overview = await self._client.fetch(access_token)
-                    except Exception:
-                        pass
-                    if overview is not None and _today_lit(overview, local_date):
-                        await self._repository.finish_workbuddy_active_day(
-                            provider="codebuddy", account_id=account_id, local_date=local_date, timezone=timezone,
-                            status="succeeded", confirmed="lit",
-                        )
-                        return {"status": "skipped_external"}
+                    overview = await self._safe_fetch(access_token, fallback=overview)
+                    lit_now = overview is not None and _today_lit(overview, local_date)
+                    if lit_now:
+                        rounds_done += 1  # 本轮补签视为一次有效触达
             except Exception as error:
                 logger.info("active-day recheckin skipped %s: %s", account_id, type(error).__name__)
 
-        # 4) ACP 对话点亮
-        try:
-            await self._active_day_client.run(access_token)
-        except ActiveDayError as error:
-            await self._repository.finish_workbuddy_active_day(
-                provider="codebuddy", account_id=account_id, local_date=local_date, timezone=timezone,
-                status="failed", error_code=error.code,
+        if row is None:
+            await self._repository.claim_workbuddy_active_day(
+                provider="codebuddy", account_id=account_id, local_date=local_date, timezone=timezone
             )
-            return {"status": "failed", "error_code": error.code}
-        except Exception as error:
+
+        finalized = bool(lit_now)
+
+        # 本 tick 最多补齐至 3 轮多样化对话；整体重试由 GrowthScheduler 驱动，
+        # 直到官方记账（无上限，hy3 免费）。lit 后仍把当日保底轮次跑满，
+        # 失败轮次不影响已成立的点亮结论。
+        if finalized:
             await self._repository.finish_workbuddy_active_day(
-                provider="codebuddy", account_id=account_id, local_date=local_date, timezone=timezone,
-                status="failed", error_code=type(error).__name__,
+                provider="codebuddy", account_id=account_id,
+                local_date=local_date, timezone=timezone,
+                status="succeeded", confirmed="lit",
             )
-            return {"status": "failed", "error_code": type(error).__name__}
+            return {"status": "skipped_external"}
+
+        planned = max(1, _MIN_ACP_ROUNDS - rounds_done)
+
+        error_code: str | None = None
+        executed = 0
+        for offset in range(planned):
+            prompt = _ACP_PROMPTS[(rounds_done + executed) % len(_ACP_PROMPTS)]
+            try:
+                await self._active_day_client.run(access_token, prompt=prompt)
+            except ActiveDayError as error:
+                error_code = error.code
+                logger.info("active-day round failed %s/%s (%s): %s",
+                            account_id, local_date, prompt[:12], error.code)
+            except Exception as error:
+                error_code = type(error).__name__
+                logger.info("active-day round failed %s/%s (%s): %s",
+                            account_id, local_date, prompt[:12], error_code)
+            executed += 1
+            rounds_done += 1
+
+            if finalized:
+                continue  # 已点亮后的保底轮次失败不影响结论
+            # 每轮结束核对官方视角，点亮即收敛
+            ov = await self._safe_fetch(access_token, fallback=None)
+            if ov is not None and _today_lit(ov, local_date):
+                await self._repository.finish_workbuddy_active_day(
+                    provider="codebuddy", account_id=account_id,
+                    local_date=local_date, timezone=timezone,
+                    status="succeeded", confirmed="lit",
+                )
+                finalized = True
+
+        if finalized:
+            result_status = "skipped_external" if executed == 0 else "succeeded"
+            return {"status": result_status}
+
+        # ACP 轮次全部成功但官方尚未记账 => 待确认(非失败)；调度器会继续驱动
+        status = "failed" if error_code else "pending_confirmation"
         await self._repository.finish_workbuddy_active_day(
-            provider="codebuddy", account_id=account_id, local_date=local_date, timezone=timezone,
-            status="succeeded",
+            provider="codebuddy", account_id=account_id,
+            local_date=local_date, timezone=timezone,
+            status=status, error_code=error_code,
         )
-        return {"status": "succeeded"}
+        payload = {"status": status}
+        if error_code:
+            payload["error_code"] = error_code
+        return payload
 
     async def _recheckin_unlit(self, access_token: str) -> bool:
         """兜底补签一次；成功或已签到返回 True，失败返回 False(不抛错)。"""
@@ -247,6 +261,12 @@ class GrowthAutomation:
             )
             logger.info("active-day retro-fix %s %s: -> not_lit (official score=%s)", account_id, yesterday, score)
 
+
+    async def _safe_fetch(self, access_token: str, *, fallback: Any = None) -> Any:
+        try:
+            return await self._client.fetch(access_token)
+        except Exception:
+            return fallback
 
     async def confirm_active_day(
         self,

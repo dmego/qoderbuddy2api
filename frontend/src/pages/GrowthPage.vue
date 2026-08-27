@@ -254,7 +254,7 @@ function stepTone(status: string): string {
 function stepShort(status: string): string {
   const labels: Record<string, string> = {
     succeeded: "成功", completed: "完成", claimed: "已领", lit: "点亮",
-    failed: "失败", not_lit: "未点亮", error: "错误",
+    failed: "失败", not_lit: "未点亮", pending_confirmation: "待官方确认", error: "错误",
     pending: "待定", running: "执行中",
     skipped: "跳过", no_chances: "无次数", daily_limit_reached: "已用尽",
     insufficient: "条件不足", already_claimed: "已执行", disabled: "未启用",

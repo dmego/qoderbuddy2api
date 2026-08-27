@@ -168,7 +168,6 @@ def _observability_values() -> dict[str, object]:
         "growth_auto_active_day_recheckin": _env_bool("GROWTH_AUTO_ACTIVE_DAY_RECHECKIN", True),
         "growth_auto_active_day": _env_bool("GROWTH_AUTO_ACTIVE_DAY", True),
         "growth_active_day_confirm_attempts": _env_int("GROWTH_ACTIVE_DAY_CONFIRM_ATTEMPTS", 3),
-        "growth_active_day_max_attempts": _env_int("GROWTH_ACTIVE_DAY_MAX_ATTEMPTS", 6),
     }
 
 
@@ -280,7 +279,6 @@ class Settings:
     growth_scheduler_interval_seconds: int = 1800
     growth_auto_active_day: bool = True
     growth_active_day_confirm_attempts: int = 3
-    growth_active_day_max_attempts: int = 6
     growth_auto_active_day_recheckin: bool = True
 
     @property
