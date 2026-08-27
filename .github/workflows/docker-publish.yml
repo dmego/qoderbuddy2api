@@ -4,8 +4,9 @@ name: Build and publish Docker images
 #   - push tag v*        → 构建并推送 semver + latest
 #   - push main          → 构建并推送 edge（滚动预览）
 #   - 工作流手动触发      → 默认 edge
-# 推送目标：GHCR（GitHub 自动认证，无需额外配置）+ Docker Hub（配置 DOCKER_USERNAME /
-# DOCKER_TOKEN secrets 后自动启用）。
+# 推送目标：
+#   GHCR（ghcr.io/dmego/qoderbuddy2api）—— 用 GH_TOKEN（仓库 secret）登录；
+#   Docker Hub（DOCKER_USERNAME/DOCKER_TOKEN secrets 配置后启用）。
 
 on:
   push:
@@ -17,6 +18,9 @@ on:
 
 env:
   IMAGE_NAME: qoderbuddy2api
+  # secrets 不能在 step.if 中引用，先提升到 job env 再判断
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+  DOCKERHUB_TOKEN: ${{ secrets.DOCKER_TOKEN }}
 
 jobs:
   test:
@@ -64,21 +68,21 @@ jobs:
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
-      # GHCR 总可用（GITHUB_TOKEN）
+      # GHCR 登录：优先 GH_TOKEN，回退 GITHUB_TOKEN（总是可用）
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Login to Docker Hub
         id: dockerhub-login
-        if: ${{ secrets.DOCKER_USERNAME != '' && secrets.DOCKER_TOKEN != '' }}
+        if: env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_TOKEN }}
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
 
       - name: Docker meta (GHCR)
         id: meta-ghcr
@@ -94,11 +98,11 @@ jobs:
 
       - name: Docker meta (Docker Hub)
         id: meta-dockerhub
-        if: steps.dockerhub-login.outcome == 'success'
+        if: env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
         uses: docker/metadata-action@v5
         with:
           images: |
-            ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}
+            ${{ env.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -118,7 +122,7 @@ jobs:
 
       - name: Build and push (Docker Hub)
         uses: docker/build-push-action@v6
-        if: steps.dockerhub-login.outcome == 'success'
+        if: env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
         with:
           context: .
           push: true
