@@ -53,7 +53,9 @@
         "name": "DeepSeek R1",
         "capabilities": {
           "chat": true,
-          "streaming": true
+          "streaming": true,
+          "reasoning": true,
+          "reasoning_effort": true
         }
       },
       {
@@ -111,7 +113,9 @@
         "name": "MiniMax M3",
         "capabilities": {
           "chat": true,
-          "streaming": true
+          "streaming": true,
+          "reasoning": true,
+          "reasoning_effort": true
         }
       },
       {
@@ -119,7 +123,9 @@
         "name": "MiniMax M2.7",
         "capabilities": {
           "chat": true,
-          "streaming": true
+          "streaming": true,
+          "reasoning": true,
+          "reasoning_effort": true
         }
       },
       {
