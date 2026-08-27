@@ -126,9 +126,9 @@ def test_full_config_only_carries_codebuddy_definitions():
     per_provider = load_models_from_config("config/models.json")
     assert set(per_provider) == {"codebuddy"}
     catalog = build_unified_catalog(per_provider)
-    assert len(catalog) == 16
+    assert len(catalog) == 17
     assert set(catalog["auto"].routes) == {ModelRoute("codebuddy", "auto")}
-    assert "glm-5.3" in catalog and "glm-5.3-flash" in catalog
+    assert "glm-5.3" in catalog and "glm-5.3-flash" in catalog and "kimi-k3" in catalog
 
 
 def test_dual_provider_config_merges_to_nineteen_canonical_ids():
@@ -141,7 +141,7 @@ def test_dual_provider_config_merges_to_nineteen_canonical_ids():
         ModelDefinition(model_id, model_id, "qoder") for model_id in qoder_ids
     ]
     catalog = build_unified_catalog(per_provider)
-    assert len(catalog) == 21
+    assert len(catalog) == 22
     assert list(catalog) == sorted(catalog)
     assert set(catalog["deepseek-v4-flash"].routes) == {
         ModelRoute("codebuddy", "deepseek-v4-flash"),
