@@ -32,7 +32,7 @@ logger = logging.getLogger("qb2api.accounts.codebuddy_model_sync")
 CHAT_ENDPOINT = "/v2/chat/completions"
 MODEL_NOT_FOUND_CODE = "11102"
 _PROBE_MESSAGE = "hi"
-_PROBE_MAX_TOKENS = 1
+_PROBE_MAX_TOKENS = 8
 
 # 探测候选：现有已知 ID 与按命名规律扩展的下版本候选。不做无限外推。
 _EXTRA_CANDIDATES = (
@@ -116,7 +116,7 @@ async def _probe_model(
     access_token: str,
     model_id: str,
 ) -> ProbeResult:
-    """一次 chat-completions 探测：存在性 + 思考能力（effort=low 档）。"""
+    """探测存在性与思考能力：先带 effort=low，未检出再补一次裸探测。"""
     body = {
         "model": model_id,
         "messages": [{"role": "user", "content": _PROBE_MESSAGE}],
@@ -143,10 +143,20 @@ async def _probe_model(
             status_code=response.status_code,
             error_code=error_code,
         )
+    reasoning = _parse_reasoning_sse(response.text)
+    # 部分模型默认产思考但忽略/拒绝 reasoning_effort，补一次裸探测。
+    if not reasoning:
+        try:
+            plain_body = {k: v for k, v in body.items() if k != "reasoning_effort"}
+            second = await client.post(CHAT_ENDPOINT, headers=_headers(access_token), json=plain_body)
+            if second.status_code == 200:
+                reasoning = _parse_reasoning_sse(second.text)
+        except httpx.HTTPError:
+            pass
     return ProbeResult(
         model_id=model_id,
         exists=True,
-        reasoning=_parse_reasoning_sse(response.text),
+        reasoning=reasoning,
         status_code=200,
     )
 
@@ -159,12 +169,13 @@ def _upsert_config(models_config: str, results: list[ProbeResult]) -> tuple[int,
     models = codebuddy.setdefault("models", [])
 
     by_id = {m.get("id"): m for m in models if isinstance(m, dict) and m.get("id")}
-    added = updated = 0
+    added = updated = removed = 0
     for result in results:
         if not result.exists:
             # 明确 400/11102（model not found）才移除；网络错误保留。
             if result.error_code == MODEL_NOT_FOUND_CODE and result.model_id in by_id:
                 del by_id[result.model_id]
+                removed += 1
             continue
         caps: dict[str, bool] = {"chat": True, "streaming": True}
         if result.reasoning:
@@ -178,16 +189,18 @@ def _upsert_config(models_config: str, results: list[ProbeResult]) -> tuple[int,
                 "capabilities": caps,
             }
             added += 1
-        else:
-            prev = existing.get("capabilities") or {}
-            if prev.get("reasoning") != caps.get("reasoning") or prev.get("reasoning_effort") != caps.get(
-                "reasoning_effort"
-            ):
-                existing["capabilities"] = caps
-                updated += 1
+            continue
+        prev = existing.get("capabilities") or {}
+        # 探测 False 不降级：max_tokens 截断等会使思考能力漏报，已有标注保持。
+        if (prev.get("reasoning") or prev.get("reasoning_effort")) and not result.reasoning:
+            continue
+        if prev.get("reasoning") != caps.get("reasoning") or prev.get("reasoning_effort") != caps.get(
+            "reasoning_effort"
+        ):
+            existing["capabilities"] = caps
+            updated += 1
     # 稳定顺序：保留原有顺序 + 新增排尾，避免配置抖动
     ordered = [by_id[m] for m in by_id]
-    removed = len(models) - len(ordered)
     models[:] = ordered
     path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return added, updated, removed
