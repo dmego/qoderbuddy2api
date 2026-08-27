@@ -14,6 +14,7 @@ the control plane to refresh provider pools so the worker picks up changes.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -33,6 +34,7 @@ CHAT_ENDPOINT = "/v2/chat/completions"
 MODEL_NOT_FOUND_CODE = "11102"
 _PROBE_MESSAGE = "hi"
 _PROBE_MAX_TOKENS = 8
+_PROBE_CONCURRENCY = 5
 
 # 探测候选：现有已知 ID 与按命名规律扩展的下版本候选。不做无限外推。
 _EXTRA_CANDIDATES = (
@@ -243,19 +245,23 @@ async def sync_codebuddy_models(
     candidates = _candidate_ids(config_path)
     report = SyncReport()
     results: list[ProbeResult] = []
-    owns_client = client is None
+    own_client = client is None
     probe_client = client or httpx.AsyncClient(
         base_url=settings.codebuddy_endpoint,
         timeout=30.0,
         trust_env=False,
     )
     try:
-        for model_id in candidates:
-            result = await _probe_model(probe_client, token, model_id)
-            results.append(result)
-            report.probed += 1
+        semaphore = asyncio.Semaphore(_PROBE_CONCURRENCY)
+
+        async def probe_one(model_id: str) -> ProbeResult:
+            async with semaphore:
+                return await _probe_model(probe_client, token, model_id)
+
+        results = await asyncio.gather(*(probe_one(m) for m in candidates))
+        report.probed = len(results)
     finally:
-        if owns_client:
+        if own_client:
             await probe_client.aclose()
 
     report.added, report.updated, report.removed = _upsert_config(config_path, results)

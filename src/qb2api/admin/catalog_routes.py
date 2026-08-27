@@ -367,6 +367,64 @@ async def sync_upstream_models(provider: str, request: Request) -> dict[str, Any
     raise HTTPException(status_code=400, detail="unsupported_provider")
 
 
+@router.post("/sync")
+async def sync_all_models(request: Request) -> dict[str, Any]:
+    """全量上游同步：qoder 官方目录 + workbuddy 探测，各自容错、错误不阻断。"""
+    await require_admin(request)
+    state = admin_state(request)
+    result: dict[str, Any] = {"status": "succeeded", "providers": {}}
+    totals = {"added": 0, "updated": 0, "removed": 0, "disabled": 0}
+    try:
+        report = await sync_qoder_models(
+            state.account_repo,
+            state.account_registry,
+            state.credential_resolver,
+        )
+        result["providers"]["qoder"] = {
+            "status": "succeeded",
+            "added": report.added,
+            "updated": report.updated,
+            "disabled": report.disabled,
+        }
+        totals["added"] += report.added
+        totals["updated"] += report.updated
+        totals["disabled"] += report.disabled
+    except Exception as error:
+        result["providers"]["qoder"] = {"status": "failed", "error": type(error).__name__}
+    try:
+        report = await sync_codebuddy_models(
+            state.account_repo,
+            state.account_registry,
+            state.credential_resolver,
+            models_config_path=state.settings.model_config_path,
+        )
+        result["providers"]["codebuddy"] = {
+            "status": "succeeded",
+            "added": report.added,
+            "updated": report.updated,
+            "removed": report.removed,
+            "probed": report.probed,
+        }
+        totals["added"] += report.added
+        totals["updated"] += report.updated
+        totals["removed"] += report.removed
+    except Exception as error:
+        result["providers"]["codebuddy"] = {"status": "failed", "error": type(error).__name__}
+    await _audit(
+        request,
+        action="model.sync",
+        resource_type="catalog",
+        resource_id="catalog",
+        result=result["status"],
+        metadata={
+            "qoder": result["providers"].get("qoder", {}).get("status"),
+            "codebuddy": result["providers"].get("codebuddy", {}).get("status"),
+        },
+    )
+    result.update(totals)
+    return result
+
+
 @router.post("/{provider}/{model_id}/probe")
 async def probe_model(provider: str, model_id: str, request: Request) -> dict[str, Any]:
     await require_admin(request)

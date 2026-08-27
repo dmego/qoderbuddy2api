@@ -97,24 +97,60 @@ async def test_sync_codebuddy_route_success(sync_context, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_sync_qoder_route_forwards_credential_error(sync_context, monkeypatch) -> None:
+async def test_sync_all_route_aggregates_and_isolates_provider_failures(sync_context, monkeypatch) -> None:
     app, repository = sync_context
-
-    async def fail_sync(*args, **kwargs):
-        raise QoderError("qoder rejected", status_code=401)
-
-    monkeypatch.setattr(catalog_routes, "sync_qoder_models", fail_sync)
+    qoder_report = QoderSyncReport(
+        added=2, updated=1, disabled=0, models=[{"model_id": "Qwen3.8-Max", "enabled": True}]
+    )
+    codebuddy_report = CodebuddySyncReport(
+        added=1, updated=0, removed=0, probed=3,
+        models=[{"model_id": "glm-5.3-flash", "exists": True, "reasoning": True}],
+    )
+    monkeypatch.setattr(catalog_routes, "sync_qoder_models", AsyncMock(return_value=qoder_report))
+    monkeypatch.setattr(
+        catalog_routes, "sync_codebuddy_models", AsyncMock(return_value=codebuddy_report)
+    )
 
     async with _client(app) as client:
-        response = await client.post("/api/admin/models/sync/qoder", headers=_headers())
+        response = await client.post("/api/admin/models/sync", headers=_headers())
 
-    assert response.status_code == 401
-    assert response.json()["detail"] == "sync_failed"
-    repository.add_audit_event.assert_awaited_once()
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "succeeded"
+    assert body["added"] == 3
+    assert body["updated"] == 1
+    assert body["providers"]["qoder"]["status"] == "succeeded"
+    assert body["providers"]["codebuddy"]["status"] == "succeeded"
     audit = repository.add_audit_event.await_args.kwargs
-    assert audit["action"] == "model.sync"
-    assert audit["result"] == "failed"
-    assert audit["metadata"] == {"error_code": 401}
+    assert audit["resource_type"] == "catalog"
+    assert audit["metadata"] == {"qoder": "succeeded", "codebuddy": "succeeded"}
+
+
+@pytest.mark.asyncio
+async def test_sync_all_route_qoder_failure_does_not_block_codebuddy(sync_context, monkeypatch) -> None:
+    app, repository = sync_context
+
+    async def fail_qoder(*args, **kwargs):
+        raise QoderError("no credential", status_code=409)
+
+    codebuddy_report = CodebuddySyncReport(
+        added=0, updated=0, removed=0, probed=3,
+        models=[{"model_id": "glm-5.3-flash", "exists": True, "reasoning": True}],
+    )
+    monkeypatch.setattr(catalog_routes, "sync_qoder_models", fail_qoder)
+    monkeypatch.setattr(
+        catalog_routes, "sync_codebuddy_models", AsyncMock(return_value=codebuddy_report)
+    )
+
+    async with _client(app) as client:
+        response = await client.post("/api/admin/models/sync", headers=_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "succeeded"
+    assert body["providers"]["qoder"] == {"status": "failed", "error": "QoderError"}
+    assert body["providers"]["codebuddy"]["status"] == "succeeded"
+    assert body["added"] == 0
 
 
 def _client(app: FastAPI) -> httpx.AsyncClient:

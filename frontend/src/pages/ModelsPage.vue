@@ -53,11 +53,21 @@ const refresh = useMutation({
   onError: (error) => notify("模型目录刷新失败", { message: String(error), tone: "error" }),
 });
 const syncUpstream = useMutation({
-  mutationFn: () => apiRequest<{ added: number; updated: number; removed?: number; disabled?: number; probed?: number }>(`/models/sync/${provider.value === "codebuddy" ? "codebuddy" : "qoder"}`, { method: "POST" }),
+  mutationFn: () => {
+    const endpoint = provider.value === "codebuddy" ? "/models/sync/codebuddy" : provider.value === "qoder" ? "/models/sync/qoder" : "/models/sync";
+    return apiRequest<{ added: number; updated: number; removed?: number; disabled?: number; probed?: number; providers?: Record<string, { status: string; added?: number }> }>(endpoint, { method: "POST" });
+  },
   onSuccess: async (result) => {
-    const detail = provider.value === "codebuddy"
-      ? `探测 ${result.probed ?? 0} · 新增 ${result.added} · 更新 ${result.updated} · 移除 ${result.removed ?? 0}`
-      : `新增 ${result.added} · 更新 ${result.updated} · 停用 ${result.disabled ?? 0}`;
+    let detail: string;
+    if (result.providers) {
+      const q = result.providers.qoder;
+      const c = result.providers.codebuddy;
+      detail = `WorkBuddy ${c ? `新增 ${c.added ?? 0}` : "失败"} · Qoder ${q && q.status === "succeeded" ? `更新 ${q.added ?? 0}` : "失败"}`;
+    } else if (provider.value === "codebuddy") {
+      detail = `探测 ${result.probed ?? 0} · 新增 ${result.added} · 更新 ${result.updated} · 移除 ${result.removed ?? 0}`;
+    } else {
+      detail = `新增 ${result.added} · 更新 ${result.updated} · 停用 ${result.disabled ?? 0}`;
+    }
     notify("上游同步完成", { message: detail, tone: "success" });
     await queryClient.invalidateQueries({ queryKey: ["models"] });
   },
