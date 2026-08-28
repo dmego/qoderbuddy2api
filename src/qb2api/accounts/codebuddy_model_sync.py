@@ -52,7 +52,9 @@ _EXTRA_CANDIDATES = (
     "minimax-m4",
     "hy4",
     "hy4-flash",
+    "hy4-preview",
 )
+
 
 
 @dataclass(frozen=True, slots=True)

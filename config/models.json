@@ -159,6 +159,16 @@
         }
       },
       {
+        "id": "hy4-preview",
+        "name": "Hy4 Preview",
+        "capabilities": {
+          "chat": true,
+          "streaming": true,
+          "reasoning": true,
+          "reasoning_effort": true
+        }
+      },
+      {
         "id": "kimi-k3",
         "name": "kimi-k3",
         "capabilities": {
