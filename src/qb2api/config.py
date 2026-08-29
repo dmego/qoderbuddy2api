@@ -100,7 +100,7 @@ def _provider_values() -> dict[str, object]:
         "qoder_timeout": _env_int("QODER_TIMEOUT", 300),
         "provider_drain_timeout_seconds": _env_int("PROVIDER_DRAIN_TIMEOUT_SECONDS", 330),
         "codebuddy_default_reasoning_effort": os.getenv(
-            "QB2API_CODEBUDDY_DEFAULT_REASONING_EFFORT", "low"
+            "QB2API_CODEBUDDY_DEFAULT_REASONING_EFFORT", "max"
         ).strip().lower(),
     }
 
@@ -255,8 +255,9 @@ class Settings:
 
     # CodeBuddy/WorkBuddy: inject this reasoning_effort when the client does
     # not specify one, so supported models actually emit reasoning steps.
-    # "low" covers all models (hy3 ignores medium); empty disables injection.
-    codebuddy_default_reasoning_effort: str = "low"
+    # "max" is accepted by all current reasoning models; upstream falls back
+    # to the model's own highest tier when max is unavailable. Empty disables.
+    codebuddy_default_reasoning_effort: str = "max"
 
     # Logging
     log_requests: bool = True

@@ -186,4 +186,4 @@ def test_config_env_binding(monkeypatch: pytest.MonkeyPatch) -> None:
     assert Settings.from_env(env_file="").codebuddy_default_reasoning_effort == "high"
 
     monkeypatch.delenv("QB2API_CODEBUDDY_DEFAULT_REASONING_EFFORT", raising=False)
-    assert Settings.from_env(env_file="").codebuddy_default_reasoning_effort == "low"
+    assert Settings.from_env(env_file="").codebuddy_default_reasoning_effort == "max"
