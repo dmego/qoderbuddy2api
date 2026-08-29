@@ -141,6 +141,7 @@ async def usage_export(
         "event_id", "request_id", "provider", "account_id", "model_id", "protocol",
         "status", "http_status", "input_tokens", "output_tokens", "latency_ms",
         "stream_committed", "started_at", "finished_at", "error_code",
+        "reasoning_effort",
     )
     writer.writerow(fields)
     for event in events:

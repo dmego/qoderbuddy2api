@@ -15,13 +15,14 @@ class TelemetryRepositoryMixin:
             "event_id", "request_id", "provider", "account_id", "model_id", "protocol",
             "status", "http_status", "input_tokens", "output_tokens", "latency_ms",
             "stream_committed", "started_at", "finished_at", "error_code", "redacted_error",
+            "reasoning_effort",
         )
         values = [event.get(field) for field in fields]
         values[11] = int(bool(values[11]))
         values[12] = values[12] or now_iso()
         async with self._operation(write=True) as db:
             await db.execute(
-                "INSERT OR IGNORE INTO request_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO request_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 values,
             )
 
@@ -32,6 +33,7 @@ class TelemetryRepositoryMixin:
             "event_id", "request_id", "provider", "account_id", "model_id", "protocol",
             "status", "http_status", "input_tokens", "output_tokens", "latency_ms",
             "stream_committed", "started_at", "finished_at", "error_code", "redacted_error",
+            "reasoning_effort",
         )
         rows = []
         for event in events[:100]:
@@ -41,7 +43,7 @@ class TelemetryRepositoryMixin:
             rows.append(values)
         async with self._operation(write=True) as db:
             await db.executemany(
-                "INSERT OR IGNORE INTO request_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO request_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 rows,
             )
         return len(rows)

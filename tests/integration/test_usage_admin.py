@@ -24,7 +24,7 @@ def usage_client(tmp_path):
     with TestClient(application, client=("127.0.0.1", 10001)) as client:
         now = datetime.now(UTC).replace(microsecond=0)
         events = [
-            _event("event-q1", now, "qoder", "qd-1", "model-a", 4, 3),
+            _event("event-q1", now, "qoder", "qd-1", "model-a", 4, 3, reasoning_effort="low"),
             _event("event-q2", now, "qoder", "qd-2", "model-b", 5, 2),
             _event("event-c1", now, "codebuddy", "cb-1", "model-c", None, None),
         ]
@@ -56,6 +56,7 @@ def test_usage_event_detail_is_secret_safe(usage_client) -> None:
 
     assert response.status_code == 200
     assert response.json()["event_id"] == "event-q1"
+    assert response.json()["reasoning_effort"] == "low"
     assert "prompt" not in response.text
     assert "redacted_error" not in response.json()
 
@@ -83,12 +84,13 @@ def test_usage_export_is_csv_and_audited(usage_client) -> None:
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/csv")
+    assert "reasoning_effort" in response.text
     assert "event-q1" in response.text
     assert "event-q2" not in response.text
     assert any(item["action"] == "usage.export" for item in audit.json()["events"])
 
 
-def _event(event_id, started_at, provider, account_id, model_id, input_tokens, output_tokens):
+def _event(event_id, started_at, provider, account_id, model_id, input_tokens, output_tokens, reasoning_effort=None):
     return {
         "event_id": event_id,
         "request_id": f"request-{event_id}",
@@ -100,6 +102,7 @@ def _event(event_id, started_at, provider, account_id, model_id, input_tokens, o
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "started_at": started_at.isoformat(),
+        "reasoning_effort": reasoning_effort,
     }
 
 

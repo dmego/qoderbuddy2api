@@ -241,7 +241,8 @@ CREATE TABLE IF NOT EXISTS request_events (
     started_at TEXT NOT NULL,
     finished_at TEXT,
     error_code TEXT,
-    redacted_error TEXT
+    redacted_error TEXT,
+    reasoning_effort TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_request_events_started ON request_events(started_at);

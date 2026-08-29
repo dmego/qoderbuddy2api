@@ -99,5 +99,6 @@ def safe_event(event: dict[str, Any]) -> dict[str, Any]:
         "event_id", "request_id", "provider", "account_id", "model_id", "protocol",
         "status", "http_status", "input_tokens", "output_tokens", "latency_ms",
         "stream_committed", "started_at", "finished_at", "error_code",
+        "reasoning_effort",
     )
     return {field: event.get(field) for field in fields}

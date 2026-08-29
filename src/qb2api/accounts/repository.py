@@ -86,6 +86,7 @@ class AccountRepository(
                 "missing_token_count",
                 "INTEGER NOT NULL DEFAULT 0",
             )
+            await self._ensure_column("request_events", "reasoning_effort", "TEXT")
             for column, definition in (
                 ("reward_credits", "REAL"),
                 ("reward_expires_at", "TEXT"),

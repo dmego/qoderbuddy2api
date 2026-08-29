@@ -84,6 +84,7 @@ def _event(value: Any) -> dict[str, Any]:
         "event_id", "request_id", "provider", "account_id", "model_id", "protocol",
         "status", "http_status", "input_tokens", "output_tokens", "latency_ms",
         "stream_committed", "started_at", "finished_at", "error_code", "redacted_error",
+        "reasoning_effort",
     }
     clean = {key: value.get(key) for key in allowed if key in value}
     required = ("event_id", "request_id", "provider", "model_id", "protocol", "status")
