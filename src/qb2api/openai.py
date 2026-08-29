@@ -97,7 +97,7 @@ class ChatCompletionRequest(BaseModel):
             "input_tokens": self._input_tokens,
             "output_tokens": self._output_tokens,
             "reasoning_effort": self._effective_reasoning_effort
-            or self.reasoning_effort,
+            or getattr(self, "reasoning_effort", None),
         }
 
 

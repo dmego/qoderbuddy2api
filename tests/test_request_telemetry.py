@@ -37,5 +37,6 @@ async def test_stream_records_slot_commit_and_real_usage():
         "stream_committed": True,
         "input_tokens": 3,
         "output_tokens": 2,
+        "reasoning_effort": None,
     }
     await pool.close()
