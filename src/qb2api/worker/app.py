@@ -157,7 +157,8 @@ def _emit(
             "output_tokens": usage.get("output_tokens"),
             "latency_ms": int((time.monotonic() - started) * 1000),
             "stream_committed": usage.get("stream_committed", False),
-            "reasoning_effort": getattr(chat_request, "reasoning_effort", None),
+            "reasoning_effort": (usage.get("reasoning_effort")
+                or getattr(chat_request, "reasoning_effort", None)),
             "started_at": now,
             "finished_at": now,
             "error_code": type(error).__name__ if error else None,

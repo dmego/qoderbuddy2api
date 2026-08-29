@@ -58,9 +58,14 @@ class ChatCompletionRequest(BaseModel):
     _stream_committed: bool = PrivateAttr(default=False)
     _input_tokens: int | None = PrivateAttr(default=None)
     _output_tokens: int | None = PrivateAttr(default=None)
+    _effective_reasoning_effort: str | None = PrivateAttr(default=None)
 
     def record_provider(self, provider: str) -> None:
         self._selected_provider = provider
+
+    def record_effective_reasoning_effort(self, effort: str) -> None:
+        """Record the effort actually applied to the upstream request."""
+        self._effective_reasoning_effort = effort
 
     def record_slot(self, slot_key: str, *, committed: bool = False) -> None:
         self._selected_account_id = slot_key.split(":", 1)[-1]
@@ -91,6 +96,8 @@ class ChatCompletionRequest(BaseModel):
             "stream_committed": self._stream_committed,
             "input_tokens": self._input_tokens,
             "output_tokens": self._output_tokens,
+            "reasoning_effort": self._effective_reasoning_effort
+            or self.reasoning_effort,
         }
 
 

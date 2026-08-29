@@ -125,6 +125,7 @@ class CodeBuddyProvider(Provider):
             # WorkBuddy models only emit reasoning_content when reasoning_effort
             # is set; inject a default so supported models actually think.
             body["reasoning_effort"] = self.default_reasoning_effort
+            request.record_effective_reasoning_effort(self.default_reasoning_effort)
         return body
 
     async def _build_headers(self) -> dict:

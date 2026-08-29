@@ -58,6 +58,7 @@ class TestCodeBuddyScrub:
         body = provider._build_body(request)
 
         assert body["reasoning_effort"] == "high"
+        assert request.telemetry["reasoning_effort"] == "high"
 
     def test_build_body_respects_client_supplied_effort(self):
         provider = CodeBuddyProvider(token="dummy", default_reasoning_effort="high")
@@ -70,6 +71,7 @@ class TestCodeBuddyScrub:
         body = provider._build_body(request)
 
         assert body["reasoning_effort"] == "low"
+        assert request.telemetry["reasoning_effort"] == "low"
 
     def test_build_body_no_effort_when_default_empty(self):
         provider = CodeBuddyProvider(token="dummy", default_reasoning_effort="")
