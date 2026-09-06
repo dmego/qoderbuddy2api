@@ -17,6 +17,16 @@ class CodeBuddyCreditsUnavailableError(RuntimeError):
 class CodeBuddyCreditsClient:
     """Fetch only the aggregate credit fields required by the console."""
 
+    _BROWSER_HEADERS = {
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+        "X-Client-Platform": "web",
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+        ),
+    }
+
     def __init__(
         self,
         *,
@@ -43,12 +53,7 @@ class CodeBuddyCreditsClient:
             response = await self._client.post(
                 join_url(self.base_url, self.path),
                 json={},
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                    "X-Client-Platform": "web",
-                },
+                headers=self._request_headers(access_token),
             )
         except httpx.HTTPError as error:
             raise CodeBuddyCreditsUnavailableError(
@@ -61,6 +66,15 @@ class CodeBuddyCreditsClient:
         if not normalized:
             raise CodeBuddyCreditsUnavailableError("empty credits response")
         return normalized
+
+    def _request_headers(self, access_token: str) -> dict[str, str]:
+        """Bearer auth plus browser-like headers the upstream requires."""
+        origin = self.base_url
+        headers = dict(self._BROWSER_HEADERS)
+        headers["Authorization"] = f"Bearer {access_token}"
+        headers["Origin"] = origin
+        headers.setdefault("Referer", f"{origin}/")
+        return headers
 
 
 def normalize_credits(body: dict[str, Any] | None) -> dict[str, Any]:
