@@ -31,8 +31,8 @@ class CodeBuddyError(Exception):
 class CodeBuddyChannelBlockedError(CodeBuddyError):
     """Upstream risk control blocked the calling channel (code 11128).
 
-    Transient by design («Please retry»); retrying immediately only extends the
-    ban, so callers back off much longer than for a generic upstream error.
+    Transient by design («Please retry»); surfaced as a distinct type so the
+    message is readable instead of raw JSON.
     """
 
 

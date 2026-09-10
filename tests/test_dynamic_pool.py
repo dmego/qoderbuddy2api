@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from collections.abc import AsyncIterator
 
 import pytest
 
 from qb2api.openai import ChatCompletionRequest
 from qb2api.providers.base import Provider
-from qb2api.providers.codebuddy import CodeBuddyChannelBlockedError
 from qb2api.providers.lb import DynamicProviderPool, ProviderUnavailableError
 
 
@@ -67,12 +65,6 @@ class BlockingStreamProvider(FakeProvider):
         self.started.set()
         await asyncio.Event().wait()
         yield b"unreachable"
-
-
-class ChannelBlockedProvider(FakeProvider):
-    async def complete(self, request: ChatCompletionRequest) -> dict:
-        self.complete_calls += 1
-        raise CodeBuddyChannelBlockedError(400, "upstream security policy blocked channel")
 
 
 def _req() -> ChatCompletionRequest:
@@ -270,25 +262,3 @@ async def test_qoder_provider_reauthenticates_once_before_first_chunk(monkeypatc
     assert len(sessions) == 2
     assert attempts == sessions
     assert chunks[-1] == b"data: [DONE]\n\n"
-
-
-@pytest.mark.asyncio
-async def test_channel_block_uses_long_cooldown():
-    bad = ChannelBlockedProvider("bad")
-    pool = DynamicProviderPool(name="codebuddy")
-    await pool.update_slots({"bad": bad})
-    with pytest.raises(CodeBuddyChannelBlockedError):
-        await pool.complete(_req())
-    until = pool._failed["bad"]
-    assert until - time.monotonic() >= 550
-
-
-@pytest.mark.asyncio
-async def test_generic_failure_keeps_short_cooldown():
-    bad = FakeProvider("bad", fail_before_chunk=True)
-    pool = DynamicProviderPool(name="codebuddy")
-    await pool.update_slots({"bad": bad})
-    with pytest.raises(RuntimeError, match="bad-fail"):
-        await pool.complete(_req())
-    until = pool._failed["bad"]
-    assert 25 <= until - time.monotonic() <= 35

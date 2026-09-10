@@ -11,20 +11,10 @@ from typing import Literal
 
 from ..openai import ChatCompletionRequest
 from .base import Provider
-from .codebuddy import CodeBuddyChannelBlockedError
 
 logger = logging.getLogger("qb2api")
 
 _COOLDOWN_S = 30.0
-_CHANNEL_BLOCK_COOLDOWN_S = 600.0
-
-
-def _failure_cooldown(error: Exception) -> float:
-    """Temporary channel bans need a much longer backoff; immediate retries
-    (cross-account included) only extend upstream risk control."""
-    if isinstance(error, CodeBuddyChannelBlockedError):
-        return _CHANNEL_BLOCK_COOLDOWN_S
-    return _COOLDOWN_S
 
 
 class ProviderUnavailableError(Exception):
@@ -141,7 +131,7 @@ class DynamicProviderPool(Provider):
             except Exception as e:
                 logger.warning(f"{self.name}: close retired slot failed — {e}")
 
-    def _mark_failed(self, key: str, generation: int, *, cooldown: float = _COOLDOWN_S) -> None:
+    def _mark_failed(self, key: str, generation: int) -> None:
         handle = self._slots.get(key)
         if (
             handle is None
@@ -149,7 +139,7 @@ class DynamicProviderPool(Provider):
             or handle.generation != generation
         ):
             return
-        self._failed[key] = time.monotonic() + cooldown
+        self._failed[key] = time.monotonic() + _COOLDOWN_S
 
     async def _acquire(self, tried: set[str], *, advance: bool) -> SlotHandle | None:
         async with self._lock:
@@ -228,9 +218,7 @@ class DynamicProviderPool(Provider):
                 last_err = e
                 logger.warning(f"{self.name}[{handle.key}]: complete failed — {e}")
                 async with self._lock:
-                    self._mark_failed(
-                        handle.key, handle.generation, cooldown=_failure_cooldown(e)
-                    )
+                    self._mark_failed(handle.key, handle.generation)
             finally:
                 await self._release(handle)
 
@@ -252,9 +240,7 @@ class DynamicProviderPool(Provider):
                 return
             except _PrecommitStreamFailure as failure:
                 async with self._lock:
-                    self._mark_failed(
-                        handle.key, handle.generation, cooldown=_failure_cooldown(failure.error)
-                    )
+                    self._mark_failed(handle.key, handle.generation)
                 last_err = failure.error
                 logger.warning(f"{self.name}[{handle.key}]: stream failed pre-commit — {failure.error}")
             except Exception:
