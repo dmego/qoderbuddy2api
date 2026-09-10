@@ -134,6 +134,73 @@ class TestCodeBuddyScrub:
         assert "reasoning_effort" not in body
 
 
+class TestCodeBuddyDeveloperRole:
+    """Upstream 11128-rejects any ``developer`` message; fold it into ``system``."""
+
+    def test_build_body_folds_developer_role_into_system(self):
+        provider = CodeBuddyProvider(token="dummy")
+        request = ChatCompletionRequest(
+            model="deepseek-v4.1-flash",
+            messages=[
+                {"role": "developer", "content": "You are an AI agent powered by DeepSeek Harness."},
+                {"role": "user", "content": "hi"},
+            ],
+        )
+
+        body = provider._build_body(request)
+
+        assert [m["role"] for m in body["messages"]] == ["system", "user"]
+        assert body["messages"][0]["content"] == "You are an AI agent powered by DeepSeek Harness."
+
+    def test_build_body_keeps_non_developer_roles_unchanged(self):
+        provider = CodeBuddyProvider(token="dummy")
+        request = ChatCompletionRequest(
+            model="deepseek-v4.1-flash",
+            messages=[
+                {"role": "system", "content": "sys"},
+                {"role": "developer", "content": "dev"},
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"},
+            ],
+        )
+
+        body = provider._build_body(request)
+
+        assert [m["role"] for m in body["messages"]] == ["system", "system", "user", "assistant"]
+
+    def test_build_body_scrubs_claude_prompt_on_developer_role(self):
+        provider = CodeBuddyProvider(token="dummy")
+        request = ChatCompletionRequest(
+            model="deepseek-v4.1-flash",
+            messages=[
+                {
+                    "role": "developer",
+                    "content": "You are Claude Code, Anthropic's official CLI for Claude.",
+                },
+                {"role": "user", "content": "hi"},
+            ],
+        )
+
+        body = provider._build_body(request)
+
+        assert body["messages"][0]["role"] == "system"
+        assert body["messages"][0]["content"] == "You are a helpful assistant."
+
+    def test_build_body_does_not_mutate_client_messages(self):
+        provider = CodeBuddyProvider(token="dummy")
+        request = ChatCompletionRequest(
+            model="deepseek-v4.1-flash",
+            messages=[
+                {"role": "developer", "content": "dev"},
+                {"role": "user", "content": "hi"},
+            ],
+        )
+
+        provider._build_body(request)
+
+        assert request.messages[0].role == "developer"
+
+
 class TestQoderToolCalls:
     """Test Qoder model mapping and COSY headers."""
 

@@ -217,7 +217,21 @@ def _prepared_messages(request: ChatCompletionRequest) -> list[dict[str, Any]]:
     if len(messages) < 2:
         logger.debug("CodeBuddy: injecting default system message (upstream requires >=2 messages)")
         messages.insert(0, {"role": "system", "content": "You are a helpful assistant."})
-    return [_scrub_system_message(message) for message in messages]
+    return [_normalize_outbound_message(message) for message in messages]
+
+
+def _normalize_outbound_message(message: dict[str, Any]) -> dict[str, Any]:
+    """Fold OpenAI's ``developer`` role into ``system`` before sending upstream.
+
+    CodeBuddy answers any request carrying a ``developer`` message with 400
+    code 11128 ("Illegal API invocation from an unapproved channel"), while the
+    identical text on the ``system`` role passes. Newer OpenAI-compatible
+    harnesses (DeepSeek Harness, Codex-style clients) deliver their harness
+    prompt on that role, so without this fold every such request is rejected.
+    """
+    if isinstance(message, dict) and message.get("role") == "developer":
+        message = {**message, "role": "system"}
+    return _scrub_system_message(message)
 
 
 def _scrub_system_message(message: dict[str, Any]) -> dict[str, Any]:
