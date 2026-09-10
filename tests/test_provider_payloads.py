@@ -6,6 +6,55 @@ from qb2api.providers.codebuddy_scrub import scrub_codebuddy_text
 from qb2api.providers.qoder import QODER_CLI_MODEL_KEYS, QoderProvider, QoderSession
 
 
+class TestCodeBuddyUpstreamError:
+    """Typed handling of upstream error bodies (code 11128 = channel ban)."""
+
+    def test_11128_parses_to_channel_blocked_with_display_message(self):
+        from qb2api.providers.codebuddy import (
+            CodeBuddyChannelBlockedError,
+            parse_codebuddy_error,
+        )
+
+        body = (
+            '{"code":11128,"msg":"Illegal API invocation from an unapproved channel",'
+            '"requestId":"x","displayMsg":{"en":"The request was blocked by security policy. Please retry"}}'
+        )
+        error = parse_codebuddy_error(400, body)
+        assert isinstance(error, CodeBuddyChannelBlockedError)
+        assert error.status_code == 400
+        assert "upstream security policy; back off and retry later" in str(error)
+        assert "Please retry" in str(error)
+
+    def test_11128_without_displayMsg_falls_back_to_msg(self):
+        from qb2api.providers.codebuddy import (
+            CodeBuddyChannelBlockedError,
+            parse_codebuddy_error,
+        )
+
+        error = parse_codebuddy_error(400, '{"code":11128,"msg":"blocked"}')
+        assert isinstance(error, CodeBuddyChannelBlockedError)
+        assert "blocked" in str(error)
+
+    def test_non_11128_is_generic_error(self):
+        from qb2api.providers.codebuddy import (
+            CodeBuddyChannelBlockedError,
+            CodeBuddyError,
+            parse_codebuddy_error,
+        )
+
+        error = parse_codebuddy_error(400, '{"code":11102,"msg":"model service info not found"}')
+        assert isinstance(error, CodeBuddyError)
+        assert not isinstance(error, CodeBuddyChannelBlockedError)
+        assert "model service info not found" in str(error)
+
+    def test_non_json_preserves_raw_prefix(self):
+        from qb2api.providers.codebuddy import CodeBuddyError, parse_codebuddy_error
+
+        error = parse_codebuddy_error(500, "boom\nline")
+        assert isinstance(error, CodeBuddyError)
+        assert str(error) == "CodeBuddy 500: boom line"
+
+
 class TestCodeBuddyScrub:
     """CodeBuddy rejects Claude Code identity phrasing; scrub on outbound only."""
 

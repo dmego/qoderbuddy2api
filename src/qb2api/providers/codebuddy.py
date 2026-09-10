@@ -28,6 +28,42 @@ class CodeBuddyError(Exception):
         super().__init__(f"CodeBuddy {status_code}: {message}")
 
 
+class CodeBuddyChannelBlockedError(CodeBuddyError):
+    """Upstream risk control blocked the calling channel (code 11128).
+
+    Transient by design («Please retry»); retrying immediately only extends the
+    ban, so callers back off much longer than for a generic upstream error.
+    """
+
+
+_CHANNEL_BLOCKED_CODE = "11128"
+
+
+def parse_codebuddy_error(status_code: int, text: str) -> CodeBuddyError:
+    """Convert an upstream error body into a typed CodeBuddyError.
+
+    Code 11128 means the calling channel was flagged by upstream security
+    policy (request burst, tool-heavy payload, client fingerprint); surface a
+    clear message instead of the raw JSON.
+    """
+    clean = text.strip().replace("\n", " ")
+    try:
+        payload = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return CodeBuddyError(status_code, clean[:200])
+    if str(payload.get("code", "")) != _CHANNEL_BLOCKED_CODE:
+        return CodeBuddyError(status_code, clean[:200])
+    message = payload.get("msg") or clean
+    display = payload.get("displayMsg")
+    if isinstance(display, dict) and display.get("en"):
+        detail = f"{message}; {display['en']}"
+    else:
+        detail = message
+    return CodeBuddyChannelBlockedError(
+        status_code, f"{detail} — upstream security policy; back off and retry later"
+    )
+
+
 class CodeBuddyProvider(Provider):
     """CodeBuddy API provider.
 
@@ -103,7 +139,7 @@ class CodeBuddyProvider(Provider):
     async def _response_chunks(self, response: httpx.Response) -> AsyncIterator[bytes]:
         if response.status_code != 200:
             error = (await response.aread()).decode("utf-8", errors="replace")
-            raise CodeBuddyError(response.status_code, error[:200])
+            raise parse_codebuddy_error(response.status_code, error)
         async for line in response.aiter_lines():
             chunk, finished = _stream_chunk(line)
             if finished:

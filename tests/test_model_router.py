@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncIterator
 
 import pytest
@@ -194,8 +195,11 @@ async def test_failed_route_is_cooled_down_for_retries(monkeypatch):
     assert result2["id"] == "good"
     assert flaky.complete_calls == 1
 
-    # after cooldown expires, the route is retried
-    monkeypatch.setattr("qb2api.worker.model_router.time.monotonic", lambda: 1_000_000)
+    # after cooldown expires, the route is retried — advance both the router
+    # and the provider pool clocks past the 30s cooldowns
+    now = time.monotonic() + 1000
+    monkeypatch.setattr("qb2api.worker.model_router.time.monotonic", lambda: now)
+    monkeypatch.setattr("qb2api.providers.lb.time.monotonic", lambda: now)
     result3 = await router.complete(_req())
     assert result3["id"] in {"flaky", "good"}
     assert flaky.complete_calls == 2
