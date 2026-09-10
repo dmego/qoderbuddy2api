@@ -268,4 +268,42 @@ async def sync_codebuddy_models(
 
     report.added, report.updated, report.removed = _upsert_config(config_path, results)
     report.models = [{"model_id": r.model_id, "exists": r.exists, "reasoning": r.reasoning} for r in results]
+    await _upsert_catalog_rows(repository, report.models)
     return report
+
+
+async def _upsert_catalog_rows(
+    repository: AccountRepository | None,
+    report_models: list[dict[str, Any]],
+) -> None:
+    """把探测确认存在的模型写进启停 catalog（source=definition）。
+
+    Sync 只写 models.json 时，catalog 缺少新模型行会让后续 PATCH 启停无据可依，
+    且管理台启用状态视图与 /v1/models 目录不一致。
+    """
+    if repository is None:
+        return
+    rows = []
+    for item in report_models:
+        if not item.get("exists"):
+            continue
+        caps = ["chat", "streaming"]
+        if item.get("reasoning"):
+            caps.extend(("reasoning", "reasoning_effort"))
+        rows.append({
+            "model_id": item["model_id"],
+            "display_name": item["model_id"],
+            "capabilities": caps,
+        })
+    if not rows:
+        return
+    async with repository.transaction():
+        for row in rows:
+            await repository.upsert_model(
+                provider="codebuddy",
+                model_id=row["model_id"],
+                display_name=row["display_name"],
+                capabilities=row["capabilities"],
+                source="definition",
+                enabled=True,
+            )

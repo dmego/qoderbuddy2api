@@ -324,6 +324,7 @@ async def sync_upstream_models(provider: str, request: Request) -> dict[str, Any
             resource_id="catalog",
             metadata={"added": report.added, "updated": report.updated, "disabled": report.disabled},
         )
+        await _refresh_runtime(state)
         return {
             "status": "succeeded",
             "added": report.added,
@@ -356,6 +357,7 @@ async def sync_upstream_models(provider: str, request: Request) -> dict[str, Any
             resource_id="catalog",
             metadata={"added": report.added, "updated": report.updated, "removed": report.removed},
         )
+        await _refresh_runtime(state)
         return {
             "status": "succeeded",
             "added": report.added,
@@ -410,6 +412,8 @@ async def sync_all_models(request: Request) -> dict[str, Any]:
         totals["removed"] += report.removed
     except Exception as error:
         result["providers"]["codebuddy"] = {"status": "failed", "error": type(error).__name__}
+    if any(entry.get("status") == "succeeded" for entry in result["providers"].values()):
+        await _refresh_runtime(state)
     await _audit(
         request,
         action="model.sync",
