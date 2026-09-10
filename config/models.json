@@ -177,6 +177,16 @@
           "reasoning": true,
           "reasoning_effort": true
         }
+      },
+      {
+        "id": "deepseek-v4.1-flash",
+        "name": "DeepSeek V4.1 Flash",
+        "capabilities": {
+          "chat": true,
+          "streaming": true,
+          "reasoning": true,
+          "reasoning_effort": true
+        }
       }
     ]
   },
