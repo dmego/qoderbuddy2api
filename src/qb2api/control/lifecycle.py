@@ -68,6 +68,17 @@ async def _start_control(application: FastAPI) -> _ControlContext:
                 snapshot_service=snapshot_service,
             )
         )
+    if runtime.credential_refresh_scheduler is not None:
+        # A rotated credential only reaches the Worker through a snapshot
+        # reload, so publish it as soon as one moves.
+        runtime.credential_refresh_scheduler.set_refresh_callback(
+            partial(
+                _refresh_runtime,
+                runtime=runtime,
+                supervisor=supervisor,
+                snapshot_service=snapshot_service,
+            )
+        )
     if runtime.backup_service is not None:
         await runtime.backup_service.recover_interrupted()
     await _restore_supervisor(runtime=runtime, supervisor=supervisor)

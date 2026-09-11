@@ -114,6 +114,34 @@ class OrcaTermAuthClient:
             expires_in=_positive_int(data.get("ExpiresIn") or data.get("expiresIn")),
         )
 
+    async def refresh(self, access_token: str) -> OrcaTermAuthResult:
+        """Rotate an access token for a fresh one.
+
+        The console takes the current access token as the refresh credential —
+        there is no separate refresh token — and returns a new 2h token for the
+        same identity. The token must still be valid: once it expires the
+        console answers ``TOKEN_EXPIRED`` and the operator has to sign in again.
+        """
+        if not access_token:
+            return OrcaTermAuthResult(status="error", message="missing_access_token")
+        payload = await self._cgi("OAuthRefreshToken", {"accessToken": access_token})
+        response = payload.get("Response")
+        if isinstance(response, dict) and response.get("Error"):
+            error = response["Error"]
+            return OrcaTermAuthResult(
+                status="error",
+                message=str(error.get("Message") or error.get("Code") or "refresh_failed"),
+            )
+        data = response if isinstance(response, dict) else payload
+        token = data.get("AccessToken") or data.get("accessToken")
+        if not token:
+            return OrcaTermAuthResult(status="error", message="refresh_failed")
+        return OrcaTermAuthResult(
+            status="success",
+            access_token=str(token),
+            expires_in=_positive_int(data.get("ExpiresIn") or data.get("expiresIn")),
+        )
+
     async def _cgi(self, action: str, data: dict) -> dict:
         url = f"{self.endpoint}/cgi/api?{urlencode({'action': action})}"
         headers = {

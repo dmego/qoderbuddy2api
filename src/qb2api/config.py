@@ -178,6 +178,13 @@ def _observability_values() -> dict[str, object]:
         "model_config_path": os.getenv("QB2API_MODEL_CONFIG", "./config/models.json"),
         "model_sync_enabled": _env_bool("QB2API_MODEL_SYNC_ENABLED", True),
         "model_sync_interval_seconds": _env_int("QB2API_MODEL_SYNC_INTERVAL_SECONDS", 21600),
+        "credential_refresh_enabled": _env_bool("QB2API_CREDENTIAL_REFRESH_ENABLED", True),
+        "credential_refresh_interval_seconds": _env_int(
+            "QB2API_CREDENTIAL_REFRESH_INTERVAL_SECONDS", 900
+        ),
+        "credential_refresh_lead_seconds": _env_int(
+            "QB2API_CREDENTIAL_REFRESH_LEAD_SECONDS", 1800
+        ),
         "growth_auto_tasks": _env_bool("GROWTH_AUTO_TASKS", True),
         "growth_auto_lottery": _env_bool("GROWTH_AUTO_LOTTERY", True),
         "growth_auto_travel": _env_bool("GROWTH_AUTO_TRAVEL", True),
@@ -306,6 +313,12 @@ class Settings:
     model_config_path: str = "./config/models.json"
     model_sync_enabled: bool = True
     model_sync_interval_seconds: int = 21600  # qoder upstream catalog refresh (6h)
+    # Proactive rotation of short-lived credentials (OrcaTerm tokens last 2h).
+    # Scans every 15 min and rotates anything within the 30 min lead window, so
+    # a token is always replaced well before it expires.
+    credential_refresh_enabled: bool = True
+    credential_refresh_interval_seconds: int = 900
+    credential_refresh_lead_seconds: int = 1800
 
     # Growth automation (WorkBuddy 成长中心自动化)
     growth_auto_tasks: bool = True

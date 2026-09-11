@@ -72,6 +72,9 @@ mkdir -p data logs && chmod 700 data logs
 | `ORCATERM_TIMEOUT` | `300` | OrcaTerm 请求超时（秒） |
 | `QB2API_MODEL_SYNC_ENABLED` | `true` | Qoder 上游模型目录自动同步 |
 | `QB2API_MODEL_SYNC_INTERVAL_SECONDS` | `21600` | 同步间隔（秒） |
+| `QB2API_CREDENTIAL_REFRESH_ENABLED` | `true` | 短效凭据（OrcaTerm）主动轮换 |
+| `QB2API_CREDENTIAL_REFRESH_INTERVAL_SECONDS` | `900` | 轮换扫描间隔（秒） |
+| `QB2API_CREDENTIAL_REFRESH_LEAD_SECONDS` | `1800` | 提前多久轮换（秒） |
 | `CHECKIN_ENABLED` | `false` | 全局签到调度开关（也可在管理台设置） |
 | `CHECKIN_AT` / `CHECKIN_TIMEZONE` | `00:10` / `Asia/Shanghai` | 每日签到时间与时区 |
 | `GROWTH_AUTO_ACTIVE_DAY_RECHECKIN` | `true` | 活跃日未点亮时先补一次签到再走 ACP；已签到则跳过。按本地日期格子而非官方 `today` 判断，避免 UTC 日界线误判 |
@@ -115,7 +118,11 @@ OrcaTerm 是**独立提供商** `orcaterm`，与腾讯云 OrcaTerm 桌面版 AI 
   OrcaTerm 的 OAuth Token（桌面 App 数据目录
   `~/Library/Application Support/com.orcaterm-desktop.app/data.bin` 里的
   `oauth_access_token`），或用 `ORCATERM_TOKEN` 环境变量注入。
-  **Token 约 2 小时过期**，过期后重新登录/导入同一账号即可轮换（账号 ID 不变）。
+  **Token 约 2 小时过期**，但 Control Plane 会主动轮换：OrcaTerm 的
+  `OAuthRefreshToken` 用当前 access token 自身换新 token（没有独立的 refresh
+  token），因此只要在过期前刷新就能一直续下去，账号 ID 不变。调度器每 15 分钟扫描
+  一次，对 30 分钟内到期的凭据强制轮换并 reload Worker，无需人工干预。轮换失败
+  （token 已过期，上游返回 `TOKEN_EXPIRED`）才会退化为重新登录/导入。
 - **协议差异**：OrcaTerm 不是裸补全接口，而是 agent 接口——代理层会先注册会话
   （`/assistant/conversation`）再流式对话（`/assistant/chat`），并把 agent 返回的
   JSON（`taskCompletion` / `thinking`）拆成标准的 `content` 与 `reasoning_content`。
