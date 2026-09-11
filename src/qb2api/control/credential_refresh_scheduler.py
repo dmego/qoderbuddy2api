@@ -69,6 +69,27 @@ class CredentialRefreshScheduler:
         self._refresh_callback = refresh_callback
         self._task: asyncio.Task[None] | None = None
         self._stopped = asyncio.Event()
+        self._last_run_at: datetime | None = None
+        self._last_rotated = 0
+        self._last_error: str | None = None
+
+    def status_snapshot(self) -> dict[str, Any]:
+        """Expose the loop's liveness so an operator can tell it is running.
+
+        Nothing is observable about a rotation until a token nears expiry, so
+        without this the only signal that the timer works is that accounts stop
+        dying two hours after login.
+        """
+        return {
+            "enabled": bool(self._settings.credential_refresh_enabled),
+            "running": self._task is not None and not self._task.done(),
+            "interval_seconds": self.interval_seconds,
+            "lead_seconds": self.lead_seconds,
+            "providers": sorted(SHORT_LIVED_PROVIDERS),
+            "last_run_at": self._last_run_at.isoformat() if self._last_run_at else None,
+            "last_rotated": self._last_rotated,
+            "last_error": self._last_error,
+        }
 
     @property
     def interval_seconds(self) -> int:
@@ -110,8 +131,11 @@ class CredentialRefreshScheduler:
         while not self._stopped.is_set():
             try:
                 await self.refresh_once()
-            except Exception:
+                self._last_error = None
+            except Exception as error:
+                self._last_error = f"{type(error).__name__}: {error}"
                 logger.warning("credential refresh cycle failed", exc_info=True)
+            self._last_run_at = datetime.now(UTC)
             try:
                 await asyncio.wait_for(
                     self._stopped.wait(), timeout=max(1.0, float(self.interval_seconds))
@@ -154,6 +178,7 @@ class CredentialRefreshScheduler:
                 )
         if rotated and self._refresh_callback is not None:
             await self._refresh_callback()
+        self._last_rotated = rotated
         return rotated
 
     async def _due_credentials(self) -> list[dict[str, Any]]:

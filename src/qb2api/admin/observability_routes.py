@@ -203,6 +203,20 @@ async def metrics_status(request: Request) -> dict[str, Any]:
     return scheduler.status_snapshot()
 
 
+@router.get("/credentials/refresh/status")
+async def credential_refresh_status(request: Request) -> dict[str, Any]:
+    """Liveness of the short-lived credential rotation loop.
+
+    Rotation only fires once a token nears expiry, so this is the way to tell
+    the loop is actually running rather than waiting two hours to find out.
+    """
+    await require_admin(request)
+    scheduler = getattr(admin_state(request), "credential_refresh_scheduler", None)
+    if scheduler is None:
+        raise HTTPException(status_code=503, detail="credential_refresh_scheduler_unavailable")
+    return scheduler.status_snapshot()
+
+
 @router.get("/metrics/accounts/{provider}/{account_id}")
 async def account_metric_detail(
     provider: str,

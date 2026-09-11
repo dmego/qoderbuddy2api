@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -293,6 +294,63 @@ async def test_scheduler_start_is_noop_when_disabled():
     scheduler.start()
     assert scheduler._task is None
     await scheduler.stop()
+
+
+@pytest.mark.asyncio
+async def test_status_snapshot_reports_liveness_and_progress():
+    """Rotation is invisible until a token nears expiry; the snapshot is how an
+    operator can tell the loop actually runs instead of waiting two hours."""
+    soon = (datetime.now(UTC) + timedelta(minutes=5)).replace(microsecond=0).isoformat()
+    repo = _Repo(_metadata(soon))
+    scheduler = CredentialRefreshScheduler(
+        settings=Settings(), repo=repo, resolver=_resolver(version_after=2)
+    )
+
+    idle = scheduler.status_snapshot()
+    assert idle["enabled"] is True
+    assert idle["running"] is False  # never started in this test
+    assert idle["providers"] == ["orcaterm"]
+    assert idle["last_run_at"] is None
+
+    await scheduler.refresh_once()
+    after = scheduler.status_snapshot()
+    assert after["last_rotated"] == 1
+
+
+@pytest.mark.asyncio
+async def test_loop_records_last_run_and_survives_failure():
+    """A failing cycle must not kill the timer or hide the error."""
+    repo = _Repo(_metadata((datetime.now(UTC) + timedelta(minutes=5)).isoformat()))
+    scheduler = CredentialRefreshScheduler(
+        settings=Settings(credential_refresh_interval_seconds=60),
+        repo=repo,
+        resolver=_resolver(version_after=2),
+    )
+
+    async def boom():
+        raise RuntimeError("scan exploded")
+
+    scheduler.refresh_once = boom  # type: ignore[method-assign]
+    scheduler.start()
+    try:
+        for _ in range(50):
+            if scheduler.status_snapshot()["last_run_at"] is not None:
+                break
+            await asyncio.sleep(0.02)
+        status = scheduler.status_snapshot()
+        assert status["running"] is True
+        assert status["last_run_at"] is not None
+        assert "scan exploded" in (status["last_error"] or "")
+    finally:
+        await scheduler.stop()
+
+
+@pytest.mark.asyncio
+async def test_status_snapshot_reflects_disabled_configuration():
+    scheduler = CredentialRefreshScheduler(
+        settings=Settings(credential_refresh_enabled=False), repo=_Repo(), resolver=_resolver(2)
+    )
+    assert scheduler.status_snapshot()["enabled"] is False
 
 
 @pytest.mark.asyncio
