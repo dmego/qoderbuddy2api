@@ -130,6 +130,7 @@ class BearerRefreshExecutor:
         except Exception as error:
             logger.warning("credential refresh persist failed: %s", type(error).__name__)
             return None
+        await self._sync_purpose_expiry(provider, account_id, purpose, expires_at)
         return Credential(
             provider=provider,
             account_id=account_id,
@@ -140,6 +141,47 @@ class BearerRefreshExecutor:
             expires_at=expires_at,
             has_refresh_token=bool(payload.get("refresh_token")),
         )
+
+    async def _sync_purpose_expiry(
+        self,
+        provider: str,
+        account_id: str,
+        purpose: str,
+        expires_at: str | None,
+    ) -> None:
+        """Mirror the new deadline onto the account purpose row.
+
+        The admin account view reads ``account_purposes.expires_at``, so a
+        rotation that only touched the credential row would keep advertising the
+        old deadline and make a healthy account look about to lapse. Failure
+        here is cosmetic — the credential itself is already stored — so it must
+        never turn a successful rotation into an error.
+        """
+        try:
+            purposes = await self._repo.list_purposes(provider, account_id)
+        except Exception:
+            logger.warning("purpose lookup failed for %s/%s", provider, account_id)
+            return
+        current = next((item for item in purposes if item.get("purpose") == purpose), None)
+        if current is None:
+            return
+        try:
+            await self._repo.upsert_purpose(
+                provider=provider,
+                account_id=account_id,
+                purpose=purpose,
+                enabled=bool(current.get("enabled")),
+                status=current.get("status") or "active",
+                verification_status=current.get("verification_status") or "not_required",
+                capabilities=current.get("capabilities"),
+                verified_at=current.get("verified_at"),
+                expires_at=expires_at,
+                last_success_at=current.get("last_success_at"),
+                failure_count=current.get("failure_count", 0),
+                last_error=current.get("last_error"),
+            )
+        except Exception:
+            logger.warning("purpose expiry sync failed for %s/%s/%s", provider, account_id, purpose)
 
 
 def _expires_at(expires_in: int | None) -> str | None:

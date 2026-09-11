@@ -25,9 +25,19 @@ class _Result:
 class _Repo:
     """Captures the upsert and replays the stored credential."""
 
-    def __init__(self, metadata: list[dict] | None = None) -> None:
+    def __init__(self, metadata: list[dict] | None = None, purposes: list[dict] | None = None) -> None:
         self.upserts: list[dict] = []
+        self.purpose_upserts: list[dict] = []
         self._metadata = metadata or []
+        self._purposes = purposes if purposes is not None else [
+            {
+                "purpose": "chat",
+                "enabled": True,
+                "status": "active",
+                "verification_status": "not_required",
+                "capabilities": ["proxy.chat"],
+            }
+        ]
 
     async def upsert_credential(self, **kwargs):
         self.upserts.append(kwargs)
@@ -35,6 +45,12 @@ class _Repo:
 
     async def list_credential_metadata(self, provider: str | None = None):
         return [row for row in self._metadata if provider is None or row["provider"] == provider]
+
+    async def list_purposes(self, provider: str, account_id: str):
+        return list(self._purposes)
+
+    async def upsert_purpose(self, **kwargs):
+        self.purpose_upserts.append(kwargs)
 
 
 class _Vault:
@@ -91,6 +107,61 @@ async def test_orcaterm_refresh_persists_rotated_token():
     # No separate refresh token exists; the flag must stay false rather than
     # claiming one that the console never issued.
     assert repo.upserts[0]["has_refresh_token"] is False
+
+
+@pytest.mark.asyncio
+async def test_orcaterm_refresh_mirrors_new_deadline_onto_the_purpose_row():
+    """The admin view reads account_purposes, so a rotation must update it.
+
+    Otherwise the account keeps advertising the old deadline and looks like it
+    is about to lapse right after being renewed.
+    """
+    repo = _Repo()
+    executor = BearerRefreshExecutor(
+        repository=repo, vault=_Vault(), intl_client=None, orcaterm_client=_OrcaClient()
+    )
+
+    await executor(_orcaterm_credential())
+
+    assert len(repo.purpose_upserts) == 1
+    mirrored = repo.purpose_upserts[0]
+    assert mirrored["purpose"] == "chat"
+    assert mirrored["expires_at"] == repo.upserts[0]["expires_at"]
+    # Rotating a credential must not silently flip an enabled account off.
+    assert mirrored["enabled"] is True
+    assert mirrored["status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_refresh_survives_purpose_sync_failure():
+    """A cosmetic bookkeeping failure must not discard a good rotation."""
+    repo = _Repo()
+
+    async def boom(**kwargs):
+        raise RuntimeError("purpose write failed")
+
+    repo.upsert_purpose = boom
+    executor = BearerRefreshExecutor(
+        repository=repo, vault=_Vault(), intl_client=None, orcaterm_client=_OrcaClient()
+    )
+
+    rotated = await executor(_orcaterm_credential())
+
+    assert rotated is not None
+    assert rotated.credential_version == 2
+
+
+@pytest.mark.asyncio
+async def test_refresh_skips_purpose_sync_when_purpose_is_absent():
+    repo = _Repo(purposes=[])
+    executor = BearerRefreshExecutor(
+        repository=repo, vault=_Vault(), intl_client=None, orcaterm_client=_OrcaClient()
+    )
+
+    rotated = await executor(_orcaterm_credential())
+
+    assert rotated is not None
+    assert repo.purpose_upserts == []
 
 
 @pytest.mark.asyncio
