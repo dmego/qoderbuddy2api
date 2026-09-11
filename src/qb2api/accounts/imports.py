@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from qb2api.admin.import_support import intl_identity
+
 from .promote import new_account_slug
 from .repository import AccountRepository
 from .vault import CredentialVault
@@ -42,7 +44,17 @@ async def persist_workbuddy_intl_account(
     expires_at: str | None = None,
     account_id: str | None = None,
 ) -> str:
-    """Persist an international WorkBuddy account (chat-only, no check-in)."""
+    """Persist an international WorkBuddy account (chat-only, no check-in).
+
+    Keycloak ``sub`` identifies the upstream user across logins, so a login
+    that matches an existing account refreshes that account instead of
+    creating a duplicate slot — unless the operator pinned an account_id.
+    """
+    identity = intl_identity(access_token)
+    if account_id is None and identity[0]:
+        existing = await _find_intl_by_sub(repo, vault, identity[0])
+        if existing is not None:
+            account_id = existing
     return await _persist_bearer_account(
         repo,
         vault,
@@ -53,7 +65,16 @@ async def persist_workbuddy_intl_account(
         refresh_token=refresh_token,
         expires_at=expires_at,
         account_id=account_id,
+        identity_hash=vault.fingerprint(identity[0]) if identity[0] else None,
     )
+
+
+async def _find_intl_by_sub(repo: AccountRepository, vault: CredentialVault, sub: str) -> str | None:
+    wanted = vault.fingerprint(sub)
+    for row in await repo.list_accounts("workbuddy_intl"):
+        if row.get("identity_hash") == wanted:
+            return row["account_id"]
+    return None
 
 
 async def _persist_bearer_account(
@@ -67,6 +88,7 @@ async def _persist_bearer_account(
     refresh_token: str | None,
     expires_at: str | None,
     account_id: str | None,
+    identity_hash: str | None = None,
 ) -> str:
     """Upsert one bearer-token account plus its chat credential atomically."""
     account = await _existing_account(repo, provider, account_id)
@@ -85,7 +107,7 @@ async def _persist_bearer_account(
             source=source,
             enabled=True,
             masked_identity=_mask(access_token),
-            identity_hash=(account or {}).get("identity_hash"),
+            identity_hash=identity_hash or (account or {}).get("identity_hash"),
         )
         await _write_chat_purpose(
             repo, provider=provider, account_id=durable_id, expires_at=expires_at

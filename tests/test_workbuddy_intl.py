@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import base64
+import json
+
 import httpx
 import pytest
+from fastapi import HTTPException
 
+from qb2api.admin.import_support import intl_identity
+from qb2api.admin.validation import label
+from qb2api.admin.workbuddy_intl_routes import _identity_or
 from qb2api.auth.workbuddy_intl import (
     PENDING_CODE,
     WorkBuddyIntlAuthClient,
@@ -224,3 +231,52 @@ class TestIntlCreditsShape:
     def test_error_payload_yields_no_snapshot(self):
         assert normalize_credits({"code": 10001, "msg": "nope"}) == {}
         assert normalize_credits(None) == {}
+def _jwt(payload: dict) -> str:
+    def enc(part: bytes) -> str:
+        return base64.urlsafe_b64encode(part).decode().rstrip("=")
+
+    return f"{enc(b'{}')}.{enc(json.dumps(payload).encode())}.sig"
+
+
+class TestEmailLabels:
+    def test_email_labels_are_accepted(self):
+        assert label("muwnew@gmail.com", default="x") == "muwnew@gmail.com"
+        assert label("foo+bar@x.cn", default="x") == "foo+bar@x.cn"
+
+    def test_overlong_labels_are_rejected(self):
+        with pytest.raises(HTTPException):
+            label("a" * 65, default="x")
+
+
+class TestIntlIdentity:
+    def test_sub_and_prefers_email_then_handle_then_name(self):
+        token = _jwt({"sub": "user-1", "email": "a@b.co", "preferred_username": "ab", "name": "A B"})
+        assert intl_identity(token) == ("user-1", "a@b.co")
+
+    def test_falls_back_to_handle_and_name(self):
+        assert intl_identity(_jwt({"sub": "u", "preferred_username": "ab", "name": "A B"})) == ("u", "ab")
+        assert intl_identity(_jwt({"sub": "u", "name": "A B"})) == ("u", "A B")
+
+    def test_opaque_or_broken_tokens_yield_nones(self):
+        assert intl_identity("plain-opaque-token") == (None, None)
+        assert intl_identity("a.b.c") == (None, None)
+        assert intl_identity("") == (None, None)
+
+    def test_invalid_claim_values_are_skipped(self):
+        assert intl_identity(_jwt({"sub": "u", "email": "x" * 80, "name": "A B"})) == ("u", "A B")
+        assert intl_identity(_jwt({"sub": "u", "email": 123, "name": "A B"})) == ("u", "A B")
+        assert intl_identity(_jwt({"email": "a@b.co"})) == (None, "a@b.co")
+
+
+class TestIdentityOrDefault:
+    def test_generic_label_becomes_token_identity(self):
+        token = _jwt({"email": "muwnew@gmail.com"})
+        assert _identity_or("WorkBuddy 国际版 OAuth", token) == "muwnew@gmail.com"
+        assert _identity_or("workbuddy-intl", token) == "muwnew@gmail.com"
+
+    def test_custom_label_is_kept(self):
+        assert _identity_or("主账号", _jwt({"email": "muwnew@gmail.com"})) == "主账号"
+
+    def test_generic_label_without_identity_is_kept(self):
+        assert _identity_or("WorkBuddy 国际版 OAuth", "opaque") == "WorkBuddy 国际版 OAuth"
+        assert _identity_or("workbuddy-intl", None) == "workbuddy-intl"

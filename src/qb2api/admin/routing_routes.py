@@ -128,6 +128,8 @@ async def set_routing(model_id: str, request: Request) -> dict[str, Any]:
     body = await json_object(request)
     routes = body.get("routes")
     models = dict(await _catalog_models(state))
+    accounts = await _accounts_by_provider(state)
+    blocks = await _block_index(state)
     entry = models.get(model_id)
     if entry is None:
         raise HTTPException(status_code=404, detail="model_not_found")
@@ -155,7 +157,11 @@ async def set_routing(model_id: str, request: Request) -> dict[str, Any]:
         "status": "ok",
         "model_id": model_id,
         "routes": [
-            _route_view(policy, entry["capabilities"])
+            _route_view(
+                policy,
+                entry["capabilities"],
+                {"accounts": accounts, "blocks": blocks, "model_id": model_id},
+            )
             for policy in _effective_policies(model_id, providers, {model_id: policies})
         ],
     }

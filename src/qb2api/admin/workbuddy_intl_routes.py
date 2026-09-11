@@ -14,6 +14,7 @@ from qb2api.auth.flows import FlowBusyError
 from qb2api.auth.workbuddy_intl import WorkBuddyIntlAuthError
 
 from .dependencies import admin_state, require_admin
+from .import_support import intl_identity
 from .mutation_audit import refresh_after_mutation
 from .validation import json_object, label, optional_account_id, required_string
 from .views import account_view_dict, find_account_view
@@ -21,6 +22,18 @@ from .views import account_view_dict, find_account_view
 logger = logging.getLogger("qb2api.admin.workbuddy_intl")
 
 router = APIRouter()
+
+
+# Labels that mean "the operator did not pick a name"; replace them with the
+# identity carried in the token (email/name) so accounts stay recognizable.
+_GENERIC_LABELS = frozenset({"workbuddy-intl", "WorkBuddy 国际版 OAuth"})
+
+
+def _identity_or(selected: str, access_token: str | None) -> str:
+    if selected not in _GENERIC_LABELS:
+        return selected
+    return (intl_identity(access_token or "")[1]) or selected
+
 
 PROVIDER = "workbuddy_intl"
 
@@ -97,10 +110,11 @@ async def workbuddy_intl_manual(request: Request) -> dict[str, Any]:
     refresh_token = _optional_string(body.get("refresh_token"))
     account_id = optional_account_id(body.get("account_id"))
     await _require_intl_account(state, account_id)
+    selected = label(body.get("label"), default="workbuddy-intl")
     account_id = await persist_workbuddy_intl_account(
         state.account_repo,
         state.credential_vault,
-        label=label(body.get("label"), default="workbuddy-intl"),
+        label=_identity_or(selected, access_token),
         source="manual",
         access_token=access_token,
         refresh_token=refresh_token,
@@ -148,7 +162,7 @@ async def _persist_result(state: Any, record: Any, result: Any) -> str:
     account_id = await persist_workbuddy_intl_account(
         state.account_repo,
         state.credential_vault,
-        label=record.label,
+        label=_identity_or(record.label, result.access_token),
         source="oauth",
         access_token=result.access_token,
         refresh_token=result.refresh_token,

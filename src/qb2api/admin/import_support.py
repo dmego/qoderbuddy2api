@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
 from typing import Any
 
@@ -14,7 +16,7 @@ from qb2api.checkin.qoder_status import is_usable_checkin_result
 from qb2api.config import Settings
 from qb2api.providers.qoder_auth import QoderSession
 
-from .validation import label
+from .validation import LABEL_RE, label
 
 logger = logging.getLogger("qb2api.admin.import_support")
 
@@ -43,6 +45,34 @@ async def codebuddy_label(state: Any, account_id: str | None, value: Any) -> str
     accounts = await state.account_repo.list_accounts("codebuddy")
     account = next(item for item in accounts if item["account_id"] == account_id)
     return label(value, default=account["label"])
+
+
+def intl_identity(token: str) -> tuple[str | None, str | None]:
+    """Best-effort identity from a WorkBuddy intl Keycloak JWT.
+
+    Returns ``(sub, label)``. ``sub`` is the stable upstream user id used to
+    deduplicate logins; ``label`` is the first usable display identity
+    (email, then login handle, then name) or None. Opaque or broken tokens
+    yield ``(None, None)`` so callers keep their defaults.
+    """
+    try:
+        encoded = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+    except (IndexError, TypeError, ValueError):
+        return None, None
+    if not isinstance(claims, dict):
+        return None, None
+    sub = claims.get("sub")
+    label = None
+    for claim in ("email", "preferred_username", "name"):
+        value = claims.get(claim)
+        if isinstance(value, str):
+            candidate = value.strip()
+            if candidate and LABEL_RE.fullmatch(candidate) and len(candidate) <= 64:
+                label = candidate
+                break
+    sub_text = sub.strip() if isinstance(sub, str) else None
+    return sub_text or None, label
 
 
 def workbuddy_input(body: dict[str, Any]) -> tuple[str, str | None, str | None]:

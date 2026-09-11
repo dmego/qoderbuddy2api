@@ -187,6 +187,32 @@ async def test_routing_exposes_accounts_and_block_state(management_context) -> N
 
 
 @pytest.mark.asyncio
+async def test_routing_save_returns_the_new_policy(management_context) -> None:
+    """PUT /routing/{model_id} must persist and echo the saved policy."""
+    app, repository, refreshes = management_context
+    await _seed_chat_account(repository, provider="codebuddy", account_id="cb-1")
+    await app.state.account_registry.rebuild()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://test"
+    ) as client:
+        response = await client.put(
+            "/api/admin/routing/glm-5.2",
+            headers=_headers(),
+            json={"routes": [{"provider": "codebuddy", "priority": 2, "weight": 3, "enabled": True}]},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok" and payload["model_id"] == "glm-5.2"
+    route = payload["routes"][0]
+    assert route["priority"] == 2 and route["weight"] == 3
+    assert [account["account_id"] for account in route["accounts"]] == ["cb-1"]
+    stored = await repository.list_route_policies("glm-5.2")
+    assert stored[0]["priority"] == 2 and stored[0]["weight"] == 3
+    assert refreshes  # the worker must be told about the change
+
+
+@pytest.mark.asyncio
 async def test_routing_account_block_endpoint_blocks_and_unblocks(management_context) -> None:
     app, repository, refreshes = management_context
 
