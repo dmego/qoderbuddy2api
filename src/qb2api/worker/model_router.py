@@ -1,4 +1,11 @@
-"""Per-model cross-provider routing: round-robin, cooldown, pre-commit failover."""
+"""Per-model cross-provider routing: weighted priority tiers with failover.
+
+Route order for one unified model id comes from the administrator's policy
+(``priority`` tiers, ``weight`` inside a tier, per-route ``enabled``), falling
+back to plain round-robin when no policy exists. Failover behaviour is
+unchanged: a route is skipped while cooling down or when its pool is empty, and
+once the first downstream chunk is committed the error propagates.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +18,7 @@ from typing import Any
 from ..openai import ChatCompletionRequest
 from ..providers.base import Provider
 from ..providers.lb import DynamicProviderPool, ProviderUnavailableError
+from ..route_policy import RoutePolicy, RouteScheduler
 
 logger = logging.getLogger("qb2api.worker.router")
 
@@ -25,28 +33,30 @@ class _Route:
 
 
 class ModelRouter(Provider):
-    """Route one unified model id across provider pools.
-
-    - Round-robin start per model, advancing only after success.
-    - A route is skipped while cooling down (30s) or when its provider pool
-      has no available slots.
-    - Failover happens only before the first downstream chunk; once
-      ``request.telemetry["stream_committed"]`` is true the error propagates.
-    - The upstream model id is rewritten per route and restored afterwards.
-    """
+    """Route one unified model id across provider pools."""
 
     name = "model-router"
 
-    def __init__(self, registry: Any, catalog: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        registry: Any,
+        catalog: dict[str, Any],
+        policies: dict[str, tuple[RoutePolicy, ...]] | None = None,
+    ) -> None:
         self._routes: dict[str, tuple[_Route, ...]] = {}
+        self._schedulers: dict[str, RouteScheduler] = {}
         for model in catalog.values():
             routes = []
             for route in model.routes:
                 pool = registry.get(route.provider)
                 if pool is not None:
                     routes.append(_Route(route.provider, pool, route.upstream_id))
-            if routes:
-                self._routes[model.id] = tuple(routes)
+            if not routes:
+                continue
+            self._routes[model.id] = tuple(routes)
+            self._schedulers[model.id] = RouteScheduler(
+                _model_policies(model.id, routes, policies or {})
+            )
         self._catalog = catalog
         self._cursor: dict[str, int] = {}
         self._cooldown_until: dict[tuple[str, str], float] = {}
@@ -70,11 +80,21 @@ class ModelRouter(Provider):
         return time.monotonic() >= self._cooldown_until.get((model_id, route.provider), 0.0)
 
     def _ordered_routes(self, model_id: str, routes: tuple[_Route, ...]) -> tuple[_Route, ...]:
-        start = self._cursor.get(model_id, 0) % len(routes)
-        return routes[start:] + routes[:start]
+        scheduler = self._schedulers.get(model_id)
+        if scheduler is None:
+            return self._rotate(model_id, routes)
+        providers = tuple(route.provider for route in routes)
+        ranked = scheduler.order(providers)
+        by_provider = {route.provider: route for route in routes}
+        ordered = tuple(by_provider[name] for name in ranked if name in by_provider)
+        if ordered:
+            return ordered
+        return self._rotate(model_id, routes)
 
-    def _advance(self, model_id: str, routes: tuple[_Route, ...]) -> None:
-        self._cursor[model_id] = (self._cursor.get(model_id, 0) + 1) % len(routes)
+    def _rotate(self, model_id: str, routes: tuple[_Route, ...]) -> tuple[_Route, ...]:
+        start = self._cursor.get(model_id, 0) % len(routes)
+        self._cursor[model_id] = (start + 1) % len(routes)
+        return routes[start:] + routes[:start]
 
     def _mark_failed(self, model_id: str, route: _Route) -> None:
         self._cooldown_until[(model_id, route.provider)] = time.monotonic() + _COOLDOWN_S
@@ -90,7 +110,6 @@ class ModelRouter(Provider):
                 continue
             try:
                 result = await self._complete_route(request, route)
-                self._advance(model, routes)
                 return result
             except Exception as error:
                 self._mark_failed(model, route)
@@ -112,7 +131,6 @@ class ModelRouter(Provider):
             try:
                 async for chunk in self._stream_route(request, route):
                     yield chunk
-                self._advance(model, routes)
                 return
             except Exception as error:
                 if request.telemetry["stream_committed"]:
@@ -149,3 +167,19 @@ class ModelRouter(Provider):
 
     async def close(self) -> None:
         """Pools are owned by the runtime; nothing to close here."""
+
+
+def _model_policies(
+    model_id: str,
+    routes: tuple[_Route, ...],
+    policies: dict[str, tuple[RoutePolicy, ...]],
+) -> dict[str, RoutePolicy]:
+    """Policies for one model, defaulting to a single equal-weight tier."""
+    providers = tuple(route.provider for route in routes)
+    stored = policies.get(model_id) or ()
+    known = {policy.provider for policy in stored}
+    selected = {policy.provider: policy for policy in stored if policy.provider in providers}
+    for provider in providers:
+        if provider not in known:
+            selected[provider] = RoutePolicy(provider=provider)
+    return selected

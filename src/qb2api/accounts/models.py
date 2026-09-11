@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-ProviderName = Literal["codebuddy", "qoder"]
+ProviderName = Literal["codebuddy", "qoder", "workbuddy_intl"]
 PurposeName = Literal["chat", "checkin"]
 AccountSource = Literal["oauth", "manual", "env", "import"]
 

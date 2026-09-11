@@ -17,6 +17,7 @@ import {
   Settings,
   Sprout,
   UsersRound,
+  Waypoints,
   LogOut,
   X,
 } from "@lucide/vue";
@@ -49,6 +50,7 @@ const navigationGroups = [
     items: [
       { to: "/proxy-keys", label: "代理密钥", icon: KeyRound },
       { to: "/models", label: "模型", icon: Boxes },
+      { to: "/routing", label: "路由策略", icon: Waypoints },
       { to: "/usage", label: "用量", icon: ChartNoAxesCombined },
     ],
   },

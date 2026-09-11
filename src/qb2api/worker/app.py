@@ -12,6 +12,7 @@ import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -142,6 +143,7 @@ def _emit(
         return
     chat_request = context.get("chat_request")
     usage = chat_request.telemetry if chat_request is not None else {}
+    stream_error = chat_request.stream_error if chat_request is not None else None
     now = datetime.now(UTC).replace(microsecond=0).isoformat()
     telemetry.emit(
         {
@@ -151,19 +153,26 @@ def _emit(
             "account_id": usage.get("account_id"),
             "model_id": context.get("model_id"),
             "protocol": context.get("protocol"),
-            "status": "succeeded" if error is None and status_code < 400 else "failed",
+            "status": _outcome(status_code, error, stream_error),
             "http_status": status_code,
             "input_tokens": usage.get("input_tokens"),
             "output_tokens": usage.get("output_tokens"),
             "latency_ms": int((time.monotonic() - started) * 1000),
             "stream_committed": usage.get("stream_committed", False),
-            "reasoning_effort": (usage.get("reasoning_effort")
-                or getattr(chat_request, "reasoning_effort", None)),
+            "reasoning_effort": usage.get("reasoning_effort")
+            or getattr(chat_request, "reasoning_effort", None),
             "started_at": now,
             "finished_at": now,
-            "error_code": type(error).__name__ if error else None,
+            "error_code": type(error).__name__ if error else stream_error,
         }
     )
+
+
+def _outcome(status_code: int, error: Exception | None, stream_error: str | None) -> str:
+    """Streaming errors arrive as HTTP 200 with an SSE error body, so the
+    recorded stream error also counts as a failure."""
+    failed = error is not None or status_code >= 400 or stream_error is not None
+    return "failed" if failed else "succeeded"
 
 
 def _install_internal_routes(application: FastAPI) -> None:
@@ -202,6 +211,25 @@ def _install_internal_routes(application: FastAPI) -> None:
             "owner_instance_id": os.getenv("QB2API_WORKER_OWNER_INSTANCE_ID", "unknown"),
             "internal_auth_version": os.getenv("QB2API_WORKER_INTERNAL_AUTH_VERSION", "0"),
         }
+
+    @application.get("/internal/quota-blocks", include_in_schema=False)
+    async def worker_quota_blocks() -> dict[str, list[dict[str, str]]]:
+        runtime = getattr(application.state, "runtime", None)
+        blocks: list[dict[str, str]] = []
+        for pool in _provider_pools(runtime):
+            getter = getattr(pool, "quota_blocks", None)
+            if callable(getter):
+                blocks.extend(getter())
+        return {"blocks": blocks}
+
+
+def _provider_pools(runtime: Any) -> tuple[Any, ...]:
+    """Every provider pool that can carry a per-model quota block."""
+    if runtime is None:
+        return ()
+    names = ("codebuddy_pool", "qoder_pool", "workbuddy_intl_pool")
+    return tuple(pool for pool in (getattr(runtime, name, None) for name in names) if pool is not None)
+
 
 
 def _install_proxy_routes(application: FastAPI) -> None:

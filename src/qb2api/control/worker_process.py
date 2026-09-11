@@ -38,6 +38,7 @@ def worker_environment(settings: Settings, owner: str, auth_version: int) -> dic
         "QB2API_PROXY_API_KEY": "",
         "CODEBUDDY_TOKEN": "",
         "QODER_TOKEN": "",
+        "WORKBUDDY_INTL_TOKEN": "",
     }
     if settings.worker_internal_token:
         environment["QB2API_WORKER_INTERNAL_TOKEN"] = settings.worker_internal_token

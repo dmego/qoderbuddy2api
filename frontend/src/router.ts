@@ -14,6 +14,7 @@ const AddAccountPage = () => import("@/pages/AddAccountPage.vue");
 const AccountDetailPage = () => import("@/pages/AccountDetailPage.vue");
 const CredentialsPage = () => import("@/pages/CredentialsPage.vue");
 const ModelsPage = () => import("@/pages/ModelsPage.vue");
+const RoutingPage = () => import("@/pages/RoutingPage.vue");
 const UsagePage = () => import("@/pages/UsagePage.vue");
 const CheckinPage = () => import("@/pages/CheckinPage.vue");
 const GrowthPage = () => import("@/pages/GrowthPage.vue");
@@ -39,6 +40,7 @@ export const router = createRouter({
         { path: "credentials", name: "credentials", component: CredentialsPage },
         { path: "proxy-keys", name: "proxy-keys", component: ProxyKeysPage },
         { path: "models", name: "models", component: ModelsPage },
+        { path: "routing", name: "routing", component: RoutingPage },
         { path: "usage", name: "usage", component: UsagePage },
         { path: "checkin", name: "checkin", component: CheckinPage },
         { path: "growth", name: "growth", component: GrowthPage },

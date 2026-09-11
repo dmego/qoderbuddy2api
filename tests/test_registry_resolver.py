@@ -177,15 +177,15 @@ async def test_resolver_skew_triggers_refresh_single_flight(repo, vault):
     gate = asyncio.Event()
     started = asyncio.Event()
 
-    async def refresh_cb(provider, account_id, purpose, current: Credential):
+    async def refresh_cb(current: Credential):
         calls.append(current.payload["access_token"])
         started.set()
         await gate.wait()
         new_exp = (datetime.now(UTC) + timedelta(hours=1)).replace(microsecond=0)
         return Credential(
-            provider=provider,
-            account_id=account_id,
-            purpose=purpose,
+            provider=current.provider,
+            account_id=current.account_id,
+            purpose=current.purpose,
             mode=current.mode,
             payload={
                 "access_token": "new-access",

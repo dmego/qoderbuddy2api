@@ -33,8 +33,17 @@
 ## Features
 
 - **Unified model gateway** — one base URL (`/v1`) serves OpenAI and Anthropic
-  compatible clients; requests are routed across CodeBuddy and Qoder account
-  pools with failover before the first output token.
+  compatible clients; requests are routed across CodeBuddy, WorkBuddy
+  International and Qoder account pools with failover before the first output
+  token.
+- **WorkBuddy International** — a dedicated `workbuddy_intl` provider
+  (www.workbuddy.ai) with browser plugin-OAuth login, manual bearer import and
+  credit monitoring. Its free tier covers exactly three models —
+  `hy4-preview`, `hy3` and `deepseek-v4.1-flash` — and it has no check-in or
+  growth centre.
+- **Per-model routing weights** — give each provider a priority and weight per
+  unified model, so e.g. `deepseek-v4.1-flash` prefers the free international
+  accounts and only falls back to the domestic pool.
 - **Encrypted account pool** — durable accounts, purpose-scoped credentials
   (chat / check-in), versioned rotation, and an admin console to import,
   verify, and promote accounts.

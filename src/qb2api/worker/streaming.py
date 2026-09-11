@@ -43,12 +43,15 @@ async def openai_stream(
             yield _filter_reasoning(raw, keep=keep)
     except ProviderUnavailableError as exc:
         success, error = False, str(exc)
+        request.record_stream_error(type(exc).__name__)
         yield _openai_error(error, "provider_unavailable")
     except (CodeBuddyError, QoderError) as exc:
         success, error = False, str(exc)
+        request.record_stream_error(type(exc).__name__)
         yield _openai_error(error, "upstream_error")
     except Exception as exc:
         success, error = False, str(exc)
+        request.record_stream_error(type(exc).__name__)
         yield _openai_error(error, "stream_error")
     finally:
         _log(
@@ -76,6 +79,7 @@ async def anthropic_stream(
             yield event
     except Exception as exc:
         success, error = False, str(exc)
+        request.record_stream_error(type(exc).__name__)
         yield anthropic_error_sse(error)
     finally:
         _log(

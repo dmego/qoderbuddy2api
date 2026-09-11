@@ -9,7 +9,7 @@ export type AccountReference = { provider: string; account_id: string; label: st
 
 type Flow = { flow_id: string; auth_url: string; expires_at: string; label: string; account_id?: string | null };
 type ImportResult = { account?: AccountReference; checkin_derived?: boolean; checkin_verified?: boolean };
-type Provider = "codebuddy" | "qoder";
+export type Provider = "codebuddy" | "qoder" | "workbuddy_intl";
 
 const props = withDefaults(defineProps<{
   provider?: Provider;
@@ -17,8 +17,8 @@ const props = withDefaults(defineProps<{
   label?: string;
 }>(), { provider: "codebuddy", accountId: "", label: "" });
 const emit = defineEmits<{ saved: [account: AccountReference] }>();
-const flowKey = "qb2api.codebuddy.oauth.flow";
 const provider = ref<Provider>(props.provider);
+const flowKey = computed(() => provider.value === "workbuddy_intl" ? "qb2api.workbuddy-intl.oauth.flow" : "qb2api.codebuddy.oauth.flow");
 const pending = ref(false);
 const polling = ref(false);
 const message = ref("");
@@ -35,6 +35,7 @@ const form = reactive({
   cookie: "",
   checkinMode: "bearer",
 });
+const hasCheckin = computed(() => provider.value === "codebuddy" || provider.value === "qoder");
 
 const requiresAccountId = computed(() => Boolean(props.accountId));
 const chatTokenLabel = computed(() => provider.value === "qoder" ? "Personal Access Token (PAT)" : "Bearer Token");
@@ -48,8 +49,13 @@ const canSubmitCheckin = computed(() => {
 });
 
 function selectProvider(value: Provider): void {
+  // 每个提供方有独立的流程存储键：切换时停止当前轮询并加载目标提供方自己的流程，
+  // 原提供方的 sessionStorage 记录保留，切回后仍可继续。
   provider.value = value;
   manualCheckinOpen.value = false;
+  confirmCheckinVerification.value = false;
+  window.clearTimeout(pollTimer);
+  flow.value = loadFlow();
 }
 
 async function submitChat(): Promise<void> {
@@ -60,12 +66,15 @@ async function submitChat(): Promise<void> {
     const body: Record<string, string | undefined> = { label: form.label || undefined, account_id: form.accountId || undefined };
     if (provider.value === "qoder") body.pat = form.token;
     else body.token = form.token;
+    if (provider.value === "workbuddy_intl" && form.refreshToken.trim()) body.refresh_token = form.refreshToken.trim();
     const result = await apiRequest<ImportResult>(chatEndpoint(), {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
     if (result.account) form.accountId = result.account.account_id;
     clearSecrets();
-    if (result.checkin_derived || result.checkin_verified) {
+    if (provider.value === "workbuddy_intl") {
+      setMessage("账号已保存，代理凭据已启用（国际版仅支持对话，无签到）。", false);
+    } else if (result.checkin_derived || result.checkin_verified) {
       setMessage("账号已保存，代理与签到均已自动启用。", false);
     } else {
       manualCheckinOpen.value = true;
@@ -113,7 +122,9 @@ async function doSubmitCheckin(): Promise<void> {
 }
 
 function chatEndpoint(): string {
-  return provider.value === "qoder" ? "/auth/qoder/chat" : "/auth/codebuddy/manual";
+  if (provider.value === "qoder") return "/auth/qoder/chat";
+  if (provider.value === "workbuddy_intl") return "/auth/workbuddy-intl/manual";
+  return "/auth/codebuddy/manual";
 }
 
 function checkinEndpoint(): string {
@@ -132,10 +143,10 @@ async function startOAuth(): Promise<void> {
   pending.value = true;
   setMessage("正在创建浏览器登录流程…", false);
   try {
-    const started = await apiRequest<Flow>("/auth/codebuddy/start", {
+    const started = await apiRequest<Flow>(oauthStartEndpoint(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ label: form.label || "CodeBuddy OAuth", account_id: form.accountId || undefined }),
+      body: JSON.stringify({ label: form.label || oauthDefaultLabel(), account_id: form.accountId || undefined }),
     });
     flow.value = started;
     saveFlow(started);
@@ -158,7 +169,7 @@ async function pollOAuth(): Promise<void> {
   }
   polling.value = true;
   try {
-    const result = await apiRequest<ImportResult & { status: string; message?: string }>("/auth/codebuddy/poll", {
+    const result = await apiRequest<ImportResult & { status: string; message?: string }>(oauthPollEndpoint(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ flow_id: flow.value.flow_id }),
@@ -174,18 +185,32 @@ async function pollOAuth(): Promise<void> {
     }
     clearSecrets();
     form.accountId = result.account.account_id;
-    if (result.checkin_verified) {
-      setMessage("OAuth 登录成功，代理与签到均已自动启用。", false);
-    } else {
-      manualCheckinOpen.value = true;
-      setMessage("OAuth 登录成功，代理已启用。签到未能自动验证，可在下方手动导入。", false);
-    }
+    setMessage(oauthSuccessMessage(Boolean(result.checkin_verified)), false);
+    if (hasCheckin.value && !result.checkin_verified) manualCheckinOpen.value = true;
     emit("saved", result.account);
   } catch (error) {
     setMessage(String(error), true);
   } finally {
     polling.value = false;
   }
+}
+
+function oauthSuccessMessage(checkinVerified: boolean): string {
+  if (provider.value === "workbuddy_intl") return "OAuth 登录成功，代理凭据已启用（国际版仅支持对话，无签到）。";
+  if (checkinVerified) return "OAuth 登录成功，代理与签到均已自动启用。";
+  return "OAuth 登录成功，代理已启用。签到未能自动验证，可在下方手动导入。";
+}
+
+function oauthStartEndpoint(): string {
+  return provider.value === "workbuddy_intl" ? "/auth/workbuddy-intl/start" : "/auth/codebuddy/start";
+}
+
+function oauthPollEndpoint(): string {
+  return provider.value === "workbuddy_intl" ? "/auth/workbuddy-intl/poll" : "/auth/codebuddy/poll";
+}
+
+function oauthDefaultLabel(): string {
+  return provider.value === "workbuddy_intl" ? "WorkBuddy 国际版 OAuth" : "CodeBuddy OAuth";
 }
 
 function schedulePoll(): void {
@@ -198,11 +223,11 @@ function schedulePoll(): void {
 
 function setMessage(value: string, isFailure = false): void { message.value = value; failed.value = isFailure; }
 function clearSecrets(): void { Object.assign(form, { token: "", refreshToken: "", cookie: "" }); }
-function saveFlow(value: Flow): void { sessionStorage.setItem(flowKey, JSON.stringify(value)); }
-function clearFlow(): void { window.clearTimeout(pollTimer); flow.value = null; sessionStorage.removeItem(flowKey); }
+function saveFlow(value: Flow): void { sessionStorage.setItem(flowKey.value, JSON.stringify(value)); }
+function clearFlow(): void { window.clearTimeout(pollTimer); flow.value = null; sessionStorage.removeItem(flowKey.value); }
 function loadFlow(): Flow | null {
   try {
-    const value = JSON.parse(sessionStorage.getItem(flowKey) || "null") as Flow | null;
+    const value = JSON.parse(sessionStorage.getItem(flowKey.value) || "null") as Flow | null;
     return value && new Date(value.expires_at).valueOf() > Date.now() ? value : null;
   } catch { return null; }
 }
@@ -212,18 +237,19 @@ onBeforeUnmount(() => window.clearTimeout(pollTimer));
 
 <template>
   <section class="import-panel" aria-label="账号导入">
-    <div class="segmented-control" aria-label="服务提供方"><button type="button" :class="{ active: provider === 'codebuddy' }" @click="selectProvider('codebuddy')">CodeBuddy</button><button type="button" :class="{ active: provider === 'qoder' }" @click="selectProvider('qoder')">Qoder</button></div>
+    <div class="segmented-control" aria-label="服务提供方"><button type="button" :class="{ active: provider === 'codebuddy' }" @click="selectProvider('codebuddy')">CodeBuddy</button><button type="button" :class="{ active: provider === 'workbuddy_intl' }" @click="selectProvider('workbuddy_intl')">WorkBuddy 国际版</button><button type="button" :class="{ active: provider === 'qoder' }" @click="selectProvider('qoder')">Qoder</button></div>
     <div class="form-grid">
       <label>显示名称<input v-model="form.label" aria-label="显示名称" autocomplete="off" placeholder="例如：主账号" /></label>
       <label v-if="requiresAccountId">已有账号 ID<span class="required-mark">必填</span><input v-model="form.accountId" aria-label="账号 ID" autocomplete="off" /></label>
     </div>
 
-    <!-- 主入口：CodeBuddy 浏览器登录 -->
-    <div v-if="provider === 'codebuddy'" class="form-actions">
+    <!-- 主入口：CodeBuddy / WorkBuddy 国际版 浏览器登录 -->
+    <div v-if="provider !== 'qoder'" class="form-actions">
       <button type="button" :disabled="pending" @click="startOAuth"><LogIn :size="16" />浏览器登录</button>
       <button v-if="flow" class="secondary-button" type="button" :disabled="polling" @click="pollOAuth"><RefreshCcw :class="{ spin: polling }" :size="16" />继续 OAuth 登录</button>
     </div>
     <p v-if="flow" class="helper-text">流程将在 {{ new Date(flow.expires_at).toLocaleTimeString() }} 过期；可离开此页后返回继续轮询。</p>
+    <p v-if="provider === 'workbuddy_intl'" class="helper-text">国际版账号仅用于对话请求（可用模型：hy4-preview、hy3、deepseek-v4.1-flash），没有签到与成长中心。</p>
 
     <!-- Qoder: PAT 输入 -->
     <div v-if="provider === 'qoder'" class="form-grid">
@@ -234,19 +260,21 @@ onBeforeUnmount(() => window.clearTimeout(pollTimer));
       </div>
     </div>
 
-    <!-- CodeBuddy 手动 Bearer Token（折叠） -->
-    <details v-if="provider === 'codebuddy'" class="advanced-section">
+    <!-- CodeBuddy / WorkBuddy 国际版 手动 Bearer Token（折叠） -->
+    <details v-if="provider !== 'qoder'" class="advanced-section">
       <summary><ChevronDown :size="14" /> 手动输入 Bearer Token</summary>
       <div class="form-grid">
         <label class="form-span">{{ chatTokenLabel }}<div class="input-with-icon"><KeyRound :size="16" /><input v-model="form.token" aria-label="Bearer Token" type="password" autocomplete="new-password" /></div></label>
+        <label v-if="provider === 'workbuddy_intl'" class="form-span">刷新令牌（可选）<input v-model="form.refreshToken" aria-label="刷新令牌（可选）" type="password" autocomplete="new-password" /></label>
       </div>
+      <p v-if="provider === 'workbuddy_intl'" class="helper-text">粘贴国际版账号的 Bearer Access Token；如同时提供刷新令牌，过期后可自动续期。</p>
       <div class="form-actions">
         <button type="button" :disabled="pending || !canSubmitChat" @click="submitChat"><LoaderCircle v-if="pending" class="spin" :size="16" /><Link v-else :size="16" />验证并保存</button>
       </div>
     </details>
 
     <!-- 手动导入签到凭据（折叠，自动派生失败时使用） -->
-    <details class="advanced-section" :open="manualCheckinOpen">
+    <details v-if="hasCheckin" class="advanced-section" :open="manualCheckinOpen">
       <summary><ChevronDown :size="14" /> 手动导入签到凭据</summary>
       <div class="form-grid">
         <label v-if="!requiresAccountId" class="form-span">账号 ID<span class="required-mark">必填</span><input v-model="form.accountId" aria-label="账号 ID" autocomplete="off" /></label>

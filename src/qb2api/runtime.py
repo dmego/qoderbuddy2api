@@ -6,11 +6,13 @@ import asyncio
 from typing import Any
 
 from .accounts import AccountRegistry, AccountRepository, CredentialResolver, CredentialVault
+from .accounts.refresh import BearerRefreshExecutor
 from .admin.auth import LoginRateLimiter
 from .admin.backup import BackupService
 from .admin.sessions import AdminSessionStore
 from .auth.codebuddy_oauth import CodeBuddyOAuthClient
 from .auth.flows import FlowStore
+from .auth.workbuddy_intl import WorkBuddyIntlAuthClient
 from .checkin.growth_automation import GrowthAutomation
 from .checkin.growth_scheduler import GrowthScheduler
 from .checkin.metrics import MetricsScheduler
@@ -49,6 +51,10 @@ class RuntimeServices:
             base_url=settings.codebuddy_endpoint,
             timeout=float(settings.codebuddy_oauth_timeout),
         )
+        self.workbuddy_intl_oauth = WorkBuddyIntlAuthClient(
+            base_url=settings.workbuddy_intl_endpoint,
+            timeout=float(settings.codebuddy_oauth_timeout),
+        )
         self._closed = False
 
     @classmethod
@@ -75,6 +81,7 @@ class RuntimeServices:
             vault,
             codebuddy_tokens=self.settings.codebuddy_tokens or [],
             qoder_tokens=self.settings.qoder_tokens or [],
+            workbuddy_intl_tokens=self.settings.workbuddy_intl_tokens or [],
         )
         resolver = CredentialResolver(
             repository,
@@ -85,6 +92,7 @@ class RuntimeServices:
         self.credential_vault = vault
         self.account_registry = registry
         self.credential_resolver = resolver
+        self._install_refresh_executor(repository, vault, resolver)
         self.backup_service = BackupService(
             data_dir=self.settings.data_dir,
             repository=repository,
@@ -106,6 +114,20 @@ class RuntimeServices:
         self._start_growth_services()
         self._start_model_sync_services()
         self.usage_rollup_service.start()
+
+    def _install_refresh_executor(
+        self,
+        repository: AccountRepository,
+        vault: CredentialVault,
+        resolver: CredentialResolver,
+    ) -> None:
+        resolver.set_refresh_callback(
+            BearerRefreshExecutor(
+                repository=repository,
+                vault=vault,
+                intl_client=self.workbuddy_intl_oauth,
+            )
+        )
 
     async def _load_runtime_settings(self, repository: AccountRepository) -> None:
         from .control.settings import SettingsApplier
@@ -188,7 +210,8 @@ class RuntimeServices:
         for name in (
             "settings", "account_repo", "credential_vault", "account_registry",
             "credential_resolver", "admin_sessions", "login_limiter", "oauth_flows",
-            "codebuddy_oauth", "checkin_service", "checkin_scheduler", "growth_scheduler",
+            "codebuddy_oauth", "workbuddy_intl_oauth",
+            "checkin_service", "checkin_scheduler", "growth_scheduler",
             "metrics_scheduler", "model_sync_scheduler",
             "backup_service", "usage_rollup_service",
         ):
@@ -214,6 +237,7 @@ class RuntimeServices:
         if self.checkin_service is not None:
             await self.checkin_service.close()
         await self.codebuddy_oauth.aclose()
+        await self.workbuddy_intl_oauth.aclose()
         if self.account_repo is not None:
             await self.account_repo.close()
 

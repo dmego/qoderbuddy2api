@@ -11,7 +11,7 @@ from .registry import AccountRegistry
 from .repository import AccountRepository
 from .vault import CredentialVault
 
-RefreshCallback = Callable[[str, str, str, Credential], Awaitable[Credential | None]]
+RefreshCallback = Callable[[Credential], Awaitable[Credential | None]]
 
 CacheKey = tuple[str, str, str]  # provider, account_id, purpose
 
@@ -200,7 +200,7 @@ class CredentialResolver:
         cb = self._refresh_callback
         if cb is None:
             return None
-        return await cb(key[0], key[1], key[2], current)
+        return await cb(current)
 
 
 def _matching_cache_keys(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
@@ -192,3 +193,72 @@ def _handshake(owner: str, auth_version: int) -> dict[str, object]:
         "owner_instance_id": owner,
         "internal_auth_version": auth_version,
     }
+
+
+def test_route_policies_round_trip_through_the_snapshot_payload() -> None:
+    from qb2api.route_policy import RoutePolicy
+
+    snapshot = RuntimeSnapshot(
+        snapshot_version=4,
+        codebuddy_endpoint="https://copilot.tencent.com",
+        workbuddy_intl_endpoint="https://www.workbuddy.ai",
+        qoder_timeout=300,
+        models={"codebuddy": ()},
+        slots=(),
+        route_policies={
+            "deepseek-v4.1-flash": (
+                RoutePolicy("workbuddy_intl", priority=0, weight=1),
+                RoutePolicy("codebuddy", priority=1, weight=0, enabled=False),
+            )
+        },
+    )
+    restored = RuntimeSnapshot.from_payload(json.loads(json.dumps(snapshot.to_payload())))
+    assert restored.workbuddy_intl_endpoint == "https://www.workbuddy.ai"
+    assert restored.route_policies["deepseek-v4.1-flash"][0] == RoutePolicy(
+        "workbuddy_intl", priority=0, weight=1
+    )
+    assert restored.route_policies["deepseek-v4.1-flash"][1].enabled is False
+
+
+def test_snapshot_without_route_policies_still_parses() -> None:
+    snapshot = RuntimeSnapshot(
+        snapshot_version=1,
+        codebuddy_endpoint="https://copilot.tencent.com",
+        qoder_timeout=300,
+        models={"codebuddy": ()},
+        slots=(),
+    )
+    payload = snapshot.to_payload()
+    payload.pop("route_policies")
+    payload.pop("workbuddy_intl_endpoint")
+    restored = RuntimeSnapshot.from_payload(payload)
+    assert restored.route_policies == {}
+    assert restored.workbuddy_intl_endpoint == "https://www.workbuddy.ai"
+
+
+def test_snapshot_rejects_incompatible_protocol_version() -> None:
+    snapshot = RuntimeSnapshot(
+        snapshot_version=1,
+        codebuddy_endpoint="https://copilot.tencent.com",
+        qoder_timeout=300,
+        models={"codebuddy": ()},
+        slots=(),
+    )
+    payload = snapshot.to_payload()
+    payload["protocol_version"] = RUNTIME_PROTOCOL_VERSION - 1
+    with pytest.raises(ValueError):
+        RuntimeSnapshot.from_payload(payload)
+
+
+def test_snapshot_rejects_malformed_route_policies() -> None:
+    snapshot = RuntimeSnapshot(
+        snapshot_version=1,
+        codebuddy_endpoint="https://copilot.tencent.com",
+        qoder_timeout=300,
+        models={"codebuddy": ()},
+        slots=(),
+    )
+    payload = snapshot.to_payload()
+    payload["route_policies"] = {"deepseek-v4.1-flash": [{"provider": "", "weight": 1}]}
+    with pytest.raises(ValueError):
+        RuntimeSnapshot.from_payload(payload)

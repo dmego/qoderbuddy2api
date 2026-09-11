@@ -190,5 +190,48 @@
       }
     ]
   },
-  "unified": {}
+  "unified": {},
+  "workbuddy_intl": {
+    "models": [
+      {
+        "id": "hy4-preview",
+        "name": "Hy4 Preview",
+        "max_context": 1000000,
+        "max_output": 24000,
+        "capabilities": {
+          "chat": true,
+          "streaming": true,
+          "tool_calling": true,
+          "reasoning": true,
+          "reasoning_effort": true
+        }
+      },
+      {
+        "id": "hy3",
+        "name": "Hy3",
+        "max_context": 176000,
+        "max_output": 24000,
+        "capabilities": {
+          "chat": true,
+          "streaming": true,
+          "tool_calling": true,
+          "reasoning": true,
+          "reasoning_effort": true
+        }
+      },
+      {
+        "id": "deepseek-v4.1-flash",
+        "name": "DeepSeek V4.1 Flash",
+        "max_context": 176000,
+        "max_output": 24000,
+        "capabilities": {
+          "chat": true,
+          "streaming": true,
+          "tool_calling": true,
+          "reasoning": true,
+          "reasoning_effort": true
+        }
+      }
+    ]
+  }
 }

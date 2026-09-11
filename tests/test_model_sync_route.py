@@ -10,7 +10,7 @@ from fastapi import FastAPI
 
 from qb2api.accounts.codebuddy_model_sync import SyncReport as CodebuddySyncReport
 from qb2api.accounts.qoder_model_sync import SyncReport as QoderSyncReport
-from qb2api.admin import catalog_routes
+from qb2api.admin import catalog_sync_routes
 from qb2api.admin.auth import AdminSessionStore
 from qb2api.admin.router import router as admin_router
 from qb2api.config import Settings
@@ -40,7 +40,7 @@ async def test_sync_qoder_route_success(sync_context, monkeypatch) -> None:
         disabled=0,
         models=[{"model_id": "Qwen3.8-Max", "enabled": True}],
     )
-    monkeypatch.setattr(catalog_routes, "sync_qoder_models", AsyncMock(return_value=report))
+    monkeypatch.setattr(catalog_sync_routes, "sync_qoder_models", AsyncMock(return_value=report))
 
     async with _client(app) as client:
         response = await client.post("/api/admin/models/sync/qoder", headers=_headers())
@@ -81,7 +81,7 @@ async def test_sync_codebuddy_route_success(sync_context, monkeypatch) -> None:
         added=1, updated=0, removed=0, probed=3,
         models=[{"model_id": "glm-5.3-flash", "exists": True, "reasoning": True}],
     )
-    monkeypatch.setattr(catalog_routes, "sync_codebuddy_models", AsyncMock(return_value=report))
+    monkeypatch.setattr(catalog_sync_routes, "sync_codebuddy_models", AsyncMock(return_value=report))
 
     async with _client(app) as client:
         response = await client.post("/api/admin/models/sync/codebuddy", headers=_headers())
@@ -106,9 +106,9 @@ async def test_sync_all_route_aggregates_and_isolates_provider_failures(sync_con
         added=1, updated=0, removed=0, probed=3,
         models=[{"model_id": "glm-5.3-flash", "exists": True, "reasoning": True}],
     )
-    monkeypatch.setattr(catalog_routes, "sync_qoder_models", AsyncMock(return_value=qoder_report))
+    monkeypatch.setattr(catalog_sync_routes, "sync_qoder_models", AsyncMock(return_value=qoder_report))
     monkeypatch.setattr(
-        catalog_routes, "sync_codebuddy_models", AsyncMock(return_value=codebuddy_report)
+        catalog_sync_routes, "sync_codebuddy_models", AsyncMock(return_value=codebuddy_report)
     )
 
     async with _client(app) as client:
@@ -137,9 +137,9 @@ async def test_sync_all_route_qoder_failure_does_not_block_codebuddy(sync_contex
         added=0, updated=0, removed=0, probed=3,
         models=[{"model_id": "glm-5.3-flash", "exists": True, "reasoning": True}],
     )
-    monkeypatch.setattr(catalog_routes, "sync_qoder_models", fail_qoder)
+    monkeypatch.setattr(catalog_sync_routes, "sync_qoder_models", fail_qoder)
     monkeypatch.setattr(
-        catalog_routes, "sync_codebuddy_models", AsyncMock(return_value=codebuddy_report)
+        catalog_sync_routes, "sync_codebuddy_models", AsyncMock(return_value=codebuddy_report)
     )
 
     async with _client(app) as client:

@@ -7,8 +7,10 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .models import ModelCapabilities, ModelDefinition
+from .route_policy import RoutePolicy
 
-RUNTIME_PROTOCOL_VERSION = 2
+# v3 adds per-model route policies (priority/weight/enabled per provider).
+RUNTIME_PROTOCOL_VERSION = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +45,9 @@ class RuntimeSnapshot:
     proxy_auth_required: bool = False
     protocol_version: int = RUNTIME_PROTOCOL_VERSION
     generated_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    workbuddy_intl_endpoint: str = "https://www.workbuddy.ai"
+    route_policies: dict[str, tuple[RoutePolicy, ...]] = field(default_factory=dict)
+    account_model_blocks: tuple[AccountModelBlock, ...] = ()
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -50,6 +55,7 @@ class RuntimeSnapshot:
             "snapshot_version": self.snapshot_version,
             "generated_at": self.generated_at,
             "codebuddy_endpoint": self.codebuddy_endpoint,
+            "workbuddy_intl_endpoint": self.workbuddy_intl_endpoint,
             "qoder_timeout": self.qoder_timeout,
             "models": {
                 provider: [_model_payload(model) for model in values]
@@ -63,6 +69,13 @@ class RuntimeSnapshot:
                     "token": slot.token,
                 }
                 for slot in self.slots
+            ],
+            "route_policies": {
+                model_id: [policy.to_payload() for policy in policies]
+                for model_id, policies in self.route_policies.items()
+            },
+            "account_model_blocks": [
+                block.to_payload() for block in self.account_model_blocks
             ],
             "proxy_keys": [
                 {
@@ -89,15 +102,70 @@ class RuntimeSnapshot:
             snapshot_version=_positive_int(value.get("snapshot_version"), "snapshot_version"),
             generated_at=_text(value.get("generated_at"), "generated_at"),
             codebuddy_endpoint=_text(value.get("codebuddy_endpoint"), "codebuddy_endpoint"),
+            workbuddy_intl_endpoint=_text(
+                value.get("workbuddy_intl_endpoint") or "https://www.workbuddy.ai",
+                "workbuddy_intl_endpoint",
+            ),
             qoder_timeout=_positive_int(value.get("qoder_timeout"), "qoder_timeout"),
             models=models,
             slots=slots,
             proxy_keys=proxy_keys,
+            route_policies=_parse_route_policies(value.get("route_policies", {})),
+            account_model_blocks=_parse_account_model_blocks(
+                value.get("account_model_blocks", [])
+            ),
             proxy_auth_required=_boolean(
                 value.get("proxy_auth_required"), "proxy_auth_required"
             ),
             protocol_version=protocol,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class AccountModelBlock:
+    """One administrator-declared (provider, account, model) exclusion."""
+
+    provider: str
+    account_id: str
+    model_id: str
+    reason: str = ""
+
+    def to_payload(self) -> dict[str, str]:
+        return {
+            "provider": self.provider,
+            "account_id": self.account_id,
+            "model_id": self.model_id,
+            "reason": self.reason,
+        }
+
+
+def _parse_account_model_blocks(value: Any) -> tuple[AccountModelBlock, ...]:
+    if not isinstance(value, list) or len(value) > 5000:
+        raise ValueError("invalid runtime account model blocks")
+    blocks: list[AccountModelBlock] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("invalid runtime account model block")
+        blocks.append(AccountModelBlock(
+            provider=_text(item.get("provider"), "block.provider"),
+            account_id=_text(item.get("account_id"), "block.account_id"),
+            model_id=_text(item.get("model_id"), "block.model_id"),
+            reason=str(item.get("reason") or "")[:200],
+        ))
+    return tuple(blocks)
+
+
+def _parse_route_policies(value: Any) -> dict[str, tuple[RoutePolicy, ...]]:
+    if not isinstance(value, dict) or len(value) > 2000:
+        raise ValueError("invalid runtime route policies")
+    parsed: dict[str, tuple[RoutePolicy, ...]] = {}
+    for model_id, entries in value.items():
+        if not isinstance(model_id, str) or not model_id or len(model_id) > 256:
+            raise ValueError("invalid route policy model id")
+        if not isinstance(entries, list) or len(entries) > 20:
+            raise ValueError("invalid route policy list")
+        parsed[model_id] = tuple(RoutePolicy.from_payload(item) for item in entries)
+    return parsed
 
 
 def _model_payload(model: ModelDefinition) -> dict[str, Any]:

@@ -30,9 +30,14 @@
 ## 功能特性
 
 - **统一模型网关** —— 单一 base URL（`/v1`）同时服务 OpenAI 与 Anthropic 兼容客户端；
-  CodeBuddy 与 Qoder 账号池轮询路由，首个输出前自动故障转移。
+  CodeBuddy、WorkBuddy 国际版与 Qoder 账号池按策略路由，首个输出前自动故障转移。
 - **加密账号池** —— 持久账号、按用途隔离的凭据（chat / check-in）、版本化轮换，
   管理台可导入、验证、提升账号。
+- **WorkBuddy 国际版** —— 独立提供商 `workbuddy_intl`（www.workbuddy.ai）：浏览器
+  plugin OAuth 登录与 Bearer 手动导入、积分监控，免费额度覆盖
+  `hy4-preview` / `hy3` / `deepseek-v4.1-flash` 三个模型；该版本没有签到与成长中心。
+- **按模型路由权重** —— 为每个统一模型配置各提供商的优先级与权重，例如让
+  `deepseek-v4.1-flash` 先走国际版免费账号、失败再回落国内账号。
 - **模型目录管理** —— 跨提供商统一小写模型 ID（共有模型只暴露一条），一键上游同步：
   Qoder 走官方目录接口，WorkBuddy 通过实时探测发现新模型。
 - **每日自动化** —— 定时签到、成长中心任务/抽奖/旅行自动化，以及解耦的

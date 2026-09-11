@@ -62,7 +62,11 @@ mkdir -p data logs && chmod 700 data logs
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `CODEBUDDY_TOKEN` / `QODER_TOKEN` | 空 | 旧式静态 token（transient chat slot）；长期账号请在管理台导入 |
+| `CODEBUDDY_TOKEN` / `QODER_TOKEN` / `WORKBUDDY_INTL_TOKEN` | 空 | 旧式静态 token（transient chat slot）；长期账号请在管理台导入 |
+| `WORKBUDDY_INTL_ENDPOINT` | `https://www.workbuddy.ai` | WorkBuddy 国际版入口 |
+| `WORKBUDDY_INTL_OAUTH_ENABLED` | `true` | 是否允许管理台发起国际版浏览器登录 |
+| `WORKBUDDY_INTL_CREDITS_PATH` | `/billing/meter/get-user-resource` | 国际版积分查询路径 |
+| `QB2API_INTL_DEFAULT_REASONING_EFFORT` | `low` | 客户端未传 `reasoning_effort` 时注入的档位 |
 | `QB2API_MODEL_SYNC_ENABLED` | `true` | Qoder 上游模型目录自动同步 |
 | `QB2API_MODEL_SYNC_INTERVAL_SECONDS` | `21600` | 同步间隔（秒） |
 | `CHECKIN_ENABLED` | `false` | 全局签到调度开关（也可在管理台设置） |
@@ -71,6 +75,39 @@ mkdir -p data logs && chmod 700 data logs
 
 其余签到/指标/用量变量见 `.env.example` 内注释；管理台「设置」页可持久化运行时配置
 （签到时间、成长自动化开关、兑换档位等），优先级高于启动默认值。
+
+### WorkBuddy 国际版（www.workbuddy.ai）
+
+国际版与国内版共用 `/v2/chat/completions` 协议，但属于**独立提供商** `workbuddy_intl`：
+独立域名、独立登录、独立积分接口，并且**没有签到与成长中心**（因此它的账号只有
+`chat` 用途，不会出现在签到/成长页面）。
+
+- **免费额度只覆盖三个模型**：`hy4-preview`、`hy3`、`deepseek-v4.1-flash`。
+  其余模型既不可用也不做上游探测，`config/models.json` 的 `workbuddy_intl` 段
+  即为唯一事实源；管理台「从上游同步」对国际版不生效。
+- **登录**：管理台「添加账号 → WorkBuddy 国际版」发起 plugin OAuth，在浏览器完成登录后
+  自动回收凭据；也可直接粘贴 Bearer Token 手动导入。访问令牌有效期约一年，
+  到期前 Control Plane 会用 `X-Refresh-Token` 自动轮换。
+- **积分监控**：与国内版同一套 `/billing/meter/get-user-resource` 响应结构，
+  按账号写入 `points` 快照，在「积分」页与国内账号一起展示。
+- 国际版首个上游消息**必须是 system**，且拒绝 OpenAI 的 `developer` 角色；
+  代理层会自动补一条 system 消息并把 `developer` 折叠为 `system`。
+
+### 按模型的提供商路由权重
+
+同一个统一模型 ID 可能同时由多个提供商提供（例如 `deepseek-v4.1-flash` 在国内版和
+国际版都存在）。管理台「路由策略」页可对每个模型设置：
+
+| 字段 | 含义 |
+| --- | --- |
+| `priority` | 越小越先尝试；不同取值构成有序梯队 |
+| `weight` | 同一梯队内的相对流量占比（平滑加权轮询） |
+| `enabled` | 关闭后仅在其他路由都不可用时才兜底 |
+
+典型配置：给 `deepseek-v4.1-flash` 的 `workbuddy_intl` 设 `priority=0`、
+`codebuddy` 设 `priority=1`，即国际版免费额度优先，请求失败再回落国内账号。
+未配置策略的模型保持默认行为（同梯队等权重轮询）。策略随运行快照下发到 Worker，
+修改后立即生效，无需重启。
 
 ## 3. 统一入口与端口
 

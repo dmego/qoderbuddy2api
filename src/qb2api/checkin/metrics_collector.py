@@ -11,6 +11,7 @@ from qb2api.accounts.registry import AccountRegistry
 from qb2api.accounts.repository import AccountRepository
 from qb2api.accounts.resolver import CredentialResolver
 from qb2api.config import Settings
+from qb2api.models import CHAT_ONLY_PROVIDERS
 
 from .metrics_providers import ProviderMetricCollectorMixin
 
@@ -27,6 +28,7 @@ class MetricDependencies:
     qoder_quota: Any
     codebuddy_credits: Any
     qoder_activity: Any = None
+    workbuddy_intl_credits: Any = None
 
 
 @dataclass
@@ -92,7 +94,8 @@ class MetricSnapshotCollector(ProviderMetricCollectorMixin):
             expires_at=expires_at,
             state=state,
         )
-        await self._write_checkin_snapshot(provider, account_id, state)
+        if provider not in CHAT_ONLY_PROVIDERS:
+            await self._write_checkin_snapshot(provider, account_id, state)
         await self._write_provider_snapshot(
             provider=provider,
             account_id=account_id,

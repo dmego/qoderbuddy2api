@@ -23,6 +23,7 @@ from .repo_growth_log import GrowthLogMixin
 from .repo_metric_history import MetricHistoryRepositoryMixin
 from .repo_metric_refresh import MetricRefreshRepositoryMixin
 from .repo_proxy_keys import ProxyKeyRepositoryMixin
+from .repo_routes import AccountModelBlockRepositoryMixin, RoutePolicyRepositoryMixin
 from .repo_service_events import ServiceEventRepositoryMixin
 from .repo_sessions import SessionRepositoryMixin
 from .repo_telemetry import TelemetryRepositoryMixin
@@ -41,6 +42,8 @@ class AccountRepository(
     MetricHistoryRepositoryMixin,
     ControlRepositoryMixin,
     ProxyKeyRepositoryMixin,
+    RoutePolicyRepositoryMixin,
+    AccountModelBlockRepositoryMixin,
     CheckinRepositoryMixin,
     SessionRepositoryMixin,
     TelemetryRepositoryMixin,

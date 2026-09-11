@@ -102,6 +102,17 @@ def _provider_values() -> dict[str, object]:
         "codebuddy_default_reasoning_effort": os.getenv(
             "QB2API_CODEBUDDY_DEFAULT_REASONING_EFFORT", "max"
         ).strip().lower(),
+        "workbuddy_intl_tokens": _parse_tokens(os.getenv("WORKBUDDY_INTL_TOKEN")),
+        "workbuddy_intl_endpoint": os.getenv(
+            "WORKBUDDY_INTL_ENDPOINT", "https://www.workbuddy.ai"
+        ),
+        "workbuddy_intl_oauth_enabled": _env_bool("WORKBUDDY_INTL_OAUTH_ENABLED", True),
+        "workbuddy_intl_credits_path": os.getenv(
+            "WORKBUDDY_INTL_CREDITS_PATH", "/billing/meter/get-user-resource"
+        ),
+        "workbuddy_intl_default_reasoning_effort": os.getenv(
+            "QB2API_INTL_DEFAULT_REASONING_EFFORT", "low"
+        ).strip().lower(),
     }
 
 
@@ -214,6 +225,14 @@ class Settings:
     qoder_tokens: list[str] = None  # type: ignore
     qoder_timeout: int = 300  # seconds
     provider_drain_timeout_seconds: int = 330
+
+    # WorkBuddy international (www.workbuddy.ai) — chat-only free tier.
+    workbuddy_intl_tokens: list[str] = None  # type: ignore
+    workbuddy_intl_endpoint: str = "https://www.workbuddy.ai"
+    workbuddy_intl_oauth_enabled: bool = True
+    workbuddy_intl_credits_path: str = "/billing/meter/get-user-resource"
+    # The international gateway only thinks when reasoning_effort is present.
+    workbuddy_intl_default_reasoning_effort: str = "low"
 
     # Check-in — off by default unless explicitly enabled
     checkin_enabled: bool = False

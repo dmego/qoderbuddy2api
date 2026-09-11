@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -36,32 +38,68 @@ class CodeBuddyChannelBlockedError(CodeBuddyError):
     """
 
 
+class CodeBuddyQuotaExceededError(CodeBuddyError):
+    """Per-account model usage limit exhausted (code 6004).
+
+    The upstream message carries the reset wall clock («将在 … UTC+8 重置»);
+    :attr:`model_block_reset_at` exposes it so the provider pool can block
+    this account+model pair until then. ``None`` when the message shape is
+    unrecognized — callers fall back to the generic cooldown.
+    """
+
+    def __init__(self, status_code: int, message: str, reset_at: datetime | None = None):
+        super().__init__(status_code, message)
+        self.model_block_reset_at = reset_at
+
+
 _CHANNEL_BLOCKED_CODE = "11128"
+_QUOTA_EXCEEDED_CODE = "6004"
+
+_RESET_AT_RE = re.compile(r"将在\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s*UTC\+8")
+_RESET_TZ = timezone(timedelta(hours=8))
 
 
 def parse_codebuddy_error(status_code: int, text: str) -> CodeBuddyError:
     """Convert an upstream error body into a typed CodeBuddyError.
 
-    Code 11128 means the calling channel was flagged by upstream security
-    policy (request burst, tool-heavy payload, client fingerprint); surface a
-    clear message instead of the raw JSON.
+    - 11128: the calling channel was flagged by upstream security policy
+      (request burst, tool-heavy payload, client fingerprint).
+    - 6004: the account exhausted the per-model usage quota; the message
+      states the reset time, which the pool uses to auto-disable the
+      account+model pair until then.
+    Both surface clear messages instead of raw JSON.
     """
     clean = text.strip().replace("\n", " ")
     try:
         payload = json.loads(text)
     except (json.JSONDecodeError, TypeError):
         return CodeBuddyError(status_code, clean[:200])
-    if str(payload.get("code", "")) != _CHANNEL_BLOCKED_CODE:
-        return CodeBuddyError(status_code, clean[:200])
-    message = payload.get("msg") or clean
-    display = payload.get("displayMsg")
-    if isinstance(display, dict) and display.get("en"):
-        detail = f"{message}; {display['en']}"
-    else:
-        detail = message
-    return CodeBuddyChannelBlockedError(
-        status_code, f"{detail} — upstream security policy; back off and retry later"
-    )
+    code = str(payload.get("code", ""))
+    if code == _CHANNEL_BLOCKED_CODE:
+        message = payload.get("msg") or clean
+        display = payload.get("displayMsg")
+        if isinstance(display, dict) and display.get("en"):
+            detail = f"{message}; {display['en']}"
+        else:
+            detail = message
+        return CodeBuddyChannelBlockedError(
+            status_code, f"{detail} — upstream security policy; back off and retry later"
+        )
+    if code == _QUOTA_EXCEEDED_CODE:
+        message = payload.get("msg") or clean
+        return CodeBuddyQuotaExceededError(status_code, message, _parse_reset_at(message))
+    return CodeBuddyError(status_code, clean[:200])
+
+
+def _parse_reset_at(message: str) -> datetime | None:
+    match = _RESET_AT_RE.search(message)
+    if match is None:
+        return None
+    try:
+        naive = datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+    return naive.replace(tzinfo=_RESET_TZ).astimezone(UTC)
 
 
 class CodeBuddyProvider(Provider):

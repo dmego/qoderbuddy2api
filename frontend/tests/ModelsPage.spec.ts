@@ -11,7 +11,7 @@ vi.mock("@/api/client", () => ({
 }));
 
 describe("ModelsPage sync button", () => {
-  it("shows sync button and calls endpoint", async () => {
+  it("syncs every provider when no provider filter is selected", async () => {
     const wrapper = mount(ModelsPage, { global: { plugins: [createPinia(), VueQueryPlugin] } });
     await flushPromises();
 
@@ -20,6 +20,20 @@ describe("ModelsPage sync button", () => {
     await button.trigger("click");
     await flushPromises();
 
+    expect(apiRequest).toHaveBeenCalledWith("/models/sync", { method: "POST" });
+  });
+
+  it("syncs only the selected provider when a filter is applied", async () => {
+    const wrapper = mount(ModelsPage, { global: { plugins: [createPinia(), VueQueryPlugin] } });
+    await flushPromises();
+    await wrapper.find("select").setValue("qoder");
+    await flushPromises();
+    vi.mocked(apiRequest).mockClear();
+
+    await wrapper.find("button[aria-label='从上游同步']").trigger("click");
+    await flushPromises();
+
     expect(apiRequest).toHaveBeenCalledWith("/models/sync/qoder", { method: "POST" });
   });
+
 });

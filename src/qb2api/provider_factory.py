@@ -7,6 +7,7 @@ from .config import Settings
 from .providers.base import Provider
 from .providers.codebuddy import CodeBuddyProvider
 from .providers.qoder import QoderProvider
+from .providers.workbuddy_intl import WorkBuddyIntlProvider
 
 
 class ProviderFactory:
@@ -40,6 +41,30 @@ class ProviderFactory:
             endpoint=self._settings.codebuddy_endpoint,
             credential_getter=credential_getter,
             default_reasoning_effort=self._settings.codebuddy_default_reasoning_effort,
+        )
+
+    def workbuddy_intl_static(self, token: str) -> Provider:
+        return WorkBuddyIntlProvider(
+            token=token,
+            endpoint=self._settings.workbuddy_intl_endpoint,
+            default_reasoning_effort=self._settings.workbuddy_intl_default_reasoning_effort,
+        )
+
+    def workbuddy_intl_dynamic(self, account_id: str) -> Provider:
+        resolver = self._require_resolver()
+
+        async def credential_getter() -> str:
+            credential = await resolver.credential("workbuddy_intl", account_id, "chat")
+            return (
+                credential.payload.get("access_token")
+                or credential.payload.get("token")
+                or ""
+            )
+
+        return WorkBuddyIntlProvider(
+            endpoint=self._settings.workbuddy_intl_endpoint,
+            credential_getter=credential_getter,
+            default_reasoning_effort=self._settings.workbuddy_intl_default_reasoning_effort,
         )
 
     def qoder(self, pat: str) -> Provider:

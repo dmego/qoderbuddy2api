@@ -124,7 +124,8 @@ class ProxyState:
     def _rebuild_catalog(self) -> None:
         overrides = load_unified_overrides(self.settings.model_config_path)
         self.unified_catalog = build_unified_catalog(self.model_definitions, overrides)
-        self.router = ModelRouter(self.registry, self.unified_catalog)
+        policies = self.runtime.route_policies if self.runtime is not None else {}
+        self.router = ModelRouter(self.registry, self.unified_catalog, policies)
 
     def _target(self, entry: UnifiedModel) -> ResolvedModel:
         if len(entry.routes) == 1:

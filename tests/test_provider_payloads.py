@@ -7,7 +7,7 @@ from qb2api.providers.qoder import QODER_CLI_MODEL_KEYS, QoderProvider, QoderSes
 
 
 class TestCodeBuddyUpstreamError:
-    """Typed handling of upstream error bodies (code 11128 = channel ban)."""
+    """Typed handling of upstream error bodies (11128 channel ban, 6004 model quota)."""
 
     def test_11128_parses_to_channel_blocked_with_display_message(self):
         from qb2api.providers.codebuddy import (
@@ -53,6 +53,31 @@ class TestCodeBuddyUpstreamError:
         error = parse_codebuddy_error(500, "boom\nline")
         assert isinstance(error, CodeBuddyError)
         assert str(error) == "CodeBuddy 500: boom line"
+
+    def test_6004_parses_to_quota_exceeded_with_reset_at(self):
+        from datetime import UTC, datetime
+
+        from qb2api.providers.codebuddy import (
+            CodeBuddyQuotaExceededError,
+            parse_codebuddy_error,
+        )
+
+        body = (
+            '{"code":6004,"msg":"您的使用量已超出频率限制，将在 2026-09-11 17:53:33 '
+            'UTC+8 重置，您也可以切换其他模型继续使用。","requestId":"fa883b18"}'
+        )
+        error = parse_codebuddy_error(429, body)
+        assert isinstance(error, CodeBuddyQuotaExceededError)
+        assert error.status_code == 429
+        assert error.model_block_reset_at == datetime(2026, 9, 11, 9, 53, 33, tzinfo=UTC)
+        assert "切换其他模型" in str(error)
+
+    def test_6004_without_reset_time_yields_none(self):
+        from qb2api.providers.codebuddy import CodeBuddyQuotaExceededError, parse_codebuddy_error
+
+        error = parse_codebuddy_error(429, '{"code":6004,"msg":"您的使用量已超出频率限制。"}')
+        assert isinstance(error, CodeBuddyQuotaExceededError)
+        assert error.model_block_reset_at is None
 
 
 class TestCodeBuddyScrub:

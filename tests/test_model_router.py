@@ -7,7 +7,8 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from qb2api.models import ModelCapabilities
+from qb2api.config import Settings
+from qb2api.models import ModelCapabilities, ModelDefinition
 from qb2api.models_catalog import ModelRoute, UnifiedModel
 from qb2api.openai import ChatCompletionRequest
 from qb2api.providers.base import Provider, ProviderRegistry
@@ -221,3 +222,239 @@ def test_available_models_filters_unroutable_entries():
     empty_registry.register(DynamicProviderPool(name="qoder"))
     router2 = ModelRouter(empty_registry, catalog)
     assert router2.available_models() == []
+
+
+def _dual_router(
+    pools: dict[str, DynamicProviderPool],
+    policies: dict[str, tuple],
+    model_id: str = "deepseek-v4.1-flash",
+) -> ModelRouter:
+    """Router for a model served by both the international and domestic pools."""
+    registry = ProviderRegistry()
+    for name, pool in pools.items():
+        registry.register(pool)
+    routes = [
+        ModelRoute("codebuddy", "deepseek-v4.1-flash"),
+        ModelRoute("workbuddy_intl", "deepseek-v4.1-flash"),
+    ]
+    return ModelRouter(registry, _catalog(model_id, routes), policies)
+
+
+def _intl_pools() -> tuple[dict[str, DynamicProviderPool], FakeProvider, FakeProvider]:
+    domestic = FakeProvider("cb")
+    intl = FakeProvider("wbintl")
+    pools = {
+        "codebuddy": _pool("codebuddy", domestic),
+        "workbuddy_intl": _pool("workbuddy_intl", intl),
+    }
+    return pools, domestic, intl
+
+
+@pytest.mark.asyncio
+async def test_no_policy_keeps_plain_round_robin_across_providers():
+    pools, domestic, intl = _intl_pools()
+    router = _dual_router(pools, {})
+
+    seen = {(await router.complete(_req("deepseek-v4.1-flash")))["id"] for _ in range(4)}
+
+    assert seen == {"cb", "wbintl"}
+    assert domestic.complete_calls == 2
+    assert intl.complete_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_priority_policy_sends_every_request_to_the_preferred_provider():
+    """The requested behaviour: international first, domestic only as fallback."""
+    from qb2api.route_policy import RoutePolicy
+
+    pools, domestic, intl = _intl_pools()
+    router = _dual_router(pools, {
+        "deepseek-v4.1-flash": (
+            RoutePolicy("workbuddy_intl", priority=0),
+            RoutePolicy("codebuddy", priority=1),
+        )
+    })
+
+    for _ in range(4):
+        result = await router.complete(_req("deepseek-v4.1-flash"))
+        assert result["id"] == "wbintl"
+
+    assert intl.complete_calls == 4
+    assert domestic.complete_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_priority_policy_falls_back_to_the_domestic_account_on_failure():
+    from qb2api.route_policy import RoutePolicy
+
+    pools, domestic, intl = _intl_pools()
+    intl.fail_before_chunk = True
+    router = _dual_router(pools, {
+        "deepseek-v4.1-flash": (
+            RoutePolicy("workbuddy_intl", priority=0),
+            RoutePolicy("codebuddy", priority=1),
+        )
+    })
+
+    result = await router.complete(_req("deepseek-v4.1-flash"))
+
+    assert result["id"] == "cb"
+    assert intl.complete_calls == 1
+    assert domestic.complete_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_disabled_route_is_never_used_even_with_no_alternative():
+    from qb2api.route_policy import RoutePolicy
+
+    pools, domestic, intl = _intl_pools()
+    router = _dual_router(pools, {
+        "deepseek-v4.1-flash": (
+            RoutePolicy("workbuddy_intl", priority=0),
+            RoutePolicy("codebuddy", priority=0, weight=0),
+        )
+    })
+
+    for _ in range(3):
+        assert (await router.complete(_req("deepseek-v4.1-flash")))["id"] == "wbintl"
+    assert domestic.complete_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_weighted_same_tier_splits_traffic_between_providers():
+    from qb2api.route_policy import RoutePolicy
+
+    pools, domestic, intl = _intl_pools()
+    router = _dual_router(pools, {
+        "deepseek-v4.1-flash": (
+            RoutePolicy("workbuddy_intl", weight=3),
+            RoutePolicy("codebuddy", weight=1),
+        )
+    })
+
+    for _ in range(8):
+        await router.complete(_req("deepseek-v4.1-flash"))
+
+    assert intl.complete_calls == 6
+    assert domestic.complete_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_policy_naming_an_unregistered_provider_is_ignored():
+    """A preferred provider with no pool at all must not break routing."""
+    from qb2api.route_policy import RoutePolicy
+
+    domestic = FakeProvider("cb")
+    intl = FakeProvider("wbintl")
+    # Only the domestic pool is registered: the international route is absent.
+    router = _dual_router(
+        {"codebuddy": _pool("codebuddy", domestic)},
+        {
+            "deepseek-v4.1-flash": (
+                RoutePolicy("workbuddy_intl", priority=0),
+                RoutePolicy("codebuddy", priority=1),
+            )
+        },
+    )
+
+    assert (await router.complete(_req("deepseek-v4.1-flash")))["id"] == "cb"
+    assert domestic.complete_calls == 1
+    assert intl.complete_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_empty_preferred_pool_falls_through_to_the_next_tier():
+    """International selected but with no live account yet: serve domestically."""
+    from qb2api.route_policy import RoutePolicy
+
+    domestic = FakeProvider("cb")
+    router = _dual_router(
+        {
+            "codebuddy": _pool("codebuddy", domestic),
+            "workbuddy_intl": DynamicProviderPool(name="workbuddy_intl"),
+        },
+        {
+            "deepseek-v4.1-flash": (
+                RoutePolicy("workbuddy_intl", priority=0),
+                RoutePolicy("codebuddy", priority=1),
+            )
+        },
+    )
+
+    assert (await router.complete(_req("deepseek-v4.1-flash")))["id"] == "cb"
+    assert domestic.complete_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_model_without_any_live_pool_is_unavailable():
+    router = _dual_router(
+        {"workbuddy_intl": DynamicProviderPool(name="workbuddy_intl")},
+        {},
+    )
+    with pytest.raises(ProviderUnavailableError):
+        await router.complete(_req("deepseek-v4.1-flash"))
+
+
+@pytest.mark.asyncio
+async def test_worker_runtime_publishes_snapshot_policies_into_the_router():
+    """Regression: the Worker must actually apply the policies it was handed.
+
+    A stored priority policy that never reaches ``ModelRouter`` silently
+    degrades to round-robin, which is exactly the bug this covers.
+    """
+    from qb2api.route_policy import RoutePolicy
+    from qb2api.runtime_snapshot import RuntimeSlot, RuntimeSnapshot
+    from qb2api.worker.proxy_state import ProxyState
+
+    domestic = FakeProvider("cb")
+    intl = FakeProvider("wbintl")
+    snapshot = RuntimeSnapshot(
+        snapshot_version=1,
+        codebuddy_endpoint="https://copilot.tencent.com",
+        workbuddy_intl_endpoint="https://www.workbuddy.ai",
+        qoder_timeout=300,
+        models={
+            "codebuddy": (
+                _definition("deepseek-v4.1-flash", "codebuddy"),
+            ),
+            "workbuddy_intl": (
+                _definition("deepseek-v4.1-flash", "workbuddy_intl"),
+            ),
+        },
+        slots=(
+            RuntimeSlot("codebuddy", "cb-1", 1, "domestic-token"),
+            RuntimeSlot("workbuddy_intl", "wbintl-1", 1, "intl-token"),
+        ),
+        route_policies={
+            "deepseek-v4.1-flash": (
+                RoutePolicy("workbuddy_intl", priority=0),
+                RoutePolicy("codebuddy", priority=1),
+            )
+        },
+    )
+
+    state = ProxyState(Settings())
+    state.runtime = _StubRuntime(
+        providers={"codebuddy": domestic, "workbuddy_intl": intl},
+        policies=snapshot.route_policies,
+    )
+    state.registry.register(_pool("codebuddy", domestic))
+    state.registry.register(_pool("workbuddy_intl", intl))
+    state.model_definitions = {key: list(value) for key, value in snapshot.models.items()}
+    state._rebuild_catalog()
+
+    for _ in range(3):
+        assert (await state.router.complete(_req("deepseek-v4.1-flash")))["id"] == "wbintl"
+    assert domestic.complete_calls == 0
+
+
+def _definition(model_id: str, provider: str):
+    return ModelDefinition(model_id, model_id, provider, ModelCapabilities())
+
+
+class _StubRuntime:
+    """Minimal stand-in carrying just the fields ProxyState reads."""
+
+    def __init__(self, *, providers: dict, policies: dict) -> None:
+        self.route_policies = policies
+        self._providers = providers

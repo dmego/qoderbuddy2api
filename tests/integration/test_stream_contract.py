@@ -92,3 +92,47 @@ async def test_post_commit_failure_cools_only_failed_slot() -> None:
 
     assert first_result["id"] == "second"
     assert second_result["id"] == "second"
+
+
+@pytest.mark.asyncio
+async def test_stream_error_is_recorded_for_telemetry() -> None:
+    """Provider errors surfaced as SSE payloads are reported via request.stream_error."""
+    from datetime import UTC, datetime, timedelta
+
+    from qb2api.providers.codebuddy import CodeBuddyQuotaExceededError
+    from qb2api.worker.streaming import openai_stream
+
+    class _QuotaProvider(_StreamingProvider):
+        async def stream(self, request: ChatCompletionRequest) -> AsyncIterator[bytes]:
+            self.calls += 1
+            raise CodeBuddyQuotaExceededError(
+                429,
+                "您的使用量已超出频率限制",
+                datetime.now(UTC) + timedelta(seconds=60),
+            )
+            yield b""  # pragma: no cover
+
+    provider = _QuotaProvider("quota")
+    request = ChatCompletionRequest(
+        model="deepseek-v4.1-flash",
+        messages=[{"role": "user", "content": "hello"}],
+        stream=True,
+    )
+    pool = DynamicProviderPool("codebuddy")
+    await pool.update_slots({"codebuddy:a": provider})
+
+    chunks = [chunk async for chunk in openai_stream(
+        provider=pool,
+        request=request,
+        context=StreamLogContext(
+            provider_name="codebuddy",
+            model="deepseek-v4.1-flash",
+            reasoning_effort=None,
+            tool_calls_count=0,
+        ),
+        request_logger=None,
+    )]
+
+    assert request.stream_error == "CodeBuddyQuotaExceededError"
+    assert b'"type": "upstream_error"' in chunks[-1]
+    assert pool._model_blocked[("codebuddy:a", "deepseek-v4.1-flash")] > 0

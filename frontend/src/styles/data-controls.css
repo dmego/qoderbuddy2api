@@ -104,6 +104,7 @@ tr.selected td { box-shadow: inset 2px 0 0 var(--accent); }
 .provider-mark--codebuddy { border-color: var(--accent-line); color: var(--accent); background: var(--accent-soft); }
 .provider-mark--qoder { border-color: rgb(139 148 255 / 0.32); color: #8b94ff; background: rgb(139 148 255 / 0.12); }
 .provider-mark--workbuddy { border-color: rgb(88 190 214 / 0.32); color: #58bed6; background: rgb(88 190 214 / 0.12); }
+.provider-mark--workbuddy_intl { border-color: rgb(88 190 214 / 0.32); color: #58bed6; background: rgb(88 190 214 / 0.12); }
 
 .drawer-backdrop, .dialog-backdrop, .confirm-backdrop { position: fixed; z-index: 900; inset: 0; background: rgb(0 0 0 / 0.62); }
 .drawer-backdrop { display: flex; justify-content: flex-end; }

@@ -6,6 +6,8 @@ import re
 import uuid
 from dataclasses import dataclass
 
+from qb2api.models import CHAT_ONLY_PROVIDERS
+
 from .registry import AccountRegistry
 from .repository import AccountRepository
 from .vault import CredentialVault
@@ -25,8 +27,14 @@ class _Promotion:
     masked_identity: str
 
 
+_ID_PREFIX = {"codebuddy": "cb", "qoder": "qd", "workbuddy_intl": "wbintl"}
+
+# Re-exported so import call sites keep one source of truth.
+CHAT_ONLY_PROVIDERS = CHAT_ONLY_PROVIDERS
+
+
 def _durable_id(provider: str) -> str:
-    prefix = "cb" if provider == "codebuddy" else "qd"
+    prefix = _ID_PREFIX.get(provider, "acct")
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
 
@@ -75,7 +83,7 @@ async def promote_env_account(
 
 
 def _env_secret(registry: AccountRegistry, provider: str, account_id: str) -> str:
-    if provider not in {"codebuddy", "qoder"}:
+    if provider not in _ID_PREFIX:
         raise ValueError(f"unsupported provider: {provider}")
     if not registry.is_env_account(provider, account_id):
         raise LookupError(f"not an env account: {provider}/{account_id}")
@@ -109,14 +117,19 @@ def _build_promotion(
     *, provider: str, account_id: str, label: str, secret: str
 ) -> _Promotion:
     is_qoder = provider == "qoder"
+    is_intl = provider in CHAT_ONLY_PROVIDERS
     return _Promotion(
         account_id=account_id,
         label=label.strip() or account_id,
         payload={"pat": secret} if is_qoder else {"access_token": secret},
         mode="pat" if is_qoder else "bearer",
         chat_capabilities=["proxy.chat"],
-        checkin_status="needs_import" if is_qoder else "unconfigured",
-        checkin_capabilities=["checkin.qoder" if is_qoder else "checkin.workbuddy"],
+        checkin_status="not_applicable" if is_intl else (
+            "needs_import" if is_qoder else "unconfigured"
+        ),
+        checkin_capabilities=[] if is_intl else [
+            "checkin.qoder" if is_qoder else "checkin.workbuddy"
+        ],
         masked_identity=_mask(secret),
     )
 
@@ -161,6 +174,8 @@ async def _persist_purposes(
         verification_status="not_required",
         capabilities=promotion.chat_capabilities,
     )
+    if provider in CHAT_ONLY_PROVIDERS:
+        return
     await repo.upsert_purpose(
         provider=provider,
         account_id=promotion.account_id,

@@ -86,3 +86,38 @@ def test_worker_lists_models_from_its_own_provider_state(worker_client: TestClie
 
     assert response.status_code == 200
     assert [item["id"] for item in response.json()["data"]] == ["echo"]
+
+
+def test_worker_reports_active_quota_blocks(worker_client: TestClient) -> None:
+    import time as time_module
+
+    runtime = worker_client.app.state.runtime
+    pool = runtime.codebuddy_pool
+    pool._model_blocked[("codebuddy:cb-worker-0", "echo")] = time_module.monotonic() + 120
+
+    response = worker_client.get("/internal/quota-blocks")
+
+    assert response.status_code == 200
+    blocks = response.json()["blocks"]
+    assert len(blocks) == 1
+    assert blocks[0]["provider"] == "codebuddy"
+    assert blocks[0]["account_id"] == "cb-worker-0"
+    assert blocks[0]["model_id"] == "echo"
+    assert blocks[0]["blocked_until"].endswith("Z")
+
+
+def test_worker_quota_blocks_cover_every_provider_pool(worker_client: TestClient) -> None:
+    """The intl pool carries quota blocks too; a provider missing from this
+    endpoint would silently hide its blocked accounts from the admin UI."""
+    import time as time_module
+
+    runtime = worker_client.app.state.runtime
+    now = time_module.monotonic() + 120
+    runtime.codebuddy_pool._model_blocked[("codebuddy:cb-worker-0", "echo")] = now
+    runtime.workbuddy_intl_pool._model_blocked[("workbuddy_intl:wbintl-1", "hy3")] = now
+
+    response = worker_client.get("/internal/quota-blocks")
+
+    assert response.status_code == 200
+    providers = {block["provider"] for block in response.json()["blocks"]}
+    assert providers == {"codebuddy", "workbuddy_intl"}

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from qb2api.openai import ChatCompletionRequest
 from qb2api.providers.base import Provider
+from qb2api.providers.codebuddy import CodeBuddyQuotaExceededError
 from qb2api.providers.lb import DynamicProviderPool, ProviderUnavailableError
 
 
@@ -53,6 +56,19 @@ class DeferredFailureProvider(FakeProvider):
         self.started.set()
         await self.release_failure.wait()
         raise RuntimeError(f"{self.account_id}-late-fail")
+
+
+class QuotaFailProvider(FakeProvider):
+    def __init__(self, account_id: str, reset_at: datetime, *, fail_times: int = 1 << 30) -> None:
+        super().__init__(account_id)
+        self._reset_at = reset_at
+        self._fail_times = fail_times
+
+    async def complete(self, request: ChatCompletionRequest) -> dict:
+        self.complete_calls += 1
+        if self.complete_calls <= self._fail_times:
+            raise CodeBuddyQuotaExceededError(429, "您的使用量已超出频率限制", self._reset_at)
+        return {"id": self.account_id, "choices": [{"message": {"role": "assistant", "content": self.account_id}}]}
 
 
 class BlockingStreamProvider(FakeProvider):
@@ -262,3 +278,86 @@ async def test_qoder_provider_reauthenticates_once_before_first_chunk(monkeypatc
     assert len(sessions) == 2
     assert attempts == sessions
     assert chunks[-1] == b"data: [DONE]\n\n"
+
+
+@pytest.mark.asyncio
+async def test_quota_error_blocks_only_affected_model():
+    quota = QuotaFailProvider("a", datetime.now(UTC) + timedelta(seconds=120))
+    healthy = FakeProvider("healthy")
+    pool = DynamicProviderPool(name="codebuddy")
+    await pool.update_slots({"a": quota, "b": healthy})
+
+    assert (await pool.complete(_req()))["id"] == "healthy"
+    assert (await pool.complete(_req()))["id"] == "healthy"
+    assert quota.complete_calls == 1  # blocked for the model, not retried
+
+    healthy.fail_before_chunk = True
+    with pytest.raises(RuntimeError):  # pool surfaces the last attempt's error
+        await pool.complete(ChatCompletionRequest(model="other", messages=[{"role": "user", "content": "hi"}]))
+    assert quota.complete_calls == 2  # retried for a different model: block is model-scoped
+    assert "a" not in pool._failed  # no account-wide cooldown for quota errors
+    assert set(pool._model_blocked) == {("a", "m"), ("a", "other")}
+
+
+@pytest.mark.asyncio
+async def test_quota_block_releases_after_reset(monkeypatch: pytest.MonkeyPatch):
+    quota = QuotaFailProvider("a", datetime.now(UTC) + timedelta(seconds=45), fail_times=1)
+    pool = DynamicProviderPool(name="codebuddy")
+    await pool.update_slots({"a": quota})
+
+    with pytest.raises(CodeBuddyQuotaExceededError):
+        await pool.complete(_req())
+    base = time.monotonic()
+    monkeypatch.setattr("qb2api.providers.lb.time.monotonic", lambda: base + 60)
+    assert quota.complete_calls == 1
+
+    assert (await pool.complete(_req()))["id"] == "a"
+    assert quota.complete_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_generic_error_keeps_account_cooldown():
+    flaky = FakeProvider("flaky", fail_before_chunk=True)
+    good = FakeProvider("good")
+    pool = DynamicProviderPool(name="codebuddy")
+    await pool.update_slots({"flaky": flaky, "good": good})
+
+    assert (await pool.complete(_req()))["id"] == "good"
+    assert set(pool._failed) == {"flaky"}
+    assert pool._model_blocked == {}
+
+
+def test_fallback_prefers_earliest_reset():
+    pool = DynamicProviderPool(name="codebuddy")
+    pool._apply_slots_locked({"a": FakeProvider("a"), "b": FakeProvider("b")})
+    now = time.monotonic()
+    pool._model_blocked[("a", "m")] = now + 100
+    pool._model_blocked[("b", "m")] = now + 50
+
+    assert pool._available_handle(["a", "b"], set(), "m").key == "b"
+
+
+@pytest.mark.asyncio
+async def test_quota_blocks_snapshot_reports_active_blocks():
+    pool = DynamicProviderPool(name="codebuddy")
+    await pool.update_slots({"codebuddy:cb-1": FakeProvider("cb-1")})
+    pool._mark_model_blocked("codebuddy:cb-1", "deepseek-v4.1-flash", datetime.now(UTC) + timedelta(seconds=90))
+
+    blocks = pool.quota_blocks()
+    assert len(blocks) == 1
+    assert blocks[0]["provider"] == "codebuddy"
+    assert blocks[0]["account_id"] == "cb-1"
+    assert blocks[0]["model_id"] == "deepseek-v4.1-flash"
+    datetime.fromisoformat(blocks[0]["blocked_until"].replace("Z", "+00:00"))
+
+
+@pytest.mark.asyncio
+async def test_update_slots_purges_model_blocks_for_retired_slots():
+    pool = DynamicProviderPool(name="codebuddy")
+    account = FakeProvider("a")
+    await pool.update_slots({"a": account})
+    pool._mark_model_blocked("a", "m", datetime.now(UTC) + timedelta(seconds=90))
+    assert pool._model_blocked
+
+    await pool.update_slots({})
+    assert pool._model_blocked == {}

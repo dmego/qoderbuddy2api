@@ -20,6 +20,30 @@ from .quota import QoderQuotaClient
 logger = logging.getLogger("qb2api.checkin.metrics")
 
 
+def _credits_client(settings: Settings, base_url: str, path: str) -> CodeBuddyCreditsClient:
+    return CodeBuddyCreditsClient(
+        base_url=base_url,
+        path=path,
+        timeout=float(settings.checkin_request_timeout_seconds),
+    )
+
+
+def _quota_client(settings: Settings) -> QoderQuotaClient:
+    return QoderQuotaClient(
+        base_url=settings.qoder_checkin_base,
+        path=settings.qoder_quota_path,
+        timeout=float(settings.checkin_request_timeout_seconds),
+    )
+
+
+def _qoder_activity_client(settings: Settings) -> QoderActivityClient:
+    return QoderActivityClient(
+        base_url=settings.qoder_activity_base,
+        path=settings.qoder_activity_path,
+        timeout=float(settings.checkin_request_timeout_seconds),
+    )
+
+
 class MetricsScheduler:
     """Single-flight scheduler with bounded per-account retry backoff."""
 
@@ -32,24 +56,18 @@ class MetricsScheduler:
         resolver: CredentialResolver,
         qoder_quota: QoderQuotaClient | None = None,
         codebuddy_credits: CodeBuddyCreditsClient | None = None,
+        workbuddy_intl_credits: CodeBuddyCreditsClient | None = None,
         qoder_activity: QoderActivityClient | None = None,
     ) -> None:
         self.settings = settings
-        self.qoder_quota = qoder_quota or QoderQuotaClient(
-            base_url=settings.qoder_checkin_base,
-            path=settings.qoder_quota_path,
-            timeout=float(settings.checkin_request_timeout_seconds),
+        self.qoder_quota = qoder_quota or _quota_client(settings)
+        self.codebuddy_credits = codebuddy_credits or _credits_client(
+            settings, settings.codebuddy_checkin_base, settings.codebuddy_credits_path
         )
-        self.codebuddy_credits = codebuddy_credits or CodeBuddyCreditsClient(
-            base_url=settings.codebuddy_checkin_base,
-            path=settings.codebuddy_credits_path,
-            timeout=float(settings.checkin_request_timeout_seconds),
+        self.workbuddy_intl_credits = workbuddy_intl_credits or _credits_client(
+            settings, settings.workbuddy_intl_endpoint, settings.workbuddy_intl_credits_path
         )
-        self.qoder_activity = qoder_activity or QoderActivityClient(
-            base_url=settings.qoder_activity_base,
-            path=settings.qoder_activity_path,
-            timeout=float(settings.checkin_request_timeout_seconds),
-        )
+        self.qoder_activity = qoder_activity or _qoder_activity_client(settings)
         self._task: asyncio.Task[None] | None = None
         self._refresh_task: asyncio.Task[dict[str, Any]] | None = None
         self._lock = asyncio.Lock()
@@ -62,6 +80,7 @@ class MetricsScheduler:
                 resolver=resolver,
                 qoder_quota=self.qoder_quota,
                 codebuddy_credits=self.codebuddy_credits,
+                workbuddy_intl_credits=self.workbuddy_intl_credits,
                 qoder_activity=self.qoder_activity,
             ),
             self._backoff,
@@ -89,6 +108,7 @@ class MetricsScheduler:
             await asyncio.gather(self._refresh_task, return_exceptions=True)
         await self.qoder_quota.aclose()
         await self.codebuddy_credits.aclose()
+        await self.workbuddy_intl_credits.aclose()
         await self.qoder_activity.aclose()
         self._task = None
         self._refresh_task = None

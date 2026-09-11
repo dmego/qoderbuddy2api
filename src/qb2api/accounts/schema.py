@@ -316,6 +316,27 @@ CREATE TABLE IF NOT EXISTS growth_automation_log (
 
 CREATE INDEX IF NOT EXISTS idx_growth_log_account
     ON growth_automation_log(provider, account_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS model_route_policies (
+    model_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 0,
+    weight INTEGER NOT NULL DEFAULT 1,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (model_id, provider)
+);
+
+CREATE TABLE IF NOT EXISTS account_model_blocks (
+    provider TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'manual',
+    blocked_until TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (provider, account_id, model_id)
+);
 """
 
 SCHEMA = BASE_SCHEMA + MANAGEMENT_SCHEMA

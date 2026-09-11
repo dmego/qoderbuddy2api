@@ -3,11 +3,16 @@ import { ArrowLeft, ShieldCheck } from "@lucide/vue";
 import { computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
-import AccountImportPanel, { type AccountReference } from "@/components/AccountImportPanel.vue";
+import AccountImportPanel, { type AccountReference, type Provider } from "@/components/AccountImportPanel.vue";
 
 const route = useRoute();
 const router = useRouter();
-const provider = computed(() => route.query.provider === "qoder" ? "qoder" : "codebuddy");
+const providers: readonly Provider[] = ["codebuddy", "workbuddy_intl", "qoder"];
+const provider = computed<Provider>(() => {
+  const requested = route.query.provider;
+  if (typeof requested !== "string") return "codebuddy";
+  return providers.find((item) => item === requested) ?? "codebuddy";
+});
 const accountId = computed(() => typeof route.query.accountId === "string" ? route.query.accountId : "");
 const label = computed(() => typeof route.query.label === "string" ? route.query.label : "");
 

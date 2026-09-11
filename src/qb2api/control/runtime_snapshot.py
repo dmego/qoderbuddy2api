@@ -7,8 +7,15 @@ from typing import Any
 
 from qb2api.admin.crypto import hash_token
 from qb2api.models import ModelCapabilities, ModelDefinition, load_models_from_config
+from qb2api.models_catalog import build_unified_catalog
+from qb2api.route_policy import RoutePolicy
 from qb2api.runtime import RuntimeServices
-from qb2api.runtime_snapshot import RuntimeProxyKey, RuntimeSlot, RuntimeSnapshot
+from qb2api.runtime_snapshot import (
+    AccountModelBlock,
+    RuntimeProxyKey,
+    RuntimeSlot,
+    RuntimeSnapshot,
+)
 
 logger = logging.getLogger("qb2api.control.snapshot")
 
@@ -49,16 +56,56 @@ class RuntimeSnapshotService:
         models["codebuddy"] = await self._filter_catalog_enabled(
             "codebuddy", models.get("codebuddy", [])
         )
+        models["workbuddy_intl"] = await self._filter_catalog_enabled(
+            "workbuddy_intl", models.get("workbuddy_intl", [])
+        )
         proxy_keys, proxy_auth_required = await self._proxy_keys()
         return RuntimeSnapshot(
             snapshot_version=self._version,
             codebuddy_endpoint=self._runtime.settings.codebuddy_endpoint,
+            workbuddy_intl_endpoint=self._runtime.settings.workbuddy_intl_endpoint,
             qoder_timeout=self._runtime.settings.qoder_timeout,
             models={key: tuple(value) for key, value in models.items()},
             slots=tuple(slots),
+            route_policies=await self._route_policies(models),
+            account_model_blocks=await self._account_model_blocks(),
             proxy_keys=proxy_keys,
             proxy_auth_required=proxy_auth_required,
         )
+
+    async def _route_policies(
+        self,
+        models: dict[str, list[ModelDefinition]],
+    ) -> dict[str, tuple[RoutePolicy, ...]]:
+        """Load stored per-model provider policies for the unified catalog.
+
+        Only policies whose routes actually exist in this catalog generation are
+        shipped; a model with no stored policy simply keeps the default
+        round-robin ordering in the Worker.
+        """
+        repository = self._runtime.account_repo
+        if repository is None:
+            return {}
+        from qb2api.models import load_unified_overrides
+
+        overrides = load_unified_overrides(self._runtime.settings.model_config_path)
+        routes_by_model = _model_routes(models, overrides)
+        policies: dict[str, tuple[RoutePolicy, ...]] = {}
+        for row in await repository.list_route_policies():
+            model_id = str(row["model_id"])
+            providers = routes_by_model.get(model_id)
+            if not providers or row["provider"] not in providers:
+                continue
+            policies.setdefault(model_id, ())
+            policies[model_id] = policies[model_id] + (
+                RoutePolicy(
+                    provider=str(row["provider"]),
+                    priority=int(row["priority"]),
+                    weight=int(row["weight"]),
+                    enabled=bool(row["enabled"]),
+                ),
+            )
+        return policies
 
     async def _upstream_catalog_models(self) -> list[ModelDefinition]:
         """Provider-catalog models merged into the snapshot with upstream metadata."""
@@ -84,6 +131,22 @@ class RuntimeSnapshotService:
         rows = await repository.list_models(provider)
         enabled_by_id = {row["model_id"]: bool(row["enabled"]) for row in rows}
         return [definition for definition in definitions if enabled_by_id.get(definition.id, True)]
+
+    async def _account_model_blocks(self) -> tuple[AccountModelBlock, ...]:
+        """Manual per-account exclusions shipped to the Worker."""
+        repository = self._runtime.account_repo
+        if repository is None:
+            return ()
+        return tuple(
+            AccountModelBlock(
+                provider=str(row["provider"]),
+                account_id=str(row["account_id"]),
+                model_id=str(row["model_id"]),
+                reason=str(row.get("reason") or ""),
+            )
+            for row in await repository.list_account_model_blocks()
+            if row.get("source") == "manual"
+        )
 
     async def _proxy_keys(self) -> tuple[tuple[RuntimeProxyKey, ...], bool]:
         keys: list[RuntimeProxyKey] = []
@@ -153,4 +216,19 @@ def _env_slots(settings: Any) -> list[RuntimeSlot]:
     for index, token in enumerate(settings.qoder_tokens or []):
         if token:
             slots.append(RuntimeSlot("qoder", f"qd-env-{index}", 1, token))
+    for index, token in enumerate(getattr(settings, "workbuddy_intl_tokens", None) or []):
+        if token:
+            slots.append(RuntimeSlot("workbuddy_intl", f"wbintl-env-{index}", 1, token))
     return slots
+
+
+def _model_routes(
+    models: dict[str, list[ModelDefinition]],
+    overrides: dict[str, Any] | None = None,
+) -> dict[str, set[str]]:
+    """Map every unified model id to the providers that can serve it."""
+    catalog = build_unified_catalog(models, overrides)
+    return {
+        model_id: {route.provider for route in entry.routes}
+        for model_id, entry in catalog.items()
+    }

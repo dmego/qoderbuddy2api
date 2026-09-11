@@ -7,7 +7,7 @@ from typing import Any
 
 from .models import ModelCapabilities, ModelDefinition
 
-PROVIDER_ORDER = ("codebuddy", "qoder")
+PROVIDER_ORDER = ("workbuddy_intl", "codebuddy", "qoder")
 
 
 def normalize_model_id(model_id: str) -> str:

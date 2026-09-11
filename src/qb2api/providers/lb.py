@@ -7,6 +7,7 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from ..openai import ChatCompletionRequest
@@ -15,6 +16,10 @@ from .base import Provider
 logger = logging.getLogger("qb2api")
 
 _COOLDOWN_S = 30.0
+# 6004 carries the upstream reset wall clock; trust it but bound pathological
+# values. Unparseable reset falls back to the plain cooldown window.
+_MODEL_BLOCK_MAX_S = 24 * 3600.0
+_MODEL_BLOCK_DEFAULT_S = _COOLDOWN_S
 
 
 class ProviderUnavailableError(Exception):
@@ -49,6 +54,12 @@ class DynamicProviderPool(Provider):
         self._order: tuple[str, ...] = ()
         self._rr = 0
         self._failed: dict[str, float] = {}
+        # Auto blocks are timed and self-clearing; hard blocks are administrator
+        # decisions that only an explicit unblock removes.
+        self._model_blocked: dict[tuple[str, str], float] = {}
+        self._model_block_reason: dict[tuple[str, str], str] = {}
+        self._model_blocked_hard: set[tuple[str, str]] = set()
+        self._model_hard_reason: dict[tuple[str, str], str] = {}
         self._gen = 0
 
     @property
@@ -120,6 +131,7 @@ class DynamicProviderPool(Provider):
         self._order = tuple(slots.keys())
         live = set(new_slots)
         self._failed = {k: v for k, v in self._failed.items() if k in live}
+        self._purge_retired_blocks(live)
         self._rr = self._rr % len(self._order) if self._order else 0
 
     async def update_slots(self, slots: dict[str, Provider]) -> None:
@@ -131,6 +143,25 @@ class DynamicProviderPool(Provider):
             except Exception as e:
                 logger.warning(f"{self.name}: close retired slot failed — {e}")
 
+    def _purge_retired_blocks(self, live: set[str]) -> None:
+        """Drop block bookkeeping for slots that no longer exist."""
+        self._model_blocked = {
+            blocked: until for blocked, until in self._model_blocked.items() if blocked[0] in live
+        }
+        self._model_block_reason = {
+            blocked: reason
+            for blocked, reason in self._model_block_reason.items()
+            if blocked[0] in live
+        }
+        self._model_blocked_hard = {
+            blocked for blocked in self._model_blocked_hard if blocked[0] in live
+        }
+        self._model_hard_reason = {
+            blocked: reason
+            for blocked, reason in self._model_hard_reason.items()
+            if blocked[0] in live
+        }
+
     def _mark_failed(self, key: str, generation: int) -> None:
         handle = self._slots.get(key)
         if (
@@ -141,13 +172,69 @@ class DynamicProviderPool(Provider):
             return
         self._failed[key] = time.monotonic() + _COOLDOWN_S
 
-    async def _acquire(self, tried: set[str], *, advance: bool) -> SlotHandle | None:
+    def _mark_outcome(
+        self,
+        handle: SlotHandle,
+        model: str,
+        error: Exception,
+    ) -> None:
+        """Record a failed attempt as a model-scoped quota block or generic cooldown.
+
+        Quota errors (duck-typed via ``model_block_reset_at``, e.g. CodeBuddy
+        6004) only block this account for the affected model — upstream
+        explicitly allows switching models on the same account. Everything
+        else keeps the account-wide cooldown.
+        """
+        reset_at = getattr(error, "model_block_reset_at", None)
+        if model and isinstance(reset_at, datetime):
+            self._mark_model_blocked(
+                handle.key, model, reset_at, reason=_error_reason(error)
+            )
+            return
+        self._mark_failed(handle.key, handle.generation)
+
+    def _mark_model_blocked(
+        self,
+        key: str,
+        model: str,
+        reset_at: datetime,
+        *,
+        reason: str = "",
+    ) -> None:
+        now = time.monotonic()
+        delay = min(max(reset_at.timestamp() - time.time(), _MODEL_BLOCK_DEFAULT_S), _MODEL_BLOCK_MAX_S)
+        self._model_blocked[(key, model)] = now + delay
+        if reason:
+            self._model_block_reason[(key, model)] = reason
+        if len(self._model_blocked) > 1:
+            self._model_blocked = {
+                blocked: until
+                for blocked, until in self._model_blocked.items()
+                if until > now or blocked == (key, model)
+            }
+            self._model_block_reason = {
+                blocked: text
+                for blocked, text in self._model_block_reason.items()
+                if blocked in self._model_blocked
+            }
+
+    def set_hard_blocks(self, blocks: dict[tuple[str, str], str]) -> None:
+        """Replace the administrator's manual blocks.
+
+        Hard blocks survive cooldown expiry and are not canaried by the
+        fallback path — the operator asked for this account to stay off this
+        model until they say otherwise.
+        """
+        self._model_blocked_hard = set(blocks)
+        self._model_hard_reason = dict(blocks)
+
+    async def _acquire(self, tried: set[str], *, advance: bool, model: str) -> SlotHandle | None:
         async with self._lock:
             order = self._live_slot_order()
             if not order:
                 return None
             ordered = self._round_robin_order(order, advance=advance)
-            return self._available_handle(ordered, tried)
+            return self._available_handle(ordered, tried, model)
 
     def _live_slot_order(self) -> list[str]:
         return [key for key in self._order if key in self._slots]
@@ -163,10 +250,77 @@ class DynamicProviderPool(Provider):
         self,
         ordered: list[str],
         tried: set[str],
+        model: str,
     ) -> SlotHandle | None:
         now = time.monotonic()
-        healthy = [key for key in ordered if self._failed.get(key, 0) <= now]
-        return self._take_handle(healthy, tried) or self._take_handle(ordered, tried)
+        # A manually blocked account is never a candidate, not even as a last
+        # resort; everything else degrades to the fallback path below.
+        candidates = [key for key in ordered if (key, model) not in self._model_blocked_hard]
+        healthy = [
+            key
+            for key in candidates
+            if self._failed.get(key, 0) <= now
+            and self._model_blocked.get((key, model), 0) <= now
+        ]
+        if healthy:
+            return self._take_handle(healthy, tried)
+        # Everything is cooling or auto-blocked for this model: fall back to the
+        # remaining order so a recovered account gets canaried, earliest reset
+        # first (most likely to succeed).
+        fallback = sorted(
+            candidates,
+            key=lambda key: (
+                self._model_blocked.get((key, model), 0),
+                self._failed.get(key, 0),
+            ),
+        )
+        return self._take_handle(fallback, tried)
+
+    def quota_blocks(self) -> list[dict[str, str]]:
+        """Snapshot of active model-scoped blocks for observability.
+
+        Covers both auto blocks (upstream quota, self-clearing) and manual
+        blocks (administrator decision), each with the reason to display.
+        """
+        now = time.monotonic()
+        now_wall = datetime.now(UTC)
+        blocks = []
+        for (key, model), until in self._model_blocked.items():
+            if until <= now:
+                continue
+            provider, account_id = self._split_slot_key(key)
+            blocked_until = now_wall + timedelta(seconds=until - now)
+            blocks.append({
+                "provider": provider,
+                "account_id": account_id,
+                "model_id": model,
+                "blocked_until": blocked_until.isoformat(timespec="seconds").replace("+00:00", "Z"),
+                "reason": self._model_block_reason.get((key, model), ""),
+                "source": "auto",
+            })
+        for key, model in self._model_blocked_hard:
+            provider, account_id = self._split_slot_key(key)
+            blocks.append({
+                "provider": provider,
+                "account_id": account_id,
+                "model_id": model,
+                "blocked_until": "",
+                "reason": self._model_hard_reason.get((key, model), ""),
+                "source": "manual",
+            })
+        return blocks
+
+    def _split_slot_key(self, key: str) -> tuple[str, str]:
+        """Split a slot key into (provider, account_id).
+
+        Slot keys are normally ``provider:account_id``; a key without the prefix
+        falls back to this pool's own provider name rather than reporting an
+        empty account in the observability snapshot.
+        """
+        provider, separator, account_id = key.partition(":")
+        if not separator:
+            return self.name, key
+        return provider, account_id
 
     def _take_handle(
         self,
@@ -202,7 +356,7 @@ class DynamicProviderPool(Provider):
         last_err: Exception | None = None
         advance = True
         while True:
-            handle = await self._acquire(tried, advance=advance)
+            handle = await self._acquire(tried, advance=advance, model=request.model)
             advance = False
             if handle is None:
                 if last_err is not None:
@@ -218,7 +372,7 @@ class DynamicProviderPool(Provider):
                 last_err = e
                 logger.warning(f"{self.name}[{handle.key}]: complete failed — {e}")
                 async with self._lock:
-                    self._mark_failed(handle.key, handle.generation)
+                    self._mark_outcome(handle, request.model, e)
             finally:
                 await self._release(handle)
 
@@ -227,7 +381,7 @@ class DynamicProviderPool(Provider):
         last_err: Exception | None = None
         advance = True
         while True:
-            handle = await self._acquire(tried, advance=advance)
+            handle = await self._acquire(tried, advance=advance, model=request.model)
             advance = False
             if handle is None:
                 if last_err is not None:
@@ -240,12 +394,12 @@ class DynamicProviderPool(Provider):
                 return
             except _PrecommitStreamFailure as failure:
                 async with self._lock:
-                    self._mark_failed(handle.key, handle.generation)
+                    self._mark_outcome(handle, request.model, failure.error)
                 last_err = failure.error
                 logger.warning(f"{self.name}[{handle.key}]: stream failed pre-commit — {failure.error}")
-            except Exception:
+            except Exception as error:
                 async with self._lock:
-                    self._mark_failed(handle.key, handle.generation)
+                    self._mark_outcome(handle, request.model, error)
                 raise
             finally:
                 await self._release(handle)
@@ -292,3 +446,9 @@ class LoadBalancedProvider(DynamicProviderPool):
             raise ValueError("Need at least one provider instance")
         super().__init__(name=instances[0].name)
         self._apply_slots_locked({str(i): p for i, p in enumerate(instances)})
+
+
+def _error_reason(error: Exception) -> str:
+    """Short, secret-free explanation of why an account was auto-blocked."""
+    message = getattr(error, "message", None) or str(error)
+    return " ".join(str(message).split())[:200]

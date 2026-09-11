@@ -59,6 +59,7 @@ class ChatCompletionRequest(BaseModel):
     _input_tokens: int | None = PrivateAttr(default=None)
     _output_tokens: int | None = PrivateAttr(default=None)
     _effective_reasoning_effort: str | None = PrivateAttr(default=None)
+    _stream_error: str | None = PrivateAttr(default=None)
 
     def record_provider(self, provider: str) -> None:
         self._selected_provider = provider
@@ -66,6 +67,19 @@ class ChatCompletionRequest(BaseModel):
     def record_effective_reasoning_effort(self, effort: str) -> None:
         """Record the effort actually applied to the upstream request."""
         self._effective_reasoning_effort = effort
+
+    def record_stream_error(self, error_code: str) -> None:
+        """Record the exception a stream adapter converted into an SSE payload.
+
+        Streaming responses surface provider errors inside the body with HTTP
+        200, so middleware alone cannot tell failure from success; telemetry
+        reads this back via :attr:`stream_error`.
+        """
+        self._stream_error = error_code
+
+    @property
+    def stream_error(self) -> str | None:
+        return self._stream_error
 
     def record_slot(self, slot_key: str, *, committed: bool = False) -> None:
         self._selected_account_id = slot_key.split(":", 1)[-1]

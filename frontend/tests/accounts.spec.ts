@@ -203,6 +203,123 @@ describe("AccountImportPanel", () => {
 
 });
 
+describe("AccountImportPanel WorkBuddy 国际版", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    sessionStorage.clear();
+  });
+
+  it("offers all three providers and never renders check-in UI for the international provider", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => response({ models: [] })));
+    const wrapper = mount(AccountImportPanel, { global: { plugins: [createPinia()] } });
+
+    const providers = wrapper.findAll(".segmented-control button").map((button) => button.text());
+    expect(providers).toEqual(["CodeBuddy", "WorkBuddy 国际版", "Qoder"]);
+
+    await wrapper.findAll(".segmented-control button")[1].trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("浏览器登录");
+    expect(wrapper.text()).toContain("hy4-preview");
+    expect(wrapper.findAll("details").some((details) => details.text().includes("手动导入签到凭据"))).toBe(false);
+    expect(wrapper.find('select[aria-label="签到认证模式"]').exists()).toBe(false);
+    expect(wrapper.find('input[aria-label="WorkBuddy Cookie"]').exists()).toBe(false);
+    expect(wrapper.findAll("button").some((button) => button.text().includes("验证并启用"))).toBe(false);
+  });
+
+  it("starts the international OAuth flow and polls its own endpoint", async () => {
+    vi.useFakeTimers();
+    try {
+      const calls: Array<{ url: string; body: unknown }> = [];
+      const open = vi.fn();
+      vi.stubGlobal("open", open);
+      vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        calls.push({ url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+        if (url.endsWith("/auth/workbuddy-intl/start")) {
+          return response({ flow_id: "flow-intl", auth_url: "https://intl.example/auth", expires_at: futureIso(), label: "intl", account_id: null });
+        }
+        if (url.endsWith("/auth/workbuddy-intl/poll")) return response({ status: "pending" });
+        return response({});
+      }));
+      const wrapper = mount(AccountImportPanel, {
+        props: { provider: "workbuddy_intl" },
+        global: { plugins: [createPinia()] },
+      });
+
+      await wrapper.findAll("button").find((button) => button.text().includes("浏览器登录"))?.trigger("click");
+      await flushPromises();
+
+      expect(calls[0].url).toBe("/api/admin/auth/workbuddy-intl/start");
+      expect(calls[0].body).toMatchObject({ label: "WorkBuddy 国际版 OAuth" });
+      expect(open).toHaveBeenCalledWith("https://intl.example/auth", "_blank", "noopener,noreferrer");
+
+      await vi.advanceTimersByTimeAsync(2_100);
+      await flushPromises();
+      expect(calls.some((call) => call.url === "/api/admin/auth/workbuddy-intl/poll")).toBe(true);
+      expect(calls.find((call) => call.url.endsWith("/poll"))?.body).toEqual({ flow_id: "flow-intl" });
+      expect(wrapper.text()).toContain("等待在浏览器中完成授权");
+      wrapper.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("imports a pasted international bearer token with an optional refresh token", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), init });
+      return response({ status: "ok", account: { provider: "workbuddy_intl", account_id: "intl-1", label: "国际版主账号" } });
+    }));
+    const wrapper = mount(AccountImportPanel, {
+      props: { provider: "workbuddy_intl" },
+      global: { plugins: [createPinia()] },
+    });
+
+    const manualDetails = wrapper.findAll("details").find((details) => details.text().includes("手动输入 Bearer Token"));
+    await manualDetails?.find("summary").trigger("click");
+    await flushPromises();
+    await wrapper.get('input[aria-label="Bearer Token"]').setValue("intl-access");
+    await wrapper.get('input[aria-label="刷新令牌（可选）"]').setValue("intl-refresh");
+    await wrapper.findAll("button").find((button) => button.text().includes("验证并保存"))?.trigger("click");
+    await flushPromises();
+
+    expect(calls[0].url).toBe("/api/admin/auth/workbuddy-intl/manual");
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ token: "intl-access", refresh_token: "intl-refresh" });
+    expect(wrapper.text()).toContain("国际版仅支持对话，无签到");
+    expect(wrapper.text()).not.toContain("intl-access");
+    expect(wrapper.emitted("saved")?.[0]?.[0]).toEqual({ provider: "workbuddy_intl", account_id: "intl-1", label: "国际版主账号" });
+  });
+
+  it("keeps the CodeBuddy and international flow storage keys separate", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/auth/codebuddy/start")) {
+        return response({ flow_id: "flow-cb", auth_url: "https://cb.example/auth", expires_at: futureIso(), label: "cb", account_id: null });
+      }
+      return response({});
+    }));
+    vi.stubGlobal("open", vi.fn());
+    const wrapper = mount(AccountImportPanel, { global: { plugins: [createPinia()] } });
+
+    await wrapper.findAll("button").find((button) => button.text().includes("浏览器登录"))?.trigger("click");
+    await flushPromises();
+
+    expect(sessionStorage.getItem("qb2api.codebuddy.oauth.flow")).toContain("flow-cb");
+    expect(sessionStorage.getItem("qb2api.workbuddy-intl.oauth.flow")).toBeNull();
+
+    await wrapper.findAll(".segmented-control button")[1].trigger("click");
+    await flushPromises();
+    // 切换提供方后不会误用另一个提供方的流程，且原流程仍保留可恢复。
+    expect(wrapper.text()).not.toContain("继续 OAuth 登录");
+    expect(sessionStorage.getItem("qb2api.codebuddy.oauth.flow")).toContain("flow-cb");
+    wrapper.unmount();
+  });
+});
+
+function futureIso(): string {
+  return new Date(Date.now() + 10 * 60 * 1000).toISOString();
+}
+
 function response(body: unknown, status = 200): Response {
   return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
 }

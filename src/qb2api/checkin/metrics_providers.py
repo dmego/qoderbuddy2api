@@ -12,6 +12,12 @@ from .quota import QuotaUnavailableError, normalize_quota
 class ProviderMetricCollectorMixin:
     """Collect upstream provider metrics through snapshot write primitives."""
 
+    _PROVIDER_METRICS = {
+        "qoder": "quota",
+        "codebuddy": "points",
+        "workbuddy_intl": "points",
+    }
+
     async def _write_provider_snapshot(
         self,
         *,
@@ -20,17 +26,52 @@ class ProviderMetricCollectorMixin:
         purpose: str,
         state: Any,
     ) -> None:
-        if provider == "qoder":
-            key = (provider, account_id, "quota")
-            if key in state.seen:
-                return
-            await self._write_quota_snapshot(account_id, state)
-            await self._write_activity_snapshot(account_id, state)
-        elif provider == "codebuddy":
-            key = (provider, account_id, "points")
-            if key in state.seen:
-                return
-            await self._write_credits_snapshot(account_id, state)
+        kind = self._PROVIDER_METRICS.get(provider)
+        if kind is None or (provider, account_id, kind) in state.seen:
+            return
+        collector = {
+            "qoder": self._collect_qoder,
+            "codebuddy": self._collect_credits,
+            "workbuddy_intl": self._collect_intl_credits,
+        }[provider]
+        await collector(account_id, state)
+
+    async def _collect_qoder(self, account_id: str, state: Any) -> None:
+        await self._write_quota_snapshot(account_id, state)
+        await self._write_activity_snapshot(account_id, state)
+
+    async def _collect_credits(self, account_id: str, state: Any) -> None:
+        await self._write_credits_snapshot(account_id, state)
+
+    async def _collect_intl_credits(self, account_id: str, state: Any) -> None:
+        await self._write_intl_credits_snapshot(account_id, state)
+
+    async def _write_intl_credits_snapshot(self, account_id: str, state: Any) -> None:
+        """Credit balance for the international pool.
+
+        The international deployment has no check-in purpose, so the chat
+        credential is the only material available to authenticate the read.
+        """
+        key = ("workbuddy_intl", account_id, "points")
+        state.seen.add(key)
+        if await self._write_backoff_snapshot(key, state):
+            return
+        client = self._dependencies.workbuddy_intl_credits
+        if client is None:
+            return
+        try:
+            credential = await self._dependencies.resolver.credential(
+                "workbuddy_intl", account_id, "chat"
+            )
+            token = _access_token(credential)
+            value = await client.fetch(token)
+        except (LookupError, QuotaUnavailableError, CodeBuddyCreditsUnavailableError) as error:
+            await self._write_failure(key, state, str(error))
+        except Exception as error:
+            await self._write_failure(key, state, type(error).__name__)
+        else:
+            await self._write(key=key, value=value, status="fresh", state=state)
+            self._backoff.pop(self._backoff_key(key), None)
 
     async def _write_quota_snapshot(self, account_id: str, state: Any) -> None:
         key = ("qoder", account_id, "quota")

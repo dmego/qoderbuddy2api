@@ -93,7 +93,9 @@ def _admin_app(
 ) -> FastAPI:
     app = FastAPI()
     app.include_router(admin_router)
-    app.state.settings = Settings(admin_key="admin-secret")
+    # worker_port=1 keeps the admin listing's quota-block probe hermetic:
+    # connection is refused instantly instead of reaching a real local worker.
+    app.state.settings = Settings(admin_key="admin-secret", worker_port=1)
     app.state.account_repo = repository
     app.state.credential_vault = vault
     app.state.account_registry = registry

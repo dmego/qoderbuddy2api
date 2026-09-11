@@ -51,11 +51,13 @@ class AccountRegistry:
         *,
         codebuddy_tokens: list[str] | None = None,
         qoder_tokens: list[str] | None = None,
+        workbuddy_intl_tokens: list[str] | None = None,
     ) -> None:
         self._repo = repo
         self._vault = vault
         self._codebuddy_tokens = list(codebuddy_tokens or [])
         self._qoder_tokens = list(qoder_tokens or [])
+        self._workbuddy_intl_tokens = list(workbuddy_intl_tokens or [])
         self._env: list[EnvSlot] = []
         self._dyn: dict[tuple[str, str], DynamicSlot] = {}
         # (provider, account_id, purpose) -> secret for env-only resolve
@@ -67,17 +69,21 @@ class AccountRegistry:
         *,
         codebuddy_tokens: list[str] | None = None,
         qoder_tokens: list[str] | None = None,
+        workbuddy_intl_tokens: list[str] | None = None,
     ) -> None:
         if codebuddy_tokens is not None:
             self._codebuddy_tokens = list(codebuddy_tokens)
         if qoder_tokens is not None:
             self._qoder_tokens = list(qoder_tokens)
+        if workbuddy_intl_tokens is not None:
+            self._workbuddy_intl_tokens = list(workbuddy_intl_tokens)
 
     async def rebuild(self) -> None:
         """Reload env + DB into memory snapshots."""
         env, env_secrets = load_environment(
             codebuddy_tokens=self._codebuddy_tokens,
             qoder_tokens=self._qoder_tokens,
+            workbuddy_intl_tokens=self._workbuddy_intl_tokens,
         )
         dyn = await load_dynamic_slots(self._repo, self._vault)
         mark_shadowed(env, dyn)

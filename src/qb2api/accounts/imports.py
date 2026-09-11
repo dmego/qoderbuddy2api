@@ -18,17 +18,68 @@ async def persist_codebuddy_account(
     expires_at: str | None = None,
     account_id: str | None = None,
 ) -> str:
-    account = await _codebuddy_account(repo, account_id)
+    return await _persist_bearer_account(
+        repo,
+        vault,
+        provider="codebuddy",
+        label=label,
+        source=source,
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_at=expires_at,
+        account_id=account_id,
+    )
+
+
+async def persist_workbuddy_intl_account(
+    repo: AccountRepository,
+    vault: CredentialVault,
+    *,
+    label: str,
+    source: str,
+    access_token: str,
+    refresh_token: str | None = None,
+    expires_at: str | None = None,
+    account_id: str | None = None,
+) -> str:
+    """Persist an international WorkBuddy account (chat-only, no check-in)."""
+    return await _persist_bearer_account(
+        repo,
+        vault,
+        provider="workbuddy_intl",
+        label=label,
+        source=source,
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_at=expires_at,
+        account_id=account_id,
+    )
+
+
+async def _persist_bearer_account(
+    repo: AccountRepository,
+    vault: CredentialVault,
+    *,
+    provider: str,
+    label: str,
+    source: str,
+    access_token: str,
+    refresh_token: str | None,
+    expires_at: str | None,
+    account_id: str | None,
+) -> str:
+    """Upsert one bearer-token account plus its chat credential atomically."""
+    account = await _existing_account(repo, provider, account_id)
     if account_id is not None and account is None:
-        raise LookupError(f"codebuddy account not found: {account_id}")
-    durable_id = account_id or new_account_slug("codebuddy")
+        raise LookupError(f"{provider} account not found: {account_id}")
+    durable_id = account_id or new_account_slug(provider)
     payload = {"access_token": access_token}
     if refresh_token:
         payload["refresh_token"] = refresh_token
     encrypted = vault.encrypt(payload)
     async with repo.transaction():
         await repo.upsert_account(
-            provider="codebuddy",
+            provider=provider,
             account_id=durable_id,
             label=label,
             source=source,
@@ -36,9 +87,11 @@ async def persist_codebuddy_account(
             masked_identity=_mask(access_token),
             identity_hash=(account or {}).get("identity_hash"),
         )
-        await _write_codebuddy_purposes(repo, durable_id, expires_at)
+        await _write_chat_purpose(
+            repo, provider=provider, account_id=durable_id, expires_at=expires_at
+        )
         await repo.upsert_credential(
-            provider="codebuddy",
+            provider=provider,
             account_id=durable_id,
             purpose="chat",
             mode="oauth" if refresh_token else "bearer",
@@ -46,9 +99,55 @@ async def persist_codebuddy_account(
             has_refresh_token=bool(refresh_token),
             expires_at=expires_at,
         )
-        await _audit_account_import(repo, "codebuddy", durable_id)
-        await _audit_credential_import(repo, "codebuddy", durable_id, purpose="chat")
+        await _audit_account_import(repo, provider, durable_id)
+        await _audit_credential_import(repo, provider, durable_id, purpose="chat")
     return durable_id
+
+
+async def _write_chat_purpose(
+    repo: AccountRepository,
+    *,
+    provider: str,
+    account_id: str,
+    expires_at: str | None,
+) -> None:
+    """Create the chat purpose, plus the disabled check-in row that the
+    domestic import flow expects. The international deployment has no
+    check-in centre, so it never gets a check-in purpose at all."""
+    current = {item["purpose"]: item for item in await repo.list_purposes(provider, account_id)}
+    await repo.upsert_purpose(
+        provider=provider,
+        account_id=account_id,
+        purpose="chat",
+        enabled=True,
+        status="active",
+        verification_status="not_required",
+        capabilities=["proxy.chat"],
+        expires_at=expires_at,
+    )
+    if provider == "workbuddy_intl" or "checkin" in current:
+        return
+    await repo.upsert_purpose(
+        provider=provider,
+        account_id=account_id,
+        purpose="checkin",
+        enabled=False,
+        status="unconfigured",
+        verification_status="unverified",
+        capabilities=["checkin.workbuddy"],
+        expires_at=expires_at,
+    )
+
+
+async def _existing_account(
+    repo: AccountRepository,
+    provider: str,
+    account_id: str | None,
+) -> dict | None:
+    if account_id is None:
+        return None
+    accounts = await repo.list_accounts(provider)
+    return next((row for row in accounts if row["account_id"] == account_id), None)
 
 
 async def persist_codebuddy_checkin(

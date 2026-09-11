@@ -8,15 +8,13 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
-from qb2api.accounts.codebuddy_model_sync import sync_codebuddy_models
-from qb2api.accounts.qoder_model_sync import sync_qoder_models
 from qb2api.models import ModelCapabilities, ModelDefinition, load_models_from_config, load_unified_overrides
 from qb2api.models_catalog import UnifiedModel, build_unified_catalog
 from qb2api.openai import ChatCompletionRequest, ChatMessage
 from qb2api.provider_factory import ProviderFactory
-from qb2api.providers.qoder_auth import QoderError
 
 from .catalog_filters import filter_models
+from .catalog_support import annotate_quota_blocks, audit, refresh_runtime
 from .dependencies import admin_state, require_admin
 from .validation import (
     bool_filter,
@@ -70,6 +68,7 @@ async def list_models(
         cursor_value(cursor, allow_zero=True),
         selected_limit,
     )
+    await annotate_quota_blocks(admin_state(request), page)
     return {"models": page, "limit": selected_limit, "next_cursor": next_cursor}
 
 
@@ -83,16 +82,22 @@ async def _unified_models(state: Any) -> list[dict[str, Any]]:
         rows = await repository.list_models()
         for row in rows:
             route_enabled[(row["provider"], row["model_id"])] = bool(row["enabled"])
-        upstream = [
-            _catalog_row_definition(row)
-            for row in await repository.list_models("qoder")
-            if row.get("source") == "upstream"
-        ]
-        per_provider["qoder"] = upstream
+        per_provider["qoder"] = await upstream_model_definitions(state)
     overrides = load_unified_overrides(settings.model_config_path)
     catalog = build_unified_catalog(per_provider, overrides)
     return [_unified_row(entry, route_enabled) for entry in catalog.values()]
 
+
+async def upstream_model_definitions(state: Any) -> list[ModelDefinition]:
+    """Enabled upstream catalog rows for Qoder, as model definitions."""
+    repository = state.account_repo
+    if repository is None:
+        return []
+    return [
+        _catalog_row_definition(row)
+        for row in await repository.list_models("qoder")
+        if row.get("source") == "upstream"
+    ]
 
 def _catalog_row_definition(row: dict[str, Any]) -> ModelDefinition:
     capabilities = row.get("capabilities") or []
@@ -180,13 +185,13 @@ async def patch_unified_model(model_id: str, request: Request) -> dict[str, Any]
                 )
             else:
                 await repository.set_model_enabled("qoder", route["upstream_id"], body["enabled"])
-        await _audit(
+        await audit(
             request,
             action="model.update",
             resource_type="unified",
             resource_id=model_id,
         )
-    await _refresh_runtime(state)
+    await refresh_runtime(state)
     return {"model_id": model_id, "enabled": body["enabled"]}
 
 
@@ -204,7 +209,7 @@ async def probe_unified_model(model_id: str, request: Request) -> dict[str, Any]
         raise HTTPException(status_code=409, detail="model_disabled")
     results = await _probe_routes(state, routes)
     succeeded = all(result["status"] == "succeeded" for result in results)
-    await _audit(
+    await audit(
         request,
         action="model.probe",
         resource_type="unified",
@@ -244,15 +249,10 @@ async def _probe_routes(state: Any, routes: list[dict[str, Any]]) -> list[dict[s
     return results
 
 
-async def _refresh_runtime(state: Any) -> None:
-    refresh = getattr(state, "refresh_provider_pools", None)
-    if refresh is not None:
-        await refresh()
-
-
 @router.patch("/{provider}/{model_id}")
 async def patch_model(provider: str, model_id: str, request: Request) -> dict[str, Any]:
     await require_admin(request)
+    state = admin_state(request)
     body = await json_object(request)
     if set(body) != {"enabled"} or not isinstance(body["enabled"], bool):
         raise HTTPException(status_code=400, detail="enabled_boolean_required")
@@ -260,12 +260,15 @@ async def patch_model(provider: str, model_id: str, request: Request) -> dict[st
     async with repository.transaction():
         if not await repository.set_model_enabled(provider, model_id, body["enabled"]):
             raise HTTPException(status_code=404, detail="model_not_found")
-        await _audit(
+        await audit(
             request,
             action="model.update",
             resource_type=provider,
             resource_id=model_id,
         )
+    # The Worker only learns about the change through a new runtime snapshot,
+    # so a route toggle must trigger a reload like every other catalog mutation.
+    await refresh_runtime(state)
     models = await repository.list_models(provider)
     return next(model for model in models if model["model_id"] == model_id)
 
@@ -287,146 +290,13 @@ async def refresh_models(request: Request) -> dict[str, Any]:
                     source="definition",
                 )
                 count += 1
-        await _audit(
+        await audit(
             request,
             action="model.refresh",
             resource_type="catalog",
             resource_id="catalog",
         )
     return {"status": "succeeded", "refreshed": count}
-
-
-@router.post("/sync/{provider}")
-async def sync_upstream_models(provider: str, request: Request) -> dict[str, Any]:
-    await require_admin(request)
-    state = admin_state(request)
-    if provider == "qoder":
-        try:
-            report = await sync_qoder_models(
-                state.account_repo,
-                state.account_registry,
-                state.credential_resolver,
-            )
-        except QoderError as error:
-            await _audit(
-                request,
-                action="model.sync",
-                resource_type=provider,
-                resource_id="catalog",
-                result="failed",
-                metadata={"error_code": error.status_code},
-            )
-            raise HTTPException(status_code=error.status_code, detail="sync_failed") from error
-        await _audit(
-            request,
-            action="model.sync",
-            resource_type=provider,
-            resource_id="catalog",
-            metadata={"added": report.added, "updated": report.updated, "disabled": report.disabled},
-        )
-        await _refresh_runtime(state)
-        return {
-            "status": "succeeded",
-            "added": report.added,
-            "updated": report.updated,
-            "disabled": report.disabled,
-            "models": report.models,
-        }
-    if provider == "codebuddy":
-        try:
-            report = await sync_codebuddy_models(
-                state.account_repo,
-                state.account_registry,
-                state.credential_resolver,
-                models_config_path=state.settings.model_config_path,
-            )
-        except Exception as error:
-            await _audit(
-                request,
-                action="model.sync",
-                resource_type=provider,
-                resource_id="catalog",
-                result="failed",
-                metadata={"error": type(error).__name__},
-            )
-            raise HTTPException(status_code=502, detail="sync_failed") from error
-        await _audit(
-            request,
-            action="model.sync",
-            resource_type=provider,
-            resource_id="catalog",
-            metadata={"added": report.added, "updated": report.updated, "removed": report.removed},
-        )
-        await _refresh_runtime(state)
-        return {
-            "status": "succeeded",
-            "added": report.added,
-            "updated": report.updated,
-            "removed": report.removed,
-            "probed": report.probed,
-            "models": report.models,
-        }
-    raise HTTPException(status_code=400, detail="unsupported_provider")
-
-
-@router.post("/sync")
-async def sync_all_models(request: Request) -> dict[str, Any]:
-    """全量上游同步：qoder 官方目录 + workbuddy 探测，各自容错、错误不阻断。"""
-    await require_admin(request)
-    state = admin_state(request)
-    result: dict[str, Any] = {"status": "succeeded", "providers": {}}
-    totals = {"added": 0, "updated": 0, "removed": 0, "disabled": 0}
-    try:
-        report = await sync_qoder_models(
-            state.account_repo,
-            state.account_registry,
-            state.credential_resolver,
-        )
-        result["providers"]["qoder"] = {
-            "status": "succeeded",
-            "added": report.added,
-            "updated": report.updated,
-            "disabled": report.disabled,
-        }
-        totals["added"] += report.added
-        totals["updated"] += report.updated
-        totals["disabled"] += report.disabled
-    except Exception as error:
-        result["providers"]["qoder"] = {"status": "failed", "error": type(error).__name__}
-    try:
-        report = await sync_codebuddy_models(
-            state.account_repo,
-            state.account_registry,
-            state.credential_resolver,
-            models_config_path=state.settings.model_config_path,
-        )
-        result["providers"]["codebuddy"] = {
-            "status": "succeeded",
-            "added": report.added,
-            "updated": report.updated,
-            "removed": report.removed,
-            "probed": report.probed,
-        }
-        totals["added"] += report.added
-        totals["updated"] += report.updated
-        totals["removed"] += report.removed
-    except Exception as error:
-        result["providers"]["codebuddy"] = {"status": "failed", "error": type(error).__name__}
-    if any(entry.get("status") == "succeeded" for entry in result["providers"].values()):
-        await _refresh_runtime(state)
-    await _audit(
-        request,
-        action="model.sync",
-        resource_type="catalog",
-        resource_id="catalog",
-        result=result["status"],
-        metadata={
-            "qoder": result["providers"].get("qoder", {}).get("status"),
-            "codebuddy": result["providers"].get("codebuddy", {}).get("status"),
-        },
-    )
-    result.update(totals)
-    return result
 
 
 @router.post("/{provider}/{model_id}/probe")
@@ -438,7 +308,7 @@ async def probe_model(provider: str, model_id: str, request: Request) -> dict[st
     try:
         result = await probe_model_for_account(state, provider, None, model_id=model_id)
     except ProbeError as error:
-        await _audit(
+        await audit(
             request,
             action="model.probe",
             resource_type=provider,
@@ -447,7 +317,7 @@ async def probe_model(provider: str, model_id: str, request: Request) -> dict[st
             metadata={"error_code": error.code},
         )
         raise HTTPException(status_code=error.status_code, detail=error.code) from error
-    await _audit(
+    await audit(
         request,
         action="model.probe",
         resource_type=provider,
@@ -503,24 +373,6 @@ def _repository(request: Request):
     if repository is None:
         raise HTTPException(status_code=503, detail="repository_unavailable")
     return repository
-
-
-async def _audit(
-    request: Request,
-    *,
-    action: str,
-    resource_type: str,
-    resource_id: str,
-    result: str = "succeeded",
-    metadata: dict[str, Any] | None = None,
-) -> None:
-    repository = getattr(admin_state(request), "account_repo", None)
-    if repository is not None:
-        await repository.add_audit_event(
-            actor_type="admin", actor_id=None, action=action,
-            resource_type=resource_type, resource_id=resource_id, result=result,
-            metadata=metadata,
-        )
 
 
 def _model_search(search: str | None, query: str | None) -> str | None:

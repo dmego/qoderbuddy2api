@@ -122,13 +122,28 @@ def test_to_info_uses_canonical_id_without_prefix():
     assert info["owned_by"] == "qoderbuddy2api"
 
 
-def test_full_config_only_carries_codebuddy_definitions():
+def test_full_config_carries_domestic_and_international_definitions():
     per_provider = load_models_from_config("config/models.json")
-    assert set(per_provider) == {"codebuddy"}
+    assert set(per_provider) == {"codebuddy", "workbuddy_intl"}
+    assert [model.id for model in per_provider["workbuddy_intl"]] == [
+        "hy4-preview", "hy3", "deepseek-v4.1-flash",
+    ]
     catalog = build_unified_catalog(per_provider)
+    # The three international ids already exist domestically, so they merge
+    # into the same canonical entries instead of adding new ones.
     assert len(catalog) == 19
     assert set(catalog["auto"].routes) == {ModelRoute("codebuddy", "auto")}
     assert "glm-5.3" in catalog and "glm-5.3-flash" in catalog and "kimi-k3" in catalog
+
+
+def test_international_models_merge_into_dual_route_entries():
+    per_provider = load_models_from_config("config/models.json")
+    catalog = build_unified_catalog(per_provider)
+    for model_id in ("hy4-preview", "hy3", "deepseek-v4.1-flash"):
+        providers = {route.provider for route in catalog[model_id].routes}
+        assert providers == {"codebuddy", "workbuddy_intl"}, model_id
+    # Everything else stays domestic-only.
+    assert {route.provider for route in catalog["glm-5.3"].routes} == {"codebuddy"}
 
 
 def test_dual_provider_config_merges_to_nineteen_canonical_ids():
@@ -156,5 +171,10 @@ def test_load_models_ignores_unified_section(tmp_path):
         '"unified": {"hy3": {"name": "Override"}}}'
     )
     loaded = load_models_from_config(config_path)
-    assert set(loaded) == {"codebuddy"}
+    # A config without an international section still yields that provider's
+    # built-in free-tier defaults.
+    assert set(loaded) == {"codebuddy", "workbuddy_intl"}
     assert loaded["codebuddy"][0].id == "hy3"
+    assert {model.id for model in loaded["workbuddy_intl"]} == {
+        "hy4-preview", "hy3", "deepseek-v4.1-flash",
+    }
