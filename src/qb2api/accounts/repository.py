@@ -115,7 +115,30 @@ class AccountRepository(
                 "INSERT INTO schema_meta(key, value) VALUES('schema_version', '7') "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
             )
+            await self._backfill_refreshable_flags()
             await self.db.commit()
+
+    async def _backfill_refreshable_flags(self) -> None:
+        """Correct rows whose ``has_refresh_token`` predates a refresh contract.
+
+        The flag is derived, so it is always safe to reassert it: any provider in
+        REFRESHABLE_PROVIDERS can be renewed regardless of whether its payload
+        carries a literal ``refresh_token`` (OrcaTerm renews with the access
+        token itself). Rows written before a provider gained a contract would
+        otherwise keep claiming the credential cannot be renewed until the next
+        rotation happened to rewrite them.
+        """
+        from .refresh import REFRESHABLE_PROVIDERS
+
+        providers = sorted(REFRESHABLE_PROVIDERS)
+        if not providers:
+            return
+        placeholders = ",".join("?" for _ in providers)
+        await self.db.execute(
+            f"UPDATE credentials SET has_refresh_token=1 "
+            f"WHERE provider IN ({placeholders}) AND has_refresh_token=0",
+            tuple(providers),
+        )
 
     async def close(self) -> None:
         async with self._operation_lock:

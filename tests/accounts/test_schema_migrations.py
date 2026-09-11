@@ -190,6 +190,48 @@ async def test_v6_active_days_table_gets_confirm_columns(tmp_path):
     await repository.close()
 
 
+@pytest.mark.asyncio
+async def test_refreshable_providers_are_backfilled_to_renewable(tmp_path):
+    """Rows written before a provider gained a refresh contract must be corrected.
+
+    OrcaTerm renews with the access token itself, so a row imported earlier
+    stored has_refresh_token=0 and kept telling the operator the credential
+    could not be renewed until some later rotation rewrote it.
+    """
+    path = tmp_path / "stale.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.executescript(SCHEMA)
+    now = "2026-09-11T00:00:00+00:00"
+    for provider, account_id, flag in (
+        ("orcaterm", "oct-stale", 0),
+        ("codebuddy", "cb-1", 0),
+    ):
+        connection.execute(
+            "INSERT INTO credentials(provider, account_id, purpose, mode, "
+            "encrypted_payload, payload_version, credential_version, "
+            "has_refresh_token, expires_at, updated_at) "
+            "VALUES (?, ?, 'chat', 'bearer', 'blob', 1, 1, ?, NULL, ?)",
+            (provider, account_id, flag, now),
+        )
+    connection.commit()
+    connection.close()
+
+    repository = AccountRepository(str(path))
+    await repository.connect()
+    await repository.migrate()
+
+    rows = await repository.db.execute_fetchall(
+        "SELECT provider, account_id, has_refresh_token FROM credentials "
+        "ORDER BY provider"
+    )
+    flags = {(row[0], row[1]): row[2] for row in rows}
+    # Renewable by contract, even though no refresh_token is stored.
+    assert flags[("orcaterm", "oct-stale")] == 1
+    # A provider without a contract keeps the literal meaning of the column.
+    assert flags[("codebuddy", "cb-1")] == 0
+    await repository.close()
+
+
 async def _names(repository: AccountRepository, kind: str) -> set[str]:
     rows = await repository.db.execute_fetchall(
         "SELECT name FROM sqlite_master WHERE type=?", (kind,)

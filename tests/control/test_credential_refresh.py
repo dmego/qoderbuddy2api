@@ -105,9 +105,10 @@ async def test_orcaterm_refresh_persists_rotated_token():
     assert rotated.payload["access_token"] == "new-token"
     assert rotated.credential_version == 2
     assert repo.upserts[0]["mode"] == "bearer"
-    # No separate refresh token exists; the flag must stay false rather than
-    # claiming one that the console never issued.
-    assert repo.upserts[0]["has_refresh_token"] is False
+    # OrcaTerm has no separate refresh token, but it *is* renewable — the console
+    # rotates the access token with itself. The admin table reads this flag, so
+    # reporting False would tell the operator the credential cannot be renewed.
+    assert repo.upserts[0]["has_refresh_token"] is True
 
 
 @pytest.mark.asyncio
@@ -163,6 +164,22 @@ async def test_refresh_skips_purpose_sync_when_purpose_is_absent():
 
     assert rotated is not None
     assert repo.purpose_upserts == []
+
+
+def test_import_and_rotation_agree_that_orcaterm_is_refreshable():
+    """Both write paths must report OrcaTerm as renewable.
+
+    A freshly imported account and a rotated one are stored by different code
+    paths, so pin the shared rule that decides the flag the admin table shows.
+    """
+    from qb2api.accounts.refresh import _carries_refresh_token
+
+    # OrcaTerm renews using the access token itself, so no refresh_token exists.
+    assert _carries_refresh_token("orcaterm", {"access_token": "tok"}) is True
+    # Providers without a refresh contract keep the literal meaning.
+    assert _carries_refresh_token("codebuddy", {"access_token": "tok"}) is False
+    assert _carries_refresh_token("codebuddy", {"refresh_token": "rt"}) is True
+    assert _carries_refresh_token("workbuddy_intl", {"access_token": "tok"}) is True
 
 
 @pytest.mark.asyncio

@@ -5,6 +5,7 @@ from __future__ import annotations
 from qb2api.admin.import_support import intl_identity, orcaterm_identity
 
 from .promote import new_account_slug
+from .refresh import _carries_refresh_token
 from .repository import AccountRepository
 from .vault import CredentialVault
 
@@ -166,7 +167,7 @@ async def _persist_bearer_account(
             purpose="chat",
             mode="oauth" if refresh_token else "bearer",
             encrypted_payload=encrypted,
-            has_refresh_token=bool(refresh_token),
+            has_refresh_token=_carries_refresh_token(provider, payload),
             expires_at=expires_at,
         )
         await _audit_account_import(repo, provider, durable_id)

@@ -35,6 +35,19 @@ logger = logging.getLogger("qb2api.accounts.refresh")
 REFRESHABLE_PROVIDERS = frozenset({"workbuddy_intl", "orcaterm"})
 
 
+def _carries_refresh_token(provider: str, payload: dict[str, Any]) -> bool:
+    """Whether the row advertises a usable refresh path to the operator.
+
+    ``has_refresh_token`` is shown in the admin credential table, so it must
+    mean "this credential can be renewed" rather than literally "a field named
+    refresh_token exists". OrcaTerm renews with the access token itself, so it
+    has no such field yet is fully refreshable.
+    """
+    if provider in REFRESHABLE_PROVIDERS:
+        return True
+    return bool(payload.get("refresh_token"))
+
+
 class BearerRefreshExecutor:
     """Refresh stored bearer credentials for providers with a usable refresh API."""
 
@@ -119,7 +132,7 @@ class BearerRefreshExecutor:
                 purpose=purpose,
                 mode=current.mode,
                 encrypted_payload=self._vault.encrypt(payload),
-                has_refresh_token=bool(payload.get("refresh_token")),
+                has_refresh_token=_carries_refresh_token(provider, payload),
                 expires_at=expires_at,
                 expected_version=current.credential_version,
             )
@@ -139,7 +152,7 @@ class BearerRefreshExecutor:
             payload=payload,
             credential_version=version,
             expires_at=expires_at,
-            has_refresh_token=bool(payload.get("refresh_token")),
+            has_refresh_token=_carries_refresh_token(provider, payload),
         )
 
     async def _sync_purpose_expiry(
