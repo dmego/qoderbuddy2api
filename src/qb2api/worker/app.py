@@ -227,7 +227,7 @@ def _provider_pools(runtime: Any) -> tuple[Any, ...]:
     """Every provider pool that can carry a per-model quota block."""
     if runtime is None:
         return ()
-    names = ("codebuddy_pool", "qoder_pool", "workbuddy_intl_pool")
+    names = ("codebuddy_pool", "qoder_pool", "workbuddy_intl_pool", "orcaterm_pool")
     return tuple(pool for pool in (getattr(runtime, name, None) for name in names) if pool is not None)
 
 

@@ -37,6 +37,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   codebuddy: "CodeBuddy",
   qoder: "Qoder",
   workbuddy_intl: "WorkBuddy 国际版",
+  orcaterm: "OrcaTerm",
 };
 const MAX_PRIORITY = 99;
 const MAX_WEIGHT = 1000;

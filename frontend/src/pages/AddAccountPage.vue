@@ -7,7 +7,7 @@ import AccountImportPanel, { type AccountReference, type Provider } from "@/comp
 
 const route = useRoute();
 const router = useRouter();
-const providers: readonly Provider[] = ["codebuddy", "workbuddy_intl", "qoder"];
+const providers: readonly Provider[] = ["codebuddy", "workbuddy_intl", "orcaterm", "qoder"];
 const provider = computed<Provider>(() => {
   const requested = route.query.provider;
   if (typeof requested !== "string") return "codebuddy";

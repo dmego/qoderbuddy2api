@@ -37,11 +37,15 @@ def load_environment(
     codebuddy_tokens: list[str],
     qoder_tokens: list[str],
     workbuddy_intl_tokens: list[str] | None = None,
+    orcaterm_tokens: list[str] | None = None,
 ) -> tuple[list[EnvSlot], dict[tuple[str, str, str], str]]:
     slots = _environment_slots("codebuddy", "cb-env", codebuddy_tokens)
     slots.extend(_environment_slots("qoder", "qd-env", qoder_tokens))
     slots.extend(
         _environment_slots("workbuddy_intl", "wbintl-env", workbuddy_intl_tokens or [])
+    )
+    slots.extend(
+        _environment_slots("orcaterm", "oct-env", orcaterm_tokens or [])
     )
     secrets = {(slot.provider, slot.account_id, "chat"): slot.secret for slot in slots}
     return slots, secrets

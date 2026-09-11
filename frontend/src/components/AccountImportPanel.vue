@@ -9,7 +9,7 @@ export type AccountReference = { provider: string; account_id: string; label: st
 
 type Flow = { flow_id: string; auth_url: string; expires_at: string; label: string; account_id?: string | null };
 type ImportResult = { account?: AccountReference; checkin_derived?: boolean; checkin_verified?: boolean };
-export type Provider = "codebuddy" | "qoder" | "workbuddy_intl";
+export type Provider = "codebuddy" | "qoder" | "workbuddy_intl" | "orcaterm";
 
 const props = withDefaults(defineProps<{
   provider?: Provider;
@@ -74,6 +74,8 @@ async function submitChat(): Promise<void> {
     clearSecrets();
     if (provider.value === "workbuddy_intl") {
       setMessage("账号已保存，代理凭据已启用（国际版仅支持对话，无签到）。", false);
+    } else if (provider.value === "orcaterm") {
+      setMessage("账号已保存，代理凭据已启用（OrcaTerm 仅支持对话，token 约 2 小时过期，过期后重新导入即可）。", false);
     } else if (result.checkin_derived || result.checkin_verified) {
       setMessage("账号已保存，代理与签到均已自动启用。", false);
     } else {
@@ -124,6 +126,7 @@ async function doSubmitCheckin(): Promise<void> {
 function chatEndpoint(): string {
   if (provider.value === "qoder") return "/auth/qoder/chat";
   if (provider.value === "workbuddy_intl") return "/auth/workbuddy-intl/manual";
+  if (provider.value === "orcaterm") return "/auth/orcaterm/manual";
   return "/auth/codebuddy/manual";
 }
 
@@ -237,19 +240,20 @@ onBeforeUnmount(() => window.clearTimeout(pollTimer));
 
 <template>
   <section class="import-panel" aria-label="账号导入">
-    <div class="segmented-control" aria-label="服务提供方"><button type="button" :class="{ active: provider === 'codebuddy' }" @click="selectProvider('codebuddy')">CodeBuddy</button><button type="button" :class="{ active: provider === 'workbuddy_intl' }" @click="selectProvider('workbuddy_intl')">WorkBuddy 国际版</button><button type="button" :class="{ active: provider === 'qoder' }" @click="selectProvider('qoder')">Qoder</button></div>
+    <div class="segmented-control" aria-label="服务提供方"><button type="button" :class="{ active: provider === 'codebuddy' }" @click="selectProvider('codebuddy')">CodeBuddy</button><button type="button" :class="{ active: provider === 'workbuddy_intl' }" @click="selectProvider('workbuddy_intl')">WorkBuddy 国际版</button><button type="button" :class="{ active: provider === 'qoder' }" @click="selectProvider('qoder')">Qoder</button><button type="button" :class="{ active: provider === 'orcaterm' }" @click="selectProvider('orcaterm')">OrcaTerm</button></div>
     <div class="form-grid">
       <label>显示名称<input v-model="form.label" aria-label="显示名称" autocomplete="off" placeholder="例如：主账号" /></label>
       <label v-if="requiresAccountId">已有账号 ID<span class="required-mark">必填</span><input v-model="form.accountId" aria-label="账号 ID" autocomplete="off" /></label>
     </div>
 
     <!-- 主入口：CodeBuddy / WorkBuddy 国际版 浏览器登录 -->
-    <div v-if="provider !== 'qoder'" class="form-actions">
+    <div v-if="provider === 'codebuddy' || provider === 'workbuddy_intl'" class="form-actions">
       <button type="button" :disabled="pending" @click="startOAuth"><LogIn :size="16" />浏览器登录</button>
       <button v-if="flow" class="secondary-button" type="button" :disabled="polling" @click="pollOAuth"><RefreshCcw :class="{ spin: polling }" :size="16" />继续 OAuth 登录</button>
     </div>
     <p v-if="flow" class="helper-text">流程将在 {{ new Date(flow.expires_at).toLocaleTimeString() }} 过期；可离开此页后返回继续轮询。</p>
     <p v-if="provider === 'workbuddy_intl'" class="helper-text">国际版账号仅用于对话请求（可用模型：hy4-preview、hy3、deepseek-v4.1-flash），没有签到与成长中心。</p>
+    <p v-if="provider === 'orcaterm'" class="helper-text">OrcaTerm 账号仅用于对话请求（可用模型：hy4-preview、hy3、kimi-k3、glm-5.3、glm-5.3-flash、glm-5.2、deepseek-v4-flash、deepseek-v4-pro），没有签到与成长中心。</p>
 
     <!-- Qoder: PAT 输入 -->
     <div v-if="provider === 'qoder'" class="form-grid">
@@ -261,13 +265,14 @@ onBeforeUnmount(() => window.clearTimeout(pollTimer));
     </div>
 
     <!-- CodeBuddy / WorkBuddy 国际版 手动 Bearer Token（折叠） -->
-    <details v-if="provider !== 'qoder'" class="advanced-section">
+    <details v-if="provider !== 'qoder'" class="advanced-section" :open="provider === 'orcaterm'">
       <summary><ChevronDown :size="14" /> 手动输入 Bearer Token</summary>
       <div class="form-grid">
         <label class="form-span">{{ chatTokenLabel }}<div class="input-with-icon"><KeyRound :size="16" /><input v-model="form.token" aria-label="Bearer Token" type="password" autocomplete="new-password" /></div></label>
         <label v-if="provider === 'workbuddy_intl'" class="form-span">刷新令牌（可选）<input v-model="form.refreshToken" aria-label="刷新令牌（可选）" type="password" autocomplete="new-password" /></label>
       </div>
       <p v-if="provider === 'workbuddy_intl'" class="helper-text">粘贴国际版账号的 Bearer Access Token；如同时提供刷新令牌，过期后可自动续期。</p>
+      <p v-if="provider === 'orcaterm'" class="helper-text">粘贴桌面版 OrcaTerm 的 OAuth Token（桌面 App 数据目录 data.bin 的 oauth_access_token，或浏览器登录 orcaterm.cloud.tencent.com 后从会话中获取）。token 约 2 小时过期，过期后重新导入即可。</p>
       <div class="form-actions">
         <button type="button" :disabled="pending || !canSubmitChat" @click="submitChat"><LoaderCircle v-if="pending" class="spin" :size="16" /><Link v-else :size="16" />验证并保存</button>
       </div>

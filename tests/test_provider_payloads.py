@@ -261,3 +261,93 @@ class TestQoderToolCalls:
         assert "authorization" in headers
         assert headers["authorization"].startswith("Bearer COSY.")
         assert headers["cosy-version"] == "0.1.43"
+
+
+class TestOrcaTermProvider:
+    """OrcaTerm agent-protocol contracts: payload shape, history, answer unwrapping."""
+
+    def test_body_carries_conversation_and_disabled_tools(self):
+        from qb2api.providers.orcaterm import OrcaTermProvider
+
+        provider = OrcaTermProvider(token="dummy", user_id="12345")
+        request = ChatCompletionRequest(
+            model="TokenHub/glm-5.3",
+            messages=[{"role": "user", "content": "你好"}],
+        )
+
+        body = provider._build_body(request, "cid-12345-orcaterm")
+
+        assert body["conversationId"] == "cid-12345-orcaterm"
+        assert body["user"]["setting"]["model"] == "TokenHub/glm-5.3"
+        # Terminal MCP tools must stay off so the answer is plain text.
+        assert body["user"]["setting"]["mcpServers"] == []
+        assert body["user"]["setting"]["uiServers"] == []
+        assert body["stream"] is True
+        # The last user turn travels as ``input``, not in history.
+        assert body["input"]["input"] == "你好"
+        assert body["input"]["type"] == "start"
+        assert body["input"]["historyMessages"] == []
+
+    def test_history_messages_encode_prior_turns(self):
+        import json
+
+        from qb2api.providers.orcaterm import OrcaTermProvider
+
+        provider = OrcaTermProvider(token="dummy", user_id="1")
+        request = ChatCompletionRequest(
+            model="TokenHub/glm-5.3",
+            messages=[
+                {"role": "system", "content": "你是助手"},
+                {"role": "user", "content": "我叫小明"},
+                {"role": "assistant", "content": "你好小明"},
+                {"role": "user", "content": "我叫什么？"},
+            ],
+        )
+
+        body = provider._build_body(request, "cid-1-orcaterm")
+        history = body["input"]["historyMessages"]
+
+        assert [item["type"] for item in history] == ["human", "human", "ai"]
+        assert body["input"]["input"] == "我叫什么？"
+        # System text is folded into the history as a human turn.
+        system = json.loads(history[0]["content"])
+        assert system["_format"] == "acp-prompt"
+        assert system["prompt"][0]["text"] == "你是助手"
+        # The assistant turn is stored as the agent's own JSON answer.
+        assistant = json.loads(history[2]["content"])
+        assert assistant["taskCompletion"] == "你好小明"
+
+    def test_split_agent_payload_unwraps_answer_and_thinking(self):
+        from qb2api.providers.orcaterm import _split_agent_payload
+
+        fenced = '```json\n{"action":"completion","thinking":"想一下","taskCompletion":"2"}\n```'
+        assert _split_agent_payload(fenced) == ("2", "想一下")
+
+        bare = '{"action":"completion","thinking":"","taskCompletion":"北京"}'
+        assert _split_agent_payload(bare) == ("北京", "")
+
+    def test_split_agent_payload_preserves_unparseable_text(self):
+        from qb2api.providers.orcaterm import _split_agent_payload
+
+        # A non-JSON answer must still reach the caller instead of vanishing.
+        assert _split_agent_payload("plain answer") == ("plain answer", "")
+
+    def test_parse_error_maps_known_upstream_failures(self):
+        from qb2api.providers.orcaterm import (
+            OrcaTermAuthError,
+            OrcaTermError,
+            OrcaTermQuotaError,
+            _parse_error,
+        )
+
+        assert isinstance(
+            _parse_error(200, '{"code":500,"message":"NEED_UIN_AND_SKEY"}'),
+            OrcaTermAuthError,
+        )
+        assert isinstance(
+            _parse_error(200, '{"code":429,"message":"Rate limit exceeded: chat-rpm"}'),
+            OrcaTermQuotaError,
+        )
+        loaded = _parse_error(200, "data: [ERROR]: [LLM_ERROR]: LLM(x) is not loaded.")
+        assert isinstance(loaded, OrcaTermError)
+        assert not isinstance(loaded, OrcaTermAuthError)

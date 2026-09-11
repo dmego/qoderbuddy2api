@@ -124,7 +124,7 @@ def test_to_info_uses_canonical_id_without_prefix():
 
 def test_full_config_carries_domestic_and_international_definitions():
     per_provider = load_models_from_config("config/models.json")
-    assert set(per_provider) == {"codebuddy", "workbuddy_intl"}
+    assert set(per_provider) == {"codebuddy", "workbuddy_intl", "orcaterm"}
     assert [model.id for model in per_provider["workbuddy_intl"]] == [
         "hy4-preview", "hy3", "deepseek-v4.1-flash",
     ]
@@ -139,11 +139,20 @@ def test_full_config_carries_domestic_and_international_definitions():
 def test_international_models_merge_into_dual_route_entries():
     per_provider = load_models_from_config("config/models.json")
     catalog = build_unified_catalog(per_provider)
-    for model_id in ("hy4-preview", "hy3", "deepseek-v4.1-flash"):
+    # hy4-preview/hy3 exist on all three providers; deepseek-v4.1-flash is
+    # domestic+international only (OrcaTerm publishes it as deepseek-v4-flash).
+    for model_id in ("hy4-preview", "hy3"):
         providers = {route.provider for route in catalog[model_id].routes}
-        assert providers == {"codebuddy", "workbuddy_intl"}, model_id
-    # Everything else stays domestic-only.
-    assert {route.provider for route in catalog["glm-5.3"].routes} == {"codebuddy"}
+        assert providers == {"codebuddy", "workbuddy_intl", "orcaterm"}, model_id
+    assert {route.provider for route in catalog["deepseek-v4.1-flash"].routes} == {
+        "codebuddy",
+        "workbuddy_intl",
+    }
+    # Everything else stays domestic + OrcaTerm.
+    assert {route.provider for route in catalog["glm-5.3"].routes} == {
+        "codebuddy",
+        "orcaterm",
+    }
 
 
 def test_dual_provider_config_merges_to_nineteen_canonical_ids():
@@ -160,6 +169,7 @@ def test_dual_provider_config_merges_to_nineteen_canonical_ids():
     assert list(catalog) == sorted(catalog)
     assert set(catalog["deepseek-v4-flash"].routes) == {
         ModelRoute("codebuddy", "deepseek-v4-flash"),
+        ModelRoute("orcaterm", "TokenHub/deepseek-v4-flash"),
         ModelRoute("qoder", "DeepSeek-V4-Flash"),
     }
 
@@ -173,7 +183,7 @@ def test_load_models_ignores_unified_section(tmp_path):
     loaded = load_models_from_config(config_path)
     # A config without an international section still yields that provider's
     # built-in free-tier defaults.
-    assert set(loaded) == {"codebuddy", "workbuddy_intl"}
+    assert set(loaded) == {"codebuddy", "workbuddy_intl", "orcaterm"}
     assert loaded["codebuddy"][0].id == "hy3"
     assert {model.id for model in loaded["workbuddy_intl"]} == {
         "hy4-preview", "hy3", "deepseek-v4.1-flash",

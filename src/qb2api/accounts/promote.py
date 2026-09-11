@@ -27,7 +27,12 @@ class _Promotion:
     masked_identity: str
 
 
-_ID_PREFIX = {"codebuddy": "cb", "qoder": "qd", "workbuddy_intl": "wbintl"}
+_ID_PREFIX = {
+    "codebuddy": "cb",
+    "qoder": "qd",
+    "workbuddy_intl": "wbintl",
+    "orcaterm": "oct",
+}
 
 # Re-exported so import call sites keep one source of truth.
 CHAT_ONLY_PROVIDERS = CHAT_ONLY_PROVIDERS

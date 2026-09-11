@@ -75,6 +75,39 @@ def intl_identity(token: str) -> tuple[str | None, str | None]:
     return sub_text or None, label
 
 
+def orcaterm_identity(token: str) -> tuple[str | None, str | None]:
+    """Best-effort identity from an OrcaTerm desktop OAuth JWT.
+
+    Returns ``(userId, label)``. ``userId`` is the stable upstream account id
+    (numeric string) used to deduplicate re-imports; ``label`` is the login
+    name when the token carries one. Opaque or broken tokens yield
+    ``(None, None)`` so callers keep their defaults.
+    """
+    try:
+        encoded = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+    except (IndexError, TypeError, ValueError):
+        return None, None
+    if not isinstance(claims, dict):
+        return None, None
+    user_id = claims.get("userId")
+    if isinstance(user_id, int):
+        sub = str(user_id)
+    elif isinstance(user_id, str):
+        sub = user_id.strip()
+    else:
+        sub = ""
+    label_value = None
+    for claim in ("nickName", "name", "preferred_username"):
+        value = claims.get(claim)
+        if isinstance(value, str):
+            candidate = value.strip()
+            if candidate and LABEL_RE.fullmatch(candidate) and len(candidate) <= 64:
+                label_value = candidate
+                break
+    return sub or None, label_value
+
+
 def workbuddy_input(body: dict[str, Any]) -> tuple[str, str | None, str | None]:
     mode = body.get("mode")
     access_token = _optional_secret(body, "access_token", "bearer", "token")

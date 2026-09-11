@@ -9,6 +9,7 @@ from .checkin_routes import router as checkin_router
 from .import_routes import router as import_router
 from .metric_history_routes import router as metric_history_router
 from .observability_routes import router as observability_router
+from .orcaterm_routes import router as orcaterm_router
 from .proxy_key_routes import router as proxy_key_router
 from .routing_routes import router as routing_router
 from .security_routes import router as security_router
@@ -25,6 +26,7 @@ router.include_router(catalog_router)
 router.include_router(catalog_sync_router)
 router.include_router(routing_router)
 router.include_router(workbuddy_intl_router)
+router.include_router(orcaterm_router)
 router.include_router(observability_router)
 router.include_router(metric_history_router)
 router.include_router(proxy_key_router)

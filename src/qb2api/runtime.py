@@ -82,6 +82,7 @@ class RuntimeServices:
             codebuddy_tokens=self.settings.codebuddy_tokens or [],
             qoder_tokens=self.settings.qoder_tokens or [],
             workbuddy_intl_tokens=self.settings.workbuddy_intl_tokens or [],
+            orcaterm_tokens=self.settings.orcaterm_tokens or [],
         )
         resolver = CredentialResolver(
             repository,

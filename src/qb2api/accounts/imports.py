@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from qb2api.admin.import_support import intl_identity
+from qb2api.admin.import_support import intl_identity, orcaterm_identity
 
 from .promote import new_account_slug
 from .repository import AccountRepository
@@ -72,6 +72,54 @@ async def persist_workbuddy_intl_account(
 async def _find_intl_by_sub(repo: AccountRepository, vault: CredentialVault, sub: str) -> str | None:
     wanted = vault.fingerprint(sub)
     for row in await repo.list_accounts("workbuddy_intl"):
+        if row.get("identity_hash") == wanted:
+            return row["account_id"]
+    return None
+
+
+async def persist_orcaterm_account(
+    repo: AccountRepository,
+    vault: CredentialVault,
+    *,
+    label: str,
+    source: str,
+    access_token: str,
+    refresh_token: str | None = None,
+    expires_at: str | None = None,
+    account_id: str | None = None,
+) -> str:
+    """Persist an OrcaTerm desktop account (chat-only, no check-in).
+
+    The desktop OAuth JWT carries the upstream ``userId``; a re-import that
+    matches an existing account refreshes that account instead of creating a
+    duplicate slot — unless the operator pinned an account_id.
+    """
+    identity = orcaterm_identity(access_token)
+    if account_id is None and identity[0]:
+        existing = await _find_orcaterm_by_sub(repo, vault, identity[0])
+        if existing is not None:
+            account_id = existing
+    return await _persist_bearer_account(
+        repo,
+        vault,
+        provider="orcaterm",
+        label=label,
+        source=source,
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_at=expires_at,
+        account_id=account_id,
+        identity_hash=vault.fingerprint(identity[0]) if identity[0] else None,
+    )
+
+
+async def _find_orcaterm_by_sub(
+    repo: AccountRepository,
+    vault: CredentialVault,
+    sub: str,
+) -> str | None:
+    wanted = vault.fingerprint(sub)
+    for row in await repo.list_accounts("orcaterm"):
         if row.get("identity_hash") == wanted:
             return row["account_id"]
     return None
@@ -147,7 +195,7 @@ async def _write_chat_purpose(
         capabilities=["proxy.chat"],
         expires_at=expires_at,
     )
-    if provider == "workbuddy_intl" or "checkin" in current:
+    if provider in ("workbuddy_intl", "orcaterm") or "checkin" in current:
         return
     await repo.upsert_purpose(
         provider=provider,

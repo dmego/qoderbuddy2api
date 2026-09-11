@@ -214,7 +214,7 @@ describe("AccountImportPanel WorkBuddy 国际版", () => {
     const wrapper = mount(AccountImportPanel, { global: { plugins: [createPinia()] } });
 
     const providers = wrapper.findAll(".segmented-control button").map((button) => button.text());
-    expect(providers).toEqual(["CodeBuddy", "WorkBuddy 国际版", "Qoder"]);
+    expect(providers).toEqual(["CodeBuddy", "WorkBuddy 国际版", "Qoder", "OrcaTerm"]);
 
     await wrapper.findAll(".segmented-control button")[1].trigger("click");
     await flushPromises();

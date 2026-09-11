@@ -113,6 +113,12 @@ def _provider_values() -> dict[str, object]:
         "workbuddy_intl_default_reasoning_effort": os.getenv(
             "QB2API_INTL_DEFAULT_REASONING_EFFORT", "low"
         ).strip().lower(),
+        "orcaterm_tokens": _parse_tokens(os.getenv("ORCATERM_TOKEN")),
+        "orcaterm_endpoint": os.getenv(
+            "ORCATERM_ENDPOINT", "https://lightai.cloud.tencent.com"
+        ),
+        "orcaterm_user_id": os.getenv("ORCATERM_USER_ID", "").strip(),
+        "orcaterm_timeout": _env_int("ORCATERM_TIMEOUT", 300),
     }
 
 
@@ -233,6 +239,13 @@ class Settings:
     workbuddy_intl_credits_path: str = "/billing/meter/get-user-resource"
     # The international gateway only thinks when reasoning_effort is present.
     workbuddy_intl_default_reasoning_effort: str = "low"
+
+    # OrcaTerm (Tencent Cloud lightai agent backend) — desktop OAuth credential,
+    # chat-only, no check-in. Tokens come from the desktop store (data.bin).
+    orcaterm_tokens: list[str] = None  # type: ignore
+    orcaterm_endpoint: str = "https://lightai.cloud.tencent.com"
+    orcaterm_user_id: str = ""
+    orcaterm_timeout: int = 300
 
     # Check-in — off by default unless explicitly enabled
     checkin_enabled: bool = False

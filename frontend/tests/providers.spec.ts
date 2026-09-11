@@ -8,7 +8,6 @@ import AddAccountPage from "@/pages/AddAccountPage.vue";
 import CheckinPage from "@/pages/CheckinPage.vue";
 import CredentialsPage from "@/pages/CredentialsPage.vue";
 import CreditsPage from "@/pages/CreditsPage.vue";
-import ModelsPage from "@/pages/ModelsPage.vue";
 import UsagePage from "@/pages/UsagePage.vue";
 import { router } from "@/router";
 import growthSource from "@/pages/GrowthPage.vue?raw";
@@ -23,22 +22,22 @@ describe("provider select options", () => {
 
   it("appends WorkBuddy 国际版 after CodeBuddy and Qoder on the accounts page", async () => {
     const wrapper = await mountPage(AccountsPage);
-    expect(providerOptions(wrapper)).toEqual(["", "codebuddy", "qoder", "workbuddy_intl"]);
+    expect(providerOptions(wrapper)).toEqual(["", "codebuddy", "qoder", "workbuddy_intl", "orcaterm"]);
   });
 
   it("appends WorkBuddy 国际版 on the credits page", async () => {
     const wrapper = await mountPage(CreditsPage);
-    expect(providerOptions(wrapper)).toEqual(["", "codebuddy", "qoder", "workbuddy_intl"]);
+    expect(providerOptions(wrapper)).toEqual(["", "codebuddy", "qoder", "workbuddy_intl", "orcaterm"]);
   });
 
   it("appends WorkBuddy 国际版 on the credentials page", async () => {
     const wrapper = await mountPage(CredentialsPage);
-    expect(providerOptions(wrapper)).toEqual(["", "codebuddy", "qoder", "workbuddy_intl"]);
+    expect(providerOptions(wrapper)).toEqual(["", "codebuddy", "qoder", "workbuddy_intl", "orcaterm"]);
   });
 
   it("appends WorkBuddy 国际版 on the usage page", async () => {
     const wrapper = await mountPage(UsagePage);
-    expect(providerOptions(wrapper)).toEqual(["", "codebuddy", "qoder", "workbuddy_intl"]);
+    expect(providerOptions(wrapper)).toEqual(["", "codebuddy", "qoder", "workbuddy_intl", "orcaterm"]);
   });
 
 

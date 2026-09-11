@@ -7,7 +7,7 @@ from typing import Any
 
 from .models import ModelCapabilities, ModelDefinition
 
-PROVIDER_ORDER = ("workbuddy_intl", "codebuddy", "qoder")
+PROVIDER_ORDER = ("workbuddy_intl", "orcaterm", "codebuddy", "qoder")
 
 
 def normalize_model_id(model_id: str) -> str:
@@ -87,6 +87,20 @@ def build_unified_catalog(
     return dict(sorted(merged.items()))
 
 
+def _upstream_id(definition: ModelDefinition) -> str:
+    """Wire id sent upstream for one provider route.
+
+    Providers whose public id differs from the upstream id (OrcaTerm uses
+    ``Provider/model`` on the wire) carry the real id in
+    ``metadata["upstream_id"]``; everything else sends the catalog id.
+    """
+    metadata = definition.metadata or {}
+    upstream = metadata.get("upstream_id")
+    if isinstance(upstream, str) and upstream:
+        return upstream
+    return definition.id
+
+
 def _merge_entries(
     canonical: str,
     definitions: list[ModelDefinition],
@@ -100,7 +114,11 @@ def _merge_entries(
     capabilities = _union_capabilities([d.capabilities for d in definitions])
     name = _preferred_name(ordered)
     routes = tuple(
-        ModelRoute(provider=d.provider, upstream_id=d.id) for d in ordered
+        ModelRoute(
+            provider=d.provider,
+            upstream_id=_upstream_id(d),
+        )
+        for d in ordered
     )
     return UnifiedModel(
         id=canonical,

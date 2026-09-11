@@ -23,6 +23,7 @@ class WorkerRuntime:
         self.codebuddy_pool = DynamicProviderPool("codebuddy")
         self.qoder_pool = DynamicProviderPool("qoder")
         self.workbuddy_intl_pool = DynamicProviderPool("workbuddy_intl")
+        self.orcaterm_pool = DynamicProviderPool("orcaterm")
         self.snapshot_version = 0
         self.proxy_key_hashes: frozenset[str] = frozenset()
         self.proxy_key_expirations: tuple[tuple[str, float | None], ...] = ()
@@ -36,6 +37,7 @@ class WorkerRuntime:
         self.providers.register(self.codebuddy_pool)
         self.providers.register(self.qoder_pool)
         self.providers.register(self.workbuddy_intl_pool)
+        self.providers.register(self.orcaterm_pool)
         await self.apply(snapshot)
 
     async def apply(self, snapshot: RuntimeSnapshot) -> None:
@@ -85,6 +87,7 @@ class WorkerRuntime:
             ("codebuddy", self.codebuddy_pool),
             ("qoder", self.qoder_pool),
             ("workbuddy_intl", self.workbuddy_intl_pool),
+            ("orcaterm", self.orcaterm_pool),
         ):
             pool.set_hard_blocks(per_pool.get(name, {}))
 
@@ -106,6 +109,7 @@ class WorkerRuntime:
             "codebuddy": self.codebuddy_pool,
             "qoder": self.qoder_pool,
             "workbuddy_intl": self.workbuddy_intl_pool,
+            "orcaterm": self.orcaterm_pool,
         }
         for name, pool in pools.items():
             prefix = f"{name}:"
@@ -118,6 +122,7 @@ _ENV_TOKEN_SLOTS = (
     ("codebuddy", "cb-env", "codebuddy_tokens"),
     ("qoder", "qd-env", "qoder_tokens"),
     ("workbuddy_intl", "wbintl-env", "workbuddy_intl_tokens"),
+    ("orcaterm", "oct-env", "orcaterm_tokens"),
 )
 
 
@@ -150,7 +155,7 @@ def local_snapshot(settings: Settings) -> RuntimeSnapshot:
 
 
 def _slot_identity(slot: RuntimeSlot) -> tuple[str, str]:
-    if slot.provider not in {"codebuddy", "qoder", "workbuddy_intl"}:
+    if slot.provider not in {"codebuddy", "qoder", "workbuddy_intl", "orcaterm"}:
         raise ValueError(f"unsupported runtime provider: {slot.provider}")
     digest = hashlib.sha256(slot.token.encode()).hexdigest()
     return f"{slot.provider}:{slot.account_id}", f"v{slot.credential_version}:{digest}"
@@ -161,6 +166,8 @@ def _build_provider(factory: ProviderFactory, slot: RuntimeSlot) -> Provider:
         return factory.codebuddy_static(slot.token)
     if slot.provider == "workbuddy_intl":
         return factory.workbuddy_intl_static(slot.token)
+    if slot.provider == "orcaterm":
+        return factory.orcaterm_static(slot.token)
     return factory.qoder(slot.token)
 
 

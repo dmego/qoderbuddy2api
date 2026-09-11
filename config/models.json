@@ -233,5 +233,105 @@
         }
       }
     ]
+  },
+  "orcaterm": {
+    "models": [
+      {
+        "id": "hy4-preview",
+        "name": "Hy4 Preview",
+        "capabilities": {
+          "chat": true,
+          "streaming": true,
+          "reasoning": true
+        },
+        "metadata": {
+          "upstream_id": "Hunyuan3/hy4-preview"
+        }
+      },
+      {
+        "id": "hy3",
+        "name": "Hy3",
+        "capabilities": {
+          "chat": true,
+          "streaming": true,
+          "reasoning": true
+        },
+        "metadata": {
+          "upstream_id": "Hunyuan3/hy3"
+        }
+      },
+      {
+        "id": "kimi-k3",
+        "name": "Kimi K3",
+        "capabilities": {
+          "chat": true,
+          "streaming": true,
+          "reasoning": true
+        },
+        "metadata": {
+          "upstream_id": "TokenHub/kimi-k3"
+        }
+      },
+      {
+        "id": "glm-5.3-flash",
+        "name": "GLM-5.3 Flash",
+        "capabilities": {
+          "chat": true,
+          "streaming": true,
+          "reasoning": true
+        },
+        "metadata": {
+          "upstream_id": "TokenHub/glm-5.3-flash"
+        }
+      },
+      {
+        "id": "glm-5.3",
+        "name": "GLM-5.3",
+        "capabilities": {
+          "chat": true,
+          "streaming": true,
+          "reasoning": true
+        },
+        "metadata": {
+          "upstream_id": "TokenHub/glm-5.3"
+        }
+      },
+      {
+        "id": "glm-5.2",
+        "name": "GLM-5.2",
+        "capabilities": {
+          "chat": true,
+          "streaming": true,
+          "reasoning": true
+        },
+        "metadata": {
+          "upstream_id": "TokenHub/glm-5.2"
+        }
+      },
+      {
+        "id": "deepseek-v4-flash",
+        "name": "DeepSeek V4 Flash",
+        "capabilities": {
+          "chat": true,
+          "streaming": true,
+          "reasoning": true
+        },
+        "metadata": {
+          "upstream_id": "TokenHub/deepseek-v4-flash"
+        }
+      },
+      {
+        "id": "deepseek-v4-pro",
+        "name": "DeepSeek V4 Pro",
+        "capabilities": {
+          "chat": true,
+          "streaming": true,
+          "reasoning": true
+        },
+        "metadata": {
+          "upstream_id": "TokenHub/deepseek-v4-pro"
+        }
+      }
+    ]
   }
 }

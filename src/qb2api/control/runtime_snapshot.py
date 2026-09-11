@@ -59,6 +59,9 @@ class RuntimeSnapshotService:
         models["workbuddy_intl"] = await self._filter_catalog_enabled(
             "workbuddy_intl", models.get("workbuddy_intl", [])
         )
+        models["orcaterm"] = await self._filter_catalog_enabled(
+            "orcaterm", models.get("orcaterm", [])
+        )
         proxy_keys, proxy_auth_required = await self._proxy_keys()
         return RuntimeSnapshot(
             snapshot_version=self._version,
@@ -219,6 +222,9 @@ def _env_slots(settings: Any) -> list[RuntimeSlot]:
     for index, token in enumerate(getattr(settings, "workbuddy_intl_tokens", None) or []):
         if token:
             slots.append(RuntimeSlot("workbuddy_intl", f"wbintl-env-{index}", 1, token))
+    for index, token in enumerate(getattr(settings, "orcaterm_tokens", None) or []):
+        if token:
+            slots.append(RuntimeSlot("orcaterm", f"oct-env-{index}", 1, token))
     return slots
 
 

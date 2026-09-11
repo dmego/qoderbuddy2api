@@ -204,11 +204,14 @@ async def test_routing_save_returns_the_new_policy(management_context) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "ok" and payload["model_id"] == "glm-5.2"
-    route = payload["routes"][0]
+    route = next(
+        route for route in payload["routes"] if route["provider"] == "codebuddy"
+    )
     assert route["priority"] == 2 and route["weight"] == 3
     assert [account["account_id"] for account in route["accounts"]] == ["cb-1"]
     stored = await repository.list_route_policies("glm-5.2")
-    assert stored[0]["priority"] == 2 and stored[0]["weight"] == 3
+    saved = next(row for row in stored if row["provider"] == "codebuddy")
+    assert saved["priority"] == 2 and saved["weight"] == 3
     assert refreshes  # the worker must be told about the change
 
 

@@ -62,11 +62,14 @@ mkdir -p data logs && chmod 700 data logs
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `CODEBUDDY_TOKEN` / `QODER_TOKEN` / `WORKBUDDY_INTL_TOKEN` | 空 | 旧式静态 token（transient chat slot）；长期账号请在管理台导入 |
+| `CODEBUDDY_TOKEN` / `QODER_TOKEN` / `WORKBUDDY_INTL_TOKEN` / `ORCATERM_TOKEN` | 空 | 旧式静态 token（transient chat slot）；长期账号请在管理台导入 |
 | `WORKBUDDY_INTL_ENDPOINT` | `https://www.workbuddy.ai` | WorkBuddy 国际版入口 |
 | `WORKBUDDY_INTL_OAUTH_ENABLED` | `true` | 是否允许管理台发起国际版浏览器登录 |
 | `WORKBUDDY_INTL_CREDITS_PATH` | `/billing/meter/get-user-resource` | 国际版积分查询路径 |
 | `QB2API_INTL_DEFAULT_REASONING_EFFORT` | `low` | 客户端未传 `reasoning_effort` 时注入的档位 |
+| `ORCATERM_ENDPOINT` | `https://lightai.cloud.tencent.com` | OrcaTerm lightai 后端入口 |
+| `ORCATERM_USER_ID` | 空 | 会话 ID 使用的上游用户号（token 内的 `userId`） |
+| `ORCATERM_TIMEOUT` | `300` | OrcaTerm 请求超时（秒） |
 | `QB2API_MODEL_SYNC_ENABLED` | `true` | Qoder 上游模型目录自动同步 |
 | `QB2API_MODEL_SYNC_INTERVAL_SECONDS` | `21600` | 同步间隔（秒） |
 | `CHECKIN_ENABLED` | `false` | 全局签到调度开关（也可在管理台设置） |
@@ -92,6 +95,29 @@ mkdir -p data logs && chmod 700 data logs
   按账号写入 `points` 快照，在「积分」页与国内账号一起展示。
 - 国际版首个上游消息**必须是 system**，且拒绝 OpenAI 的 `developer` 角色；
   代理层会自动补一条 system 消息并把 `developer` 折叠为 `system`。
+
+### OrcaTerm（腾讯云 lightai agent 后端）
+
+OrcaTerm 是**独立提供商** `orcaterm`，与腾讯云 OrcaTerm 桌面版 AI 助手共用后端
+（`https://lightai.cloud.tencent.com`），同样是**聊天专用**：账号只有 `chat` 用途，
+没有签到与成长中心。
+
+- **免费额度覆盖八个模型**：`hy4-preview`、`hy3`、`kimi-k3`、`glm-5.3`、
+  `glm-5.3-flash`、`glm-5.2`、`deepseek-v4-flash`、`deepseek-v4-pro`。
+  上游模型 ID 为 `<Provider>/<model>` 形式（如 `TokenHub/glm-5.3`、
+  `Hunyuan3/hy4-preview`），由 `config/models.json` 的 `metadata.upstream_id`
+  声明，管理台与 `/v1/models` 只暴露统一的短 ID。
+- **凭据**：桌面版 OrcaTerm 的 OAuth Token（桌面 App 数据目录
+  `~/Library/Application Support/com.orcaterm-desktop.app/data.bin` 里的
+  `oauth_access_token`，或浏览器登录 orcaterm.cloud.tencent.com 后从会话取得）。
+  管理台「添加账号 → OrcaTerm」粘贴导入；也可用 `ORCATERM_TOKEN` 环境变量注入。
+  **Token 约 2 小时过期**，过期后重新导入同一账号即可轮换（账号 ID 不变）。
+- **协议差异**：OrcaTerm 不是裸补全接口，而是 agent 接口——代理层会先注册会话
+  （`/assistant/conversation`）再流式对话（`/assistant/chat`），并把 agent 返回的
+  JSON（`taskCompletion` / `thinking`）拆成标准的 `content` 与 `reasoning_content`。
+  对话历史以 `historyMessages` 形式携带，system 消息会被折叠进历史。
+- **上游限速**：上游对 `chat-rpm` 有限制，代理层把 429 归类为配额错误并交由
+  路由层故障转移；建议不要把 `orcaterm` 单独设为一个模型的唯一路由。
 
 ### 按模型的提供商路由权重
 

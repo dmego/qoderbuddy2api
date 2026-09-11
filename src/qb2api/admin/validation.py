@@ -14,7 +14,7 @@ MAX_ADMIN_BODY_BYTES = 64 * 1024
 LABEL_RE = re.compile(r"^[\w .@+-]{1,64}$")  # @ and + admit email-style labels
 ACCOUNT_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 FILTER_TEXT_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,128}$")
-PROVIDERS = frozenset({"codebuddy", "qoder", "workbuddy_intl"})
+PROVIDERS = frozenset({"codebuddy", "qoder", "workbuddy_intl", "orcaterm"})
 
 
 async def json_object(

@@ -7,15 +7,15 @@ from pathlib import Path
 
 logger = logging.getLogger("qb2api")
 
-KNOWN_PROVIDERS = ("codebuddy", "qoder", "workbuddy_intl")
+KNOWN_PROVIDERS = ("codebuddy", "qoder", "workbuddy_intl", "orcaterm")
 
 # Providers whose model definitions come from the config file. Qoder's catalog
 # is owned by its upstream sync instead, so it is loaded separately.
-CONFIG_PROVIDERS = ("codebuddy", "workbuddy_intl")
+CONFIG_PROVIDERS = ("codebuddy", "workbuddy_intl", "orcaterm")
 
-# The international WorkBuddy deployment has no sign-in or growth centre, so its
-# accounts carry a chat purpose only and must never accrue check-in state.
-CHAT_ONLY_PROVIDERS = frozenset({"workbuddy_intl"})
+# Providers with no sign-in or growth centre: their accounts carry a chat
+# purpose only and must never accrue check-in state.
+CHAT_ONLY_PROVIDERS = frozenset({"workbuddy_intl", "orcaterm"})
 
 
 @dataclass
@@ -75,18 +75,56 @@ DEFAULT_INTL_MODELS = [
 ]
 
 
+# OrcaTerm (Tencent Cloud lightai agent backend). Eight ids are free of charge
+# at the time of writing; the upstream model id format is ``Provider/model``.
+DEFAULT_ORCATERM_MODELS = [
+    ModelDefinition("hy4-preview", "Hy4 Preview", "orcaterm", ModelCapabilities(
+        reasoning=True,
+    ), metadata={"upstream_id": "Hunyuan3/hy4-preview"}),
+    ModelDefinition("hy3", "Hy3", "orcaterm", ModelCapabilities(
+        reasoning=True,
+    ), metadata={"upstream_id": "Hunyuan3/hy3"}),
+    ModelDefinition("kimi-k3", "Kimi K3", "orcaterm", ModelCapabilities(
+        reasoning=True,
+    ), metadata={"upstream_id": "TokenHub/kimi-k3"}),
+    ModelDefinition("glm-5.3-flash", "GLM-5.3 Flash", "orcaterm", ModelCapabilities(
+        reasoning=True,
+    ), metadata={"upstream_id": "TokenHub/glm-5.3-flash"}),
+    ModelDefinition("glm-5.3", "GLM-5.3", "orcaterm", ModelCapabilities(
+        reasoning=True,
+    ), metadata={"upstream_id": "TokenHub/glm-5.3"}),
+    ModelDefinition("glm-5.2", "GLM-5.2", "orcaterm", ModelCapabilities(
+        reasoning=True,
+    ), metadata={"upstream_id": "TokenHub/glm-5.2"}),
+    ModelDefinition("deepseek-v4-flash", "DeepSeek V4 Flash", "orcaterm", ModelCapabilities(
+        reasoning=True,
+    ), metadata={"upstream_id": "TokenHub/deepseek-v4-flash"}),
+    ModelDefinition("deepseek-v4-pro", "DeepSeek V4 Pro", "orcaterm", ModelCapabilities(
+        reasoning=True,
+    ), metadata={"upstream_id": "TokenHub/deepseek-v4-pro"}),
+]
+
+
 def load_models_from_config(config_path: str | Path) -> dict[str, list[ModelDefinition]]:
     """Load model definitions from config file (known providers only)."""
     path = Path(config_path)
     if not path.exists():
-        return {"codebuddy": DEFAULT_CODEBUDDY_MODELS, "workbuddy_intl": DEFAULT_INTL_MODELS}
+        return {
+            "codebuddy": DEFAULT_CODEBUDDY_MODELS,
+            "workbuddy_intl": DEFAULT_INTL_MODELS,
+            "orcaterm": DEFAULT_ORCATERM_MODELS,
+        }
 
     try:
         with open(path) as f:
             data = json.load(f)
     except Exception as e:
         logger.warning(f"Failed to load model config: {e}, using defaults")
-        return {"codebuddy": DEFAULT_CODEBUDDY_MODELS, "workbuddy_intl": DEFAULT_INTL_MODELS}
+        return {
+            "codebuddy": DEFAULT_CODEBUDDY_MODELS,
+            "workbuddy_intl": DEFAULT_INTL_MODELS,
+            "orcaterm": DEFAULT_ORCATERM_MODELS,
+        }
 
     result = {}
     for provider in CONFIG_PROVIDERS:
@@ -106,6 +144,8 @@ def load_models_from_config(config_path: str | Path) -> dict[str, list[ModelDefi
 def _defaults_for(provider: str) -> list[ModelDefinition]:
     if provider == "workbuddy_intl":
         return DEFAULT_INTL_MODELS
+    if provider == "orcaterm":
+        return DEFAULT_ORCATERM_MODELS
     if provider == "codebuddy":
         return DEFAULT_CODEBUDDY_MODELS
     return []
@@ -122,6 +162,7 @@ def _model_definition(provider: str, raw: dict) -> ModelDefinition:
         context_window=caps.get("context_window", False),
         max_output_tokens=caps.get("max_output_tokens", False),
     )
+    metadata = raw.get("metadata")
     return ModelDefinition(
         id=raw["id"],
         name=raw.get("name", raw["id"]),
@@ -129,6 +170,7 @@ def _model_definition(provider: str, raw: dict) -> ModelDefinition:
         capabilities=capabilities,
         max_context=raw.get("max_context", 128000),
         max_output=raw.get("max_output", 4096),
+        metadata=metadata if isinstance(metadata, dict) else None,
     )
 
 
