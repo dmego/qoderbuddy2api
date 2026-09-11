@@ -220,7 +220,6 @@ describe("AccountImportPanel WorkBuddy 国际版", () => {
     await flushPromises();
 
     expect(wrapper.text()).toContain("浏览器登录");
-    expect(wrapper.text()).toContain("hy4-preview");
     expect(wrapper.findAll("details").some((details) => details.text().includes("手动导入签到凭据"))).toBe(false);
     expect(wrapper.find('select[aria-label="签到认证模式"]').exists()).toBe(false);
     expect(wrapper.find('input[aria-label="WorkBuddy Cookie"]').exists()).toBe(false);

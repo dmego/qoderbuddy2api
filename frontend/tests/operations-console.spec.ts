@@ -46,7 +46,7 @@ describe("operations console workflows", () => {
     const wrapper = mount(ModelsPage, { global: { plugins: [createPinia(), VueQueryPlugin] } });
     await flushPromises();
 
-    await buttonWithText(wrapper, "探测").trigger("click"); await flushPromises();
+    await wrapper.get('button[aria-label="探测 model-a"]').trigger("click"); await flushPromises();
     expect(wrapper.text()).toContain("132ms");
     await wrapper.get('button[aria-label="停用 model-a"]').trigger("click");
     await confirmDialog();

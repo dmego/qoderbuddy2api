@@ -12,6 +12,7 @@ from .admin.backup import BackupService
 from .admin.sessions import AdminSessionStore
 from .auth.codebuddy_oauth import CodeBuddyOAuthClient
 from .auth.flows import FlowStore
+from .auth.orcaterm import OrcaTermAuthClient
 from .auth.workbuddy_intl import WorkBuddyIntlAuthClient
 from .checkin.growth_automation import GrowthAutomation
 from .checkin.growth_scheduler import GrowthScheduler
@@ -53,6 +54,10 @@ class RuntimeServices:
         )
         self.workbuddy_intl_oauth = WorkBuddyIntlAuthClient(
             base_url=settings.workbuddy_intl_endpoint,
+            timeout=float(settings.codebuddy_oauth_timeout),
+        )
+        self.orcaterm_oauth = OrcaTermAuthClient(
+            endpoint=settings.orcaterm_auth_endpoint,
             timeout=float(settings.codebuddy_oauth_timeout),
         )
         self._closed = False
@@ -211,7 +216,7 @@ class RuntimeServices:
         for name in (
             "settings", "account_repo", "credential_vault", "account_registry",
             "credential_resolver", "admin_sessions", "login_limiter", "oauth_flows",
-            "codebuddy_oauth", "workbuddy_intl_oauth",
+            "codebuddy_oauth", "workbuddy_intl_oauth", "orcaterm_oauth",
             "checkin_service", "checkin_scheduler", "growth_scheduler",
             "metrics_scheduler", "model_sync_scheduler",
             "backup_service", "usage_rollup_service",

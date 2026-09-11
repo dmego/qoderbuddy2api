@@ -11,11 +11,15 @@ wiring.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from qb2api.accounts.imports import persist_orcaterm_account
+from qb2api.auth.flows import FlowBusyError
+from qb2api.auth.orcaterm import build_authorize_url
 
 from .dependencies import admin_state, require_admin
 from .import_support import orcaterm_identity
@@ -38,6 +42,77 @@ def _identity_or(selected: str, access_token: str | None) -> str:
     if selected not in _GENERIC_LABELS:
         return selected
     return (orcaterm_identity(access_token or "")[1]) or selected
+
+
+@router.post("/auth/orcaterm/start")
+async def orcaterm_oauth_start(request: Request) -> dict[str, Any]:
+    """Begin a browser login: return the console authorize URL to open."""
+    await require_admin(request)
+    state = admin_state(request)
+    if not state.settings.orcaterm_oauth_enabled:
+        raise HTTPException(status_code=400, detail="oauth_disabled")
+    body = await json_object(request, allow_empty=True)
+    account_id = optional_account_id(body.get("account_id"))
+    await _require_orcaterm_account(state, account_id)
+    selected_label = label(body.get("label"), default="orcaterm")
+    # The console appends ``session_id`` to this URL after the user signs in;
+    # the admin page hands the value back through /poll.
+    return_url = _optional_string(body.get("return_url")) or _default_return_url(request)
+    started = build_authorize_url(return_url=return_url)
+    flow = state.oauth_flows.create(
+        label=selected_label,
+        auth_state=started.session_id,
+        auth_url=started.auth_url,
+        account_id=account_id,
+    )
+    return {
+        "flow_id": flow.flow_id,
+        "auth_url": flow.auth_url,
+        "expires_at": datetime.fromtimestamp(flow.expires_at, tz=UTC)
+        .replace(microsecond=0)
+        .isoformat(),
+        "label": flow.label,
+        "account_id": flow.account_id,
+        "session_id": started.session_id,
+    }
+
+
+@router.post("/auth/orcaterm/poll")
+async def orcaterm_oauth_poll(request: Request) -> Any:
+    """Exchange a completed login session for credentials and persist them.
+
+    ``session_id`` comes from the URL the browser landed on; it must match the
+    session this flow started with, so a stray id cannot import someone else's
+    login.
+    """
+    await require_admin(request)
+    state = admin_state(request)
+    body = await json_object(request)
+    flow_id = required_string(body, "flow_id", detail="flow_id_required")
+    session_id = _optional_string(body.get("session_id"))
+    try:
+        lease = state.oauth_flows.begin_poll(flow_id)
+    except FlowBusyError:
+        return JSONResponse(status_code=409, content={"error": "flow_poll_in_progress"})
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    consume = False
+    try:
+        if session_id and session_id != lease.auth_state:
+            raise HTTPException(status_code=400, detail="session_id_mismatch")
+        result = await state.orcaterm_oauth.exchange(lease.auth_state)
+        if result.status != "success" or not result.access_token:
+            # A not-yet-finished login reports expired/unknown; keep the flow
+            # alive so the operator can finish signing in and poll again.
+            return {"status": "pending", "message": result.message or "auth_pending"}
+        account_id = await _persist_result(state, lease.record, result)
+        consume = True
+        return {
+            "status": "success",
+            "account": await _publish(state, account_id, mutation_action="account.import"),
+        }
+    finally:
+        state.oauth_flows.finish_poll(flow_id, consume=consume)
 
 
 @router.post("/auth/orcaterm/manual")
@@ -102,6 +177,40 @@ async def orcaterm_delete(account_id: str, request: Request) -> dict[str, Any]:
         resource_id=f"{PROVIDER}:{account_id}",
     )
     return {"status": "deleted", "account_id": account_id}
+
+
+async def _persist_result(state: Any, record: Any, result: Any) -> str:
+    """Persist an exchanged browser-login token, replacing the same user."""
+    expires_at = _expires_at(result.expires_in)
+    account_id = await persist_orcaterm_account(
+        state.account_repo,
+        state.credential_vault,
+        label=_identity_or(record.label, result.access_token),
+        source="oauth",
+        access_token=result.access_token,
+        expires_at=expires_at,
+        account_id=record.account_id,
+    )
+    state.credential_resolver.invalidate(PROVIDER, account_id, "chat")
+    return account_id
+
+
+def _default_return_url(request: Request) -> str:
+    """Callback the console sends the browser back to after login.
+
+    Targets the add-account page (a real SPA route that already understands
+    ``provider``); the console appends ``session_id`` to it, and the page
+    forwards that value to /poll. Derived from the request so the flow also
+    works behind a reverse proxy or on a LAN address.
+    """
+    origin = str(request.base_url).rstrip("/")
+    return f"{origin}/admin/accounts/add?provider=orcaterm"
+
+
+def _expires_at(expires_in: int | None) -> str | None:
+    if not isinstance(expires_in, int) or expires_in <= 0:
+        return None
+    return (datetime.now(UTC) + timedelta(seconds=expires_in)).replace(microsecond=0).isoformat()
 
 
 async def _publish(state: Any, account_id: str, *, mutation_action: str) -> dict[str, Any]:

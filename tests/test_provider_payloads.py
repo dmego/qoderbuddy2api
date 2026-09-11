@@ -351,3 +351,68 @@ class TestOrcaTermProvider:
         loaded = _parse_error(200, "data: [ERROR]: [LLM_ERROR]: LLM(x) is not loaded.")
         assert isinstance(loaded, OrcaTermError)
         assert not isinstance(loaded, OrcaTermAuthError)
+
+
+class TestOrcaTermAuth:
+    """Browser-login contract: authorize URL shape and exchange result mapping."""
+
+    def test_authorize_url_carries_callback_and_session(self):
+        from qb2api.auth.orcaterm import build_authorize_url
+
+        started = build_authorize_url(
+            return_url="http://127.0.0.1:8080/admin/accounts/add?provider=orcaterm",
+            session_id="11111111-2222-3333-4444-555555555555",
+        )
+
+        assert started.session_id == "11111111-2222-3333-4444-555555555555"
+        assert started.auth_url.startswith("https://orcaterm.com/oauth/authorize?")
+        # source=web makes the console bounce back to return_url instead of
+        # handing the result to the desktop app's custom scheme.
+        assert "source=web" in started.auth_url
+        assert "session_id=11111111-2222-3333-4444-555555555555" in started.auth_url
+        assert "provider=txcloud" in started.auth_url
+
+    def test_authorize_url_generates_session_when_absent(self):
+        from qb2api.auth.orcaterm import build_authorize_url
+
+        started = build_authorize_url(return_url="http://localhost/cb")
+
+        assert len(started.session_id) == 36  # uuid4 form
+
+    def test_exchange_maps_console_payload(self):
+        import asyncio
+
+        from qb2api.auth.orcaterm import OrcaTermAuthClient
+
+        client = OrcaTermAuthClient()
+
+        async def fake_cgi(action, data):
+            assert action == "OAuthExchangeToken"
+            assert data == {"sessionId": "sid"}
+            return {"Response": {"AccessToken": "tok", "ExpiresIn": 7200}}
+
+        client._cgi = fake_cgi  # type: ignore[method-assign]
+        result = asyncio.run(client.exchange("sid"))
+        asyncio.run(client.close())
+
+        assert result.status == "success"
+        assert result.access_token == "tok"
+        assert result.expires_in == 7200
+
+    def test_exchange_surfaces_console_error(self):
+        import asyncio
+
+        from qb2api.auth.orcaterm import OrcaTermAuthClient
+
+        client = OrcaTermAuthClient()
+
+        async def fake_cgi(action, data):
+            return {"Response": {"Error": {"Code": "TOKEN_EXPIRED", "Message": "登录会话已过期，请重新登录"}}}
+
+        client._cgi = fake_cgi  # type: ignore[method-assign]
+        result = asyncio.run(client.exchange("sid"))
+        asyncio.run(client.close())
+
+        assert result.status == "error"
+        assert "过期" in (result.message or "")
+        assert result.access_token is None

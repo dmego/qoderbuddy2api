@@ -81,6 +81,29 @@ tr.selected td { box-shadow: inset 2px 0 0 var(--accent); }
 .security-banner span { color: var(--muted); font-size: var(--text-xs); line-height: 1.5; }
 .security-banner.compact { align-items: center; padding: 9px 12px; }
 
+/* Table density: rows were ~100px tall because the action column wrapped its
+   two buttons onto a second line, and every tag chip carried a 22px floor.
+   Keep actions on one line and tighten the chips so a row fits its content. */
+td .row-actions { flex-wrap: nowrap; gap: 6px; }
+td .row-actions .compact-button { min-height: 26px; padding-inline: 8px; }
+td .row-actions .icon-button { width: 26px; height: 26px; }
+th, td { padding: 8px 12px; }
+td .tag-list { gap: 4px; }
+td .tag-list span { min-height: 20px; padding: 1px 6px; }
+
+/* Drawer section headings and route rows: the detail drawer mixes <dl> rows
+   with free-form sections, so the headings need explicit sizing or they fall
+   back to the 18.72px browser default and dwarf the 12–14px rows around them. */
+.detail-drawer h3 { margin: 0; padding: 12px 16px 8px; color: var(--muted); font-size: var(--text-xs); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.detail-drawer .tag-list { gap: 6px; padding: 0 16px 4px; }
+.detail-drawer .tag-list > span { gap: 6px; padding: 3px 8px; font-size: var(--text-xs); }
+.detail-drawer .tag-list code { color: var(--text); font-size: var(--text-xs); }
+.detail-drawer > button { margin: 8px 16px 16px; }
+.detail-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; margin: 4px 16px 16px; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius); background: var(--line); }
+.detail-metrics div { display: grid; gap: 4px; padding: 10px 12px; background: var(--surface-raised); }
+.detail-metrics span { color: var(--muted); font-size: var(--text-xs); }
+.detail-metrics strong { color: var(--text); font-size: var(--text-md); font-variant-numeric: tabular-nums; }
+
 .detail-list { display: grid; gap: 0; margin: 0; }
 .detail-list div { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 16px; min-height: 48px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--line); }
 .detail-list div:last-child { border-bottom: 0; }

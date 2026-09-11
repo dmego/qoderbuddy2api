@@ -107,11 +107,13 @@ OrcaTerm 是**独立提供商** `orcaterm`，与腾讯云 OrcaTerm 桌面版 AI 
   上游模型 ID 为 `<Provider>/<model>` 形式（如 `TokenHub/glm-5.3`、
   `Hunyuan3/hy4-preview`），由 `config/models.json` 的 `metadata.upstream_id`
   声明，管理台与 `/v1/models` 只暴露统一的短 ID。
-- **凭据**：桌面版 OrcaTerm 的 OAuth Token（桌面 App 数据目录
+- **登录**：管理台「添加账号 → OrcaTerm」点「浏览器登录」，在腾讯云完成登录后浏览器
+  会跳回本页并自动完成导入（会话 id 经 URL 回传，再由 Control Plane 调用
+  `OAuthExchangeToken` 换取凭据）。也可展开「手动输入 Bearer Token」粘贴桌面版
+  OrcaTerm 的 OAuth Token（桌面 App 数据目录
   `~/Library/Application Support/com.orcaterm-desktop.app/data.bin` 里的
-  `oauth_access_token`，或浏览器登录 orcaterm.cloud.tencent.com 后从会话取得）。
-  管理台「添加账号 → OrcaTerm」粘贴导入；也可用 `ORCATERM_TOKEN` 环境变量注入。
-  **Token 约 2 小时过期**，过期后重新导入同一账号即可轮换（账号 ID 不变）。
+  `oauth_access_token`），或用 `ORCATERM_TOKEN` 环境变量注入。
+  **Token 约 2 小时过期**，过期后重新登录/导入同一账号即可轮换（账号 ID 不变）。
 - **协议差异**：OrcaTerm 不是裸补全接口，而是 agent 接口——代理层会先注册会话
   （`/assistant/conversation`）再流式对话（`/assistant/chat`），并把 agent 返回的
   JSON（`taskCompletion` / `thinking`）拆成标准的 `content` 与 `reasoning_content`。

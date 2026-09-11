@@ -119,6 +119,10 @@ def _provider_values() -> dict[str, object]:
         ),
         "orcaterm_user_id": os.getenv("ORCATERM_USER_ID", "").strip(),
         "orcaterm_timeout": _env_int("ORCATERM_TIMEOUT", 300),
+        "orcaterm_auth_endpoint": os.getenv(
+            "ORCATERM_AUTH_ENDPOINT", "https://api.orcaterm.cloud.tencent.com"
+        ),
+        "orcaterm_oauth_enabled": _env_bool("ORCATERM_OAUTH_ENABLED", True),
     }
 
 
@@ -246,6 +250,9 @@ class Settings:
     orcaterm_endpoint: str = "https://lightai.cloud.tencent.com"
     orcaterm_user_id: str = ""
     orcaterm_timeout: int = 300
+    # Browser login goes through the console OAuth bridge.
+    orcaterm_auth_endpoint: str = "https://api.orcaterm.cloud.tencent.com"
+    orcaterm_oauth_enabled: bool = True
 
     # Check-in — off by default unless explicitly enabled
     checkin_enabled: bool = False

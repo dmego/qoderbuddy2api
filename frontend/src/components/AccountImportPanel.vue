@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { CheckCircle2, ChevronDown, KeyRound, Link, LoaderCircle, LogIn, RefreshCcw } from "@lucide/vue";
-import { computed, onBeforeUnmount, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 
 import { apiRequest } from "@/api/client";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 
 export type AccountReference = { provider: string; account_id: string; label: string };
 
-type Flow = { flow_id: string; auth_url: string; expires_at: string; label: string; account_id?: string | null };
+type Flow = { flow_id: string; auth_url: string; expires_at: string; label: string; account_id?: string | null; session_id?: string };
 type ImportResult = { account?: AccountReference; checkin_derived?: boolean; checkin_verified?: boolean };
 export type Provider = "codebuddy" | "qoder" | "workbuddy_intl" | "orcaterm";
 
@@ -18,7 +18,11 @@ const props = withDefaults(defineProps<{
 }>(), { provider: "codebuddy", accountId: "", label: "" });
 const emit = defineEmits<{ saved: [account: AccountReference] }>();
 const provider = ref<Provider>(props.provider);
-const flowKey = computed(() => provider.value === "workbuddy_intl" ? "qb2api.workbuddy-intl.oauth.flow" : "qb2api.codebuddy.oauth.flow");
+const flowKey = computed(() => {
+  if (provider.value === "workbuddy_intl") return "qb2api.workbuddy-intl.oauth.flow";
+  if (provider.value === "orcaterm") return "qb2api.orcaterm.oauth.flow";
+  return "qb2api.codebuddy.oauth.flow";
+});
 const pending = ref(false);
 const polling = ref(false);
 const message = ref("");
@@ -146,15 +150,27 @@ async function startOAuth(): Promise<void> {
   pending.value = true;
   setMessage("正在创建浏览器登录流程…", false);
   try {
+    const body: Record<string, string | undefined> = {
+      label: form.label || oauthDefaultLabel(),
+      account_id: form.accountId || undefined,
+    };
+    // OrcaTerm's console bounces the browser back to this address with the
+    // session id attached, so it must be an address the browser can reach.
+    if (provider.value === "orcaterm") body.return_url = window.location.href;
     const started = await apiRequest<Flow>(oauthStartEndpoint(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ label: form.label || oauthDefaultLabel(), account_id: form.accountId || undefined }),
+      body: JSON.stringify(body),
     });
     flow.value = started;
     saveFlow(started);
     window.open(started.auth_url, "_blank", "noopener,noreferrer");
-    setMessage("已打开授权页；此页面会继续检查授权状态。", false);
+    setMessage(
+      provider.value === "orcaterm"
+        ? "已打开腾讯云授权页；登录完成后浏览器会跳回本页，届时自动完成导入。"
+        : "已打开授权页；此页面会继续检查授权状态。",
+      false,
+    );
     schedulePoll();
   } catch (error) {
     setMessage(String(error), true);
@@ -172,10 +188,12 @@ async function pollOAuth(): Promise<void> {
   }
   polling.value = true;
   try {
+    const pollBody: Record<string, string | undefined> = { flow_id: flow.value.flow_id };
+    if (provider.value === "orcaterm") pollBody.session_id = flow.value.session_id || capturedSessionId() || undefined;
     const result = await apiRequest<ImportResult & { status: string; message?: string }>(oauthPollEndpoint(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ flow_id: flow.value.flow_id }),
+      body: JSON.stringify(pollBody),
     });
     if (result.status === "pending") {
       setMessage("等待在浏览器中完成授权…", false);
@@ -199,17 +217,22 @@ async function pollOAuth(): Promise<void> {
 }
 
 function oauthSuccessMessage(checkinVerified: boolean): string {
-  if (provider.value === "workbuddy_intl") return "OAuth 登录成功，代理凭据已启用（国际版仅支持对话，无签到）。";
+  if (provider.value === "workbuddy_intl") return "OAuth 登录成功，代理凭据已启用。";
+  if (provider.value === "orcaterm") return "OAuth 登录成功，代理凭据已启用。";
   if (checkinVerified) return "OAuth 登录成功，代理与签到均已自动启用。";
   return "OAuth 登录成功，代理已启用。签到未能自动验证，可在下方手动导入。";
 }
 
 function oauthStartEndpoint(): string {
-  return provider.value === "workbuddy_intl" ? "/auth/workbuddy-intl/start" : "/auth/codebuddy/start";
+  if (provider.value === "workbuddy_intl") return "/auth/workbuddy-intl/start";
+  if (provider.value === "orcaterm") return "/auth/orcaterm/start";
+  return "/auth/codebuddy/start";
 }
 
 function oauthPollEndpoint(): string {
-  return provider.value === "workbuddy_intl" ? "/auth/workbuddy-intl/poll" : "/auth/codebuddy/poll";
+  if (provider.value === "workbuddy_intl") return "/auth/workbuddy-intl/poll";
+  if (provider.value === "orcaterm") return "/auth/orcaterm/poll";
+  return "/auth/codebuddy/poll";
 }
 
 function oauthDefaultLabel(): string {
@@ -226,6 +249,14 @@ function schedulePoll(): void {
 
 function setMessage(value: string, isFailure = false): void { message.value = value; failed.value = isFailure; }
 function clearSecrets(): void { Object.assign(form, { token: "", refreshToken: "", cookie: "" }); }
+// The console appends ``session_id`` to the return URL without normalising an
+// existing query string, so parse it the same permissive way the desktop
+// client does instead of trusting URLSearchParams.
+function capturedSessionId(): string {
+  const match = window.location.search.match(/[?&]session_id=([^&]*)/);
+  return match ? decodeURIComponent(match[1]) : "";
+}
+
 function saveFlow(value: Flow): void { sessionStorage.setItem(flowKey.value, JSON.stringify(value)); }
 function clearFlow(): void { window.clearTimeout(pollTimer); flow.value = null; sessionStorage.removeItem(flowKey.value); }
 function loadFlow(): Flow | null {
@@ -235,6 +266,20 @@ function loadFlow(): Flow | null {
   } catch { return null; }
 }
 
+// Landing back from the OrcaTerm console carries the session id in the URL:
+// adopt it into the stored flow and resume polling without any extra click.
+function resumeOrcaTermCallback(): void {
+  const sessionId = capturedSessionId();
+  if (!sessionId) return;
+  const stored = loadFlow();
+  if (!stored) return;
+  provider.value = "orcaterm";
+  flow.value = { ...stored, session_id: sessionId };
+  saveFlow(flow.value);
+  schedulePoll();
+}
+
+onMounted(resumeOrcaTermCallback);
 onBeforeUnmount(() => window.clearTimeout(pollTimer));
 </script>
 
@@ -247,13 +292,11 @@ onBeforeUnmount(() => window.clearTimeout(pollTimer));
     </div>
 
     <!-- 主入口：CodeBuddy / WorkBuddy 国际版 浏览器登录 -->
-    <div v-if="provider === 'codebuddy' || provider === 'workbuddy_intl'" class="form-actions">
+    <div v-if="provider !== 'qoder'" class="form-actions">
       <button type="button" :disabled="pending" @click="startOAuth"><LogIn :size="16" />浏览器登录</button>
       <button v-if="flow" class="secondary-button" type="button" :disabled="polling" @click="pollOAuth"><RefreshCcw :class="{ spin: polling }" :size="16" />继续 OAuth 登录</button>
     </div>
     <p v-if="flow" class="helper-text">流程将在 {{ new Date(flow.expires_at).toLocaleTimeString() }} 过期；可离开此页后返回继续轮询。</p>
-    <p v-if="provider === 'workbuddy_intl'" class="helper-text">国际版账号仅用于对话请求（可用模型：hy4-preview、hy3、deepseek-v4.1-flash），没有签到与成长中心。</p>
-    <p v-if="provider === 'orcaterm'" class="helper-text">OrcaTerm 账号仅用于对话请求（可用模型：hy4-preview、hy3、kimi-k3、glm-5.3、glm-5.3-flash、glm-5.2、deepseek-v4-flash、deepseek-v4-pro），没有签到与成长中心。</p>
 
     <!-- Qoder: PAT 输入 -->
     <div v-if="provider === 'qoder'" class="form-grid">
