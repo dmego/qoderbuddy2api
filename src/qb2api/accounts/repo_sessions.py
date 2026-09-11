@@ -59,22 +59,6 @@ class SessionRepositoryMixin:
             )
         return cursor.rowcount == 1
 
-    async def rotate_admin_csrf(
-        self,
-        *,
-        session_hash: str,
-        csrf_hash: str,
-    ) -> bool:
-        async with self._operation(write=True) as db:
-            cursor = await db.execute(
-                """
-                UPDATE admin_sessions SET csrf_hash=?
-                WHERE session_hash=? AND revoked_at IS NULL
-                """,
-                (csrf_hash, session_hash),
-            )
-        return cursor.rowcount == 1
-
     async def revoke_admin_session(
         self,
         *,

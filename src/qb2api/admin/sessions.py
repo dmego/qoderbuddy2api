@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -57,13 +60,16 @@ class AdminSessionStore:
         self._repository = repository
         self._entries: dict[str, _SessionEntry] = {}
         self._lock = asyncio.Lock()
+        # Derives CSRF tokens from the session id. Process-local is enough:
+        # every restart revokes all persisted sessions.
+        self._csrf_secret = secrets.token_bytes(32)
 
     async def create_session(self) -> dict[str, str]:
         async with self._lock:
             await self._evict_expired_locked()
             await self._enforce_max_sessions_locked()
             session_id = secrets.token_urlsafe(32)
-            csrf_token = secrets.token_urlsafe(32)
+            csrf_token = self._derive_csrf(session_id)
             now = _now()
             entry = _SessionEntry(
                 session_hash=hash_token(session_id),
@@ -98,18 +104,25 @@ class AdminSessionStore:
             return False
         return constant_time_equal(hash_token(csrf_token), info.csrf_hash)
 
-    async def rotate_csrf(self, cookie_value: str | None) -> str | None:
+    async def csrf_token(self, cookie_value: str | None) -> str | None:
+        """Re-derive the session's CSRF token so every tab agrees on one value.
+
+        The token is derived from the session id instead of being random and
+        rotated per request: a second tab (or any fresh page load) must be able
+        to obtain the token without invalidating the tabs already open.
+        """
         info = await self.validate_session(cookie_value, touch=True)
         if info is None:
             return None
-        async with self._lock:
-            entry = await self._get_entry(info.session_hash)
-            if entry is None or entry.revoked_at is not None:
-                return None
-            csrf_token = secrets.token_urlsafe(32)
-            entry.csrf_hash = hash_token(csrf_token)
-            await self._rotate_entry(entry)
-            return csrf_token
+        return self._derive_csrf(str(cookie_value))
+
+    def _derive_csrf(self, session_id: str) -> str:
+        digest = hmac.new(
+            self._csrf_secret,
+            b"qb2api-admin-csrf:" + session_id.encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+        return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
     async def revoke_session(self, cookie_value: str) -> bool:
         async with self._lock:
@@ -166,14 +179,6 @@ class AdminSessionStore:
         await self._repository.touch_admin_session(
             session_hash=entry.session_hash,
             last_seen_at=entry.last_seen_at.isoformat(),
-        )
-
-    async def _rotate_entry(self, entry: _SessionEntry) -> None:
-        if self._repository is None:
-            return
-        await self._repository.rotate_admin_csrf(
-            session_hash=entry.session_hash,
-            csrf_hash=entry.csrf_hash,
         )
 
     async def _revoke_entry(self, entry: _SessionEntry, now: datetime) -> None:

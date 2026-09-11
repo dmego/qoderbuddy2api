@@ -7,6 +7,7 @@ Raw state stays process-local only; public views never include it.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import secrets
 import time
 from dataclasses import dataclass
@@ -85,6 +86,21 @@ class FlowStore:
         """Return raw state for upstream poll (not for UI)."""
         entry = self._alive(flow_id)
         return entry.auth_state if entry else None
+
+    def find_by_state(self, auth_state: str) -> str | None:
+        """Resolve a live flow id from the state the callback carried back.
+
+        The OrcaTerm console returns the browser to our page with the session
+        id in the URL, but that page load is a brand-new tab which never saw
+        the start response — so the state has to be enough on its own.
+        """
+        presented = auth_state.encode("utf-8")
+        for flow_id, entry in self._flows.items():
+            if entry.consumed or entry.record.expires_at <= time.time():
+                continue
+            if hmac.compare_digest(entry.auth_state.encode("utf-8"), presented):
+                return flow_id
+        return None
 
     def consume(self, flow_id: str) -> bool:
         """One-time consume after successful login. Returns False if gone/used/expired."""

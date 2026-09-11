@@ -315,6 +315,68 @@ describe("AccountImportPanel WorkBuddy 国际版", () => {
   });
 });
 
+describe("AccountImportPanel OrcaTerm 浏览器登录", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    sessionStorage.clear();
+    window.history.replaceState({}, "", "/");
+  });
+
+  it("lands the console callback on a route that mounts this panel", async () => {
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    vi.stubGlobal("open", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), body: init?.body ? JSON.parse(String(init.body)) : {} });
+      return response({ flow_id: "flow-orca", auth_url: "https://orcaterm.com/oauth/authorize", expires_at: futureIso(), label: "orcaterm", account_id: null, session_id: "sid-1" });
+    }));
+    const wrapper = mount(AccountImportPanel, {
+      props: { provider: "orcaterm" },
+      global: { plugins: [createPinia()] },
+    });
+
+    await wrapper.findAll("button").find((button) => button.text().includes("浏览器登录"))?.trigger("click");
+    await flushPromises();
+
+    // 账号页把导入面板藏在开关后面，回跳必须落在会直接挂载面板的路由。
+    expect(calls[0].body.return_url).toContain("/admin/accounts/add?provider=orcaterm");
+    wrapper.unmount();
+  });
+
+  it("completes the login from a callback tab that never saw the start response", async () => {
+    vi.useFakeTimers();
+    try {
+      window.history.replaceState({}, "", "/admin/accounts/add?provider=orcaterm&session_id=sid-callback");
+      const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+      vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        calls.push({ url, body: init?.body ? JSON.parse(String(init.body)) : {} });
+        if (url.endsWith("/auth/orcaterm/poll")) {
+          return response({
+            status: "success",
+            account: { provider: "orcaterm", account_id: "orca-1", label: "OrcaTerm" },
+          });
+        }
+        return response({});
+      }));
+      const wrapper = mount(AccountImportPanel, {
+        props: { provider: "orcaterm" },
+        global: { plugins: [createPinia()] },
+      });
+
+      await vi.advanceTimersByTimeAsync(2_100);
+      await flushPromises();
+
+      const poll = calls.find((call) => call.url.endsWith("/auth/orcaterm/poll"));
+      // 回跳标签页没有 flow_id，只能靠 session_id 定位流程。
+      expect(poll?.body).toEqual({ session_id: "sid-callback" });
+      expect(wrapper.emitted("saved")?.[0]?.[0]).toEqual({ provider: "orcaterm", account_id: "orca-1", label: "OrcaTerm" });
+      wrapper.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 function futureIso(): string {
   return new Date(Date.now() + 10 * 60 * 1000).toISOString();
 }

@@ -7,7 +7,7 @@ import ConfirmDialog from "@/components/ConfirmDialog.vue";
 
 export type AccountReference = { provider: string; account_id: string; label: string };
 
-type Flow = { flow_id: string; auth_url: string; expires_at: string; label: string; account_id?: string | null; session_id?: string };
+type Flow = { flow_id?: string; auth_url?: string; expires_at: string; label?: string; account_id?: string | null; session_id?: string };
 type ImportResult = { account?: AccountReference; checkin_derived?: boolean; checkin_verified?: boolean };
 export type Provider = "codebuddy" | "qoder" | "workbuddy_intl" | "orcaterm";
 
@@ -25,6 +25,8 @@ const flowKey = computed(() => {
 });
 const pending = ref(false);
 const polling = ref(false);
+// Mirrors FlowStore's TTL; only used before the server reports the real deadline.
+const FLOW_TTL_MS = 15 * 60 * 1000;
 const message = ref("");
 const failed = ref(false);
 const confirmCheckinVerification = ref(false);
@@ -155,8 +157,12 @@ async function startOAuth(): Promise<void> {
       account_id: form.accountId || undefined,
     };
     // OrcaTerm's console bounces the browser back to this address with the
-    // session id attached, so it must be an address the browser can reach.
-    if (provider.value === "orcaterm") body.return_url = window.location.href;
+    // session id attached, so it must be an address the browser can reach and
+    // one that mounts this panel on load — the accounts page keeps it behind a
+    // toggle, so land on the dedicated add-account route instead.
+    if (provider.value === "orcaterm") {
+      body.return_url = new URL("/admin/accounts/add?provider=orcaterm", window.location.origin).href;
+    }
     const started = await apiRequest<Flow>(oauthStartEndpoint(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -188,14 +194,21 @@ async function pollOAuth(): Promise<void> {
   }
   polling.value = true;
   try {
-    const pollBody: Record<string, string | undefined> = { flow_id: flow.value.flow_id };
+    const pollBody: Record<string, string | undefined> = {};
+    if (flow.value.flow_id) pollBody.flow_id = flow.value.flow_id;
     if (provider.value === "orcaterm") pollBody.session_id = flow.value.session_id || capturedSessionId() || undefined;
-    const result = await apiRequest<ImportResult & { status: string; message?: string }>(oauthPollEndpoint(), {
+    const result = await apiRequest<ImportResult & { status: string; message?: string; expires_at?: string }>(oauthPollEndpoint(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(pollBody),
     });
     if (result.status === "pending") {
+      // The console callback lands in a tab that never saw /start, so the
+      // deadline arrives with the reply instead of the start response.
+      if (result.expires_at && result.expires_at !== flow.value.expires_at) {
+        flow.value = { ...flow.value, expires_at: result.expires_at };
+        saveFlow(flow.value);
+      }
       setMessage("等待在浏览器中完成授权…", false);
       return;
     }
@@ -266,15 +279,15 @@ function loadFlow(): Flow | null {
   } catch { return null; }
 }
 
-// Landing back from the OrcaTerm console carries the session id in the URL:
-// adopt it into the stored flow and resume polling without any extra click.
+// Landing back from the OrcaTerm console carries the session id in the URL.
+// That landing is a brand-new tab, so it has no stored flow: the session id
+// alone identifies the flow, and the reply corrects the deadline.
 function resumeOrcaTermCallback(): void {
   const sessionId = capturedSessionId();
   if (!sessionId) return;
   const stored = loadFlow();
-  if (!stored) return;
   provider.value = "orcaterm";
-  flow.value = { ...stored, session_id: sessionId };
+  flow.value = { ...(stored ?? { expires_at: new Date(Date.now() + FLOW_TTL_MS).toISOString() }), session_id: sessionId };
   saveFlow(flow.value);
   schedulePoll();
 }

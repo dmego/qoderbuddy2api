@@ -196,6 +196,44 @@ async def test_create_and_validate_session(store: AdminSessionStore):
 
 
 @pytest.mark.asyncio
+async def test_csrf_token_survives_a_second_page_load(store: AdminSessionStore):
+    """A second tab must not invalidate the first tab's CSRF token.
+
+    Regression: the token used to be random and rotated on every GET /session,
+    so opening any second page left the first tab sending a stale token and
+    every mutating request (e.g. the OrcaTerm OAuth poll) failed with 403.
+    """
+    created = await store.create_session()
+    first = await store.csrf_token(created["session_id"])
+    second = await store.csrf_token(created["session_id"])
+
+    assert first == created["csrf_token"]
+    assert second == first
+    info = await store.validate_session(created["session_id"])
+    assert info is not None
+    assert store.verify_csrf(info, first) is True
+
+
+@pytest.mark.asyncio
+async def test_csrf_tokens_differ_between_sessions(store: AdminSessionStore):
+    first = await store.create_session()
+    second = await store.create_session()
+
+    assert first["csrf_token"] != second["csrf_token"]
+    info = await store.validate_session(second["session_id"])
+    assert info is not None
+    assert store.verify_csrf(info, first["csrf_token"]) is False
+
+
+@pytest.mark.asyncio
+async def test_csrf_token_requires_a_live_session(store: AdminSessionStore):
+    created = await store.create_session()
+    await store.revoke_session(created["session_id"])
+
+    assert await store.csrf_token(created["session_id"]) is None
+
+
+@pytest.mark.asyncio
 async def test_validate_rejects_unknown_and_revoked(store: AdminSessionStore):
     assert await store.validate_session("nope") is None
     created = await store.create_session()

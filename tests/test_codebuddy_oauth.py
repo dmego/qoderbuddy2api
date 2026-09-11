@@ -197,6 +197,26 @@ def test_flow_store_ttl_expiry():
     assert store.consume(flow.flow_id) is False
 
 
+def test_flow_store_resolves_flow_from_callback_state():
+    """The console callback lands in a tab that never saw flow_id."""
+    store = FlowStore()
+    flow = store.create(label="orca", auth_state="state-abc", auth_url="https://auth.example/x")
+
+    assert store.find_by_state("state-abc") == flow.flow_id
+    assert store.find_by_state("state-other") is None
+
+    store.consume(flow.flow_id)
+    assert store.find_by_state("state-abc") is None
+
+
+def test_flow_store_ignores_expired_state_lookup():
+    store = FlowStore(ttl_seconds=1)
+    flow = store.create(label="orca", auth_state="state-old", auth_url="https://auth.example/y")
+    store._flows[flow.flow_id].record.expires_at = time.time() - 1
+
+    assert store.find_by_state("state-old") is None
+
+
 def test_flow_store_unknown_id():
     store = FlowStore()
     assert store.get("missing") is None

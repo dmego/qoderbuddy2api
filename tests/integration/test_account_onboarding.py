@@ -264,6 +264,60 @@ def test_flow_store_keeps_reauthorization_target_without_raw_state() -> None:
     assert "raw-state" not in repr(flow)
 
 
+@pytest.mark.asyncio
+async def test_orcaterm_callback_poll_resolves_the_flow_from_session_id(onboarding_context) -> None:
+    """The console returns the browser to a fresh tab that never saw flow_id.
+
+    Regression: /poll required flow_id, so the callback tab's request could not
+    be satisfied and the login never completed.
+    """
+    app, _, _, _ = onboarding_context
+    seen: list[str] = []
+
+    class _OrcaTermExchange:
+        async def exchange(self, session_id: str):
+            from qb2api.auth.orcaterm import OrcaTermAuthResult
+
+            seen.append(session_id)
+            return OrcaTermAuthResult(status="success", access_token="jwt-1", expires_in=7200)
+
+    app.state.orcaterm_oauth = _OrcaTermExchange()
+    app.state.account_registry.is_env_account = lambda provider, account_id: False
+
+    started = await _post(
+        app,
+        "/api/admin/auth/orcaterm/start",
+        {"label": "orca", "return_url": "http://127.0.0.1:9999/admin/accounts/add?provider=orcaterm"},
+    )
+    assert started.status_code == 200
+    session_id = started.json()["session_id"]
+
+    completed = await _post(
+        app,
+        "/api/admin/auth/orcaterm/poll",
+        {"session_id": session_id},
+    )
+
+    assert completed.status_code == 200
+    assert completed.json()["status"] == "success"
+    assert completed.json()["account"]["provider"] == "orcaterm"
+    assert seen == [session_id]
+    assert "jwt-1" not in completed.text
+
+
+@pytest.mark.asyncio
+async def test_orcaterm_callback_poll_rejects_an_unknown_session_id(onboarding_context) -> None:
+    app, _, _, _ = onboarding_context
+
+    response = await _post(
+        app,
+        "/api/admin/auth/orcaterm/poll",
+        {"session_id": "11111111-2222-4333-8444-555555555555"},
+    )
+
+    assert response.status_code == 404
+
+
 async def _post(app: FastAPI, path: str, body: dict[str, str]) -> httpx.Response:
     return await _request(app, "POST", path, body)
 

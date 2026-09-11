@@ -1,11 +1,11 @@
 """OrcaTerm account import and deletion routes.
 
-OrcaTerm has no OAuth handshake of its own here: the credential is the desktop
-app's OAuth JWT, which the operator copies from the local store
-(``~/Library/Application Support/com.orcaterm-desktop.app/data.bin`` →
-``oauth_access_token``). Import is therefore manual-only, and accounts are
-chat-only (no sign-in / growth centre), mirroring the international WorkBuddy
-wiring.
+Two import paths: browser login against the console (the operator signs in with
+Tencent Cloud and the console hands the browser back to us with a session id we
+exchange for the token), and manual paste of the desktop app's OAuth JWT from
+``~/Library/Application Support/com.orcaterm-desktop.app/data.bin`` →
+``oauth_access_token``. Accounts are chat-only (no sign-in / growth centre),
+mirroring the international WorkBuddy wiring.
 """
 
 from __future__ import annotations
@@ -68,9 +68,7 @@ async def orcaterm_oauth_start(request: Request) -> dict[str, Any]:
     return {
         "flow_id": flow.flow_id,
         "auth_url": flow.auth_url,
-        "expires_at": datetime.fromtimestamp(flow.expires_at, tz=UTC)
-        .replace(microsecond=0)
-        .isoformat(),
+        "expires_at": _iso(flow.expires_at),
         "label": flow.label,
         "account_id": flow.account_id,
         "session_id": started.session_id,
@@ -81,15 +79,22 @@ async def orcaterm_oauth_start(request: Request) -> dict[str, Any]:
 async def orcaterm_oauth_poll(request: Request) -> Any:
     """Exchange a completed login session for credentials and persist them.
 
-    ``session_id`` comes from the URL the browser landed on; it must match the
-    session this flow started with, so a stray id cannot import someone else's
-    login.
+    ``session_id`` comes from the URL the browser landed on. It either matches
+    the session this flow started with, or — when the callback lands in a fresh
+    tab that never saw ``flow_id`` — identifies the flow on its own, so a stray
+    id still cannot import someone else's login.
     """
     await require_admin(request)
     state = admin_state(request)
     body = await json_object(request)
-    flow_id = required_string(body, "flow_id", detail="flow_id_required")
     session_id = _optional_string(body.get("session_id"))
+    flow_id = _optional_string(body.get("flow_id"))
+    if flow_id is None:
+        if session_id is None:
+            raise HTTPException(status_code=400, detail="flow_id_required")
+        flow_id = state.oauth_flows.find_by_state(session_id)
+        if flow_id is None:
+            raise HTTPException(status_code=404, detail="flow_not_found_or_expired")
     try:
         lease = state.oauth_flows.begin_poll(flow_id)
     except FlowBusyError:
@@ -103,8 +108,14 @@ async def orcaterm_oauth_poll(request: Request) -> Any:
         result = await state.orcaterm_oauth.exchange(lease.auth_state)
         if result.status != "success" or not result.access_token:
             # A not-yet-finished login reports expired/unknown; keep the flow
-            # alive so the operator can finish signing in and poll again.
-            return {"status": "pending", "message": result.message or "auth_pending"}
+            # alive so the operator can finish signing in and poll again. The
+            # deadline travels back so a caller that never saw /start (the
+            # console callback lands in a fresh tab) still stops polling.
+            return {
+                "status": "pending",
+                "message": result.message or "auth_pending",
+                "expires_at": _iso(lease.record.expires_at),
+            }
         account_id = await _persist_result(state, lease.record, result)
         consume = True
         return {
@@ -129,7 +140,7 @@ async def orcaterm_manual(request: Request) -> dict[str, Any]:
     access_token = required_string(
         body, "token", "access_token", "bearer", detail="token_required"
     )
-    refresh_token = _optional_string(body.get("refresh_token"))
+    refresh_token = _optional_string(body.get("refresh_token"), detail="invalid_refresh_token")
     account_id = optional_account_id(body.get("account_id"))
     await _require_orcaterm_account(state, account_id)
     selected = label(body.get("label"), default="orcaterm")
@@ -207,6 +218,10 @@ def _default_return_url(request: Request) -> str:
     return f"{origin}/admin/accounts/add?provider=orcaterm"
 
 
+def _iso(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp, tz=UTC).replace(microsecond=0).isoformat()
+
+
 def _expires_at(expires_in: int | None) -> str | None:
     if not isinstance(expires_in, int) or expires_in <= 0:
         return None
@@ -236,9 +251,9 @@ async def _require_orcaterm_account(state: Any, account_id: str | None) -> None:
         raise HTTPException(status_code=404, detail="account_not_found")
 
 
-def _optional_string(value: Any) -> str | None:
+def _optional_string(value: Any, *, detail: str = "invalid_value") -> str | None:
     if value is None:
         return None
     if not isinstance(value, str) or not value.strip():
-        raise HTTPException(status_code=400, detail="invalid_refresh_token")
+        raise HTTPException(status_code=400, detail=detail)
     return value.strip()

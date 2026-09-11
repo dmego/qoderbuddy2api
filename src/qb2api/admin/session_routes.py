@@ -1,4 +1,4 @@
-"""Admin login, session inspection, CSRF rotation, and logout routes."""
+"""Admin login, session inspection, CSRF token, and logout routes."""
 
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ async def get_session(request: Request) -> dict[str, Any]:
     if cookie and not verify_admin_key(
         request.headers.get("Authorization"), state.settings
     ):
-        csrf = await state.admin_sessions.rotate_csrf(cookie)
+        csrf = await state.admin_sessions.csrf_token(cookie)
     return {
         "status": "ok",
         "authenticated": True,
