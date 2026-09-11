@@ -307,8 +307,8 @@ onBeforeUnmount(() => window.clearTimeout(pollTimer));
       </div>
     </div>
 
-    <!-- CodeBuddy / WorkBuddy 国际版 手动 Bearer Token（折叠） -->
-    <details v-if="provider !== 'qoder'" class="advanced-section" :open="provider === 'orcaterm'">
+    <!-- 手动 Bearer Token 导入（折叠，CodeBuddy / WorkBuddy 国际版 / OrcaTerm） -->
+    <details v-if="provider !== 'qoder'" class="advanced-section">
       <summary><ChevronDown :size="14" /> 手动输入 Bearer Token</summary>
       <div class="form-grid">
         <label class="form-span">{{ chatTokenLabel }}<div class="input-with-icon"><KeyRound :size="16" /><input v-model="form.token" aria-label="Bearer Token" type="password" autocomplete="new-password" /></div></label>
