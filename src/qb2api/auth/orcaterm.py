@@ -3,12 +3,22 @@
 Login is a two-step handshake against the OrcaTerm console:
 
 1. The operator opens ``https://orcaterm.com/oauth/authorize?provider=txcloud&
-   source=web&return_url=<this admin page>&session_id=<uuid>``. The console runs
-   the Tencent Cloud OAuth dance and finally lands the browser on that
-   ``return_url`` with ``?session_id=<same uuid>`` appended.
+   source=desktop&return_url=<this admin page>&session_id=<uuid>``. The console
+   runs the Tencent Cloud OAuth dance and binds the resulting token to that
+   session id.
 2. The Control Plane polls ``OAuthExchangeToken`` (no bearer needed) with that
    session id until the console reports success, then receives
    ``{"AccessToken": ..., "ExpiresIn": ...}``.
+
+``source`` must stay ``desktop``. The console only tracks the session id on its
+desktop channel: the web channel never generates one (its bundle compiles the
+desktop flag to a constant ``false``), and a web callback redirects to
+``return_url`` without the parameter, so the exchange never binds and every
+poll reports the session as expired. The desktop channel keeps the id — its
+callback lands on ``https://orcaterm.com/login?session_id=<uuid>&from=desktop``
+and hands it to the app through the ``orcaterm://`` scheme. We pass our own
+``return_url`` instead, so the browser stays in the console tab while this
+process polls the bound session.
 
 The access token is the same JWT the desktop app stores in ``data.bin``, so a
 browser login and a manual paste produce interchangeable credentials.
@@ -24,6 +34,8 @@ import httpx
 
 ORCATERM_AUTHORIZE_URL = "https://orcaterm.com/oauth/authorize"
 ORCATERM_DEFAULT_PROVIDER = "txcloud"
+# Only the desktop channel binds the login to our session id (see module docs).
+ORCATERM_DEFAULT_SOURCE = "desktop"
 
 
 class OrcaTermAuthError(Exception):
@@ -51,13 +63,14 @@ def build_authorize_url(
     return_url: str,
     session_id: str | None = None,
     provider: str = ORCATERM_DEFAULT_PROVIDER,
+    source: str = ORCATERM_DEFAULT_SOURCE,
 ) -> OrcaTermAuthStart:
     """Build the console authorize URL carrying our callback and session id."""
     session = session_id or str(uuid.uuid4())
     query = urlencode(
         {
             "provider": provider,
-            "source": "web",
+            "source": source,
             "return_url": return_url,
             "session_id": session,
         }
@@ -142,6 +155,7 @@ def _positive_int(value: object) -> int | None:
 __all__ = [
     "ORCATERM_AUTHORIZE_URL",
     "ORCATERM_DEFAULT_PROVIDER",
+    "ORCATERM_DEFAULT_SOURCE",
     "OrcaTermAuthClient",
     "OrcaTermAuthError",
     "OrcaTermAuthResult",

@@ -55,8 +55,8 @@ async def orcaterm_oauth_start(request: Request) -> dict[str, Any]:
     account_id = optional_account_id(body.get("account_id"))
     await _require_orcaterm_account(state, account_id)
     selected_label = label(body.get("label"), default="orcaterm")
-    # The console appends ``session_id`` to this URL after the user signs in;
-    # the admin page hands the value back through /poll.
+    # The console binds the login to our session id on the tab it opened; the
+    # admin page keeps polling /poll with that id until the exchange succeeds.
     return_url = _optional_string(body.get("return_url")) or _default_return_url(request)
     started = build_authorize_url(return_url=return_url)
     flow = state.oauth_flows.create(
@@ -207,12 +207,14 @@ async def _persist_result(state: Any, record: Any, result: Any) -> str:
 
 
 def _default_return_url(request: Request) -> str:
-    """Callback the console sends the browser back to after login.
+    """Where the console parks the browser once the Tencent Cloud login ends.
 
     Targets the add-account page (a real SPA route that already understands
-    ``provider``); the console appends ``session_id`` to it, and the page
-    forwards that value to /poll. Derived from the request so the flow also
-    works behind a reverse proxy or on a LAN address.
+    ``provider``), so the operator lands back where the import panel is
+    mounted. The console does not carry ``session_id`` through this redirect;
+    the session stays bound server-side and the panel polls it from /start's
+    reply. Derived from the request so the flow also works behind a reverse
+    proxy or on a LAN address.
     """
     origin = str(request.base_url).rstrip("/")
     return f"{origin}/admin/accounts/add?provider=orcaterm"

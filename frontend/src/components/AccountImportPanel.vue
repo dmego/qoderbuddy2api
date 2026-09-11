@@ -173,7 +173,7 @@ async function startOAuth(): Promise<void> {
     window.open(started.auth_url, "_blank", "noopener,noreferrer");
     setMessage(
       provider.value === "orcaterm"
-        ? "已打开腾讯云授权页；登录完成后浏览器会跳回本页，届时自动完成导入。"
+        ? "已打开腾讯云授权页；登录完成后保持本页打开，这里会自动完成导入。"
         : "已打开授权页；此页面会继续检查授权状态。",
       false,
     );
@@ -203,8 +203,9 @@ async function pollOAuth(): Promise<void> {
       body: JSON.stringify(pollBody),
     });
     if (result.status === "pending") {
-      // The console callback lands in a tab that never saw /start, so the
-      // deadline arrives with the reply instead of the start response.
+      // Polls keep the flow alive while the operator finishes signing in; the
+      // deadline arrives with the reply too, so a tab that adopted the session
+      // id from a callback URL still learns when to stop.
       if (result.expires_at && result.expires_at !== flow.value.expires_at) {
         flow.value = { ...flow.value, expires_at: result.expires_at };
         saveFlow(flow.value);
@@ -279,9 +280,10 @@ function loadFlow(): Flow | null {
   } catch { return null; }
 }
 
-// Landing back from the OrcaTerm console carries the session id in the URL.
-// That landing is a brand-new tab, so it has no stored flow: the session id
-// alone identifies the flow, and the reply corrects the deadline.
+// The console may hand the browser back here with the session id appended, or
+// park it on its own "登录成功" page while it deep-links the desktop app. Both
+// are fine: the tab that called /start keeps polling the id it already stored,
+// and this path covers the landing tab, which has no stored flow.
 function resumeOrcaTermCallback(): void {
   const sessionId = capturedSessionId();
   if (!sessionId) return;

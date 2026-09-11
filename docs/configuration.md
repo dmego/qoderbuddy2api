@@ -107,9 +107,11 @@ OrcaTerm 是**独立提供商** `orcaterm`，与腾讯云 OrcaTerm 桌面版 AI 
   上游模型 ID 为 `<Provider>/<model>` 形式（如 `TokenHub/glm-5.3`、
   `Hunyuan3/hy4-preview`），由 `config/models.json` 的 `metadata.upstream_id`
   声明，管理台与 `/v1/models` 只暴露统一的短 ID。
-- **登录**：管理台「添加账号 → OrcaTerm」点「浏览器登录」，在腾讯云完成登录后浏览器
-  会跳回本页并自动完成导入（会话 id 经 URL 回传，再由 Control Plane 调用
-  `OAuthExchangeToken` 换取凭据）。也可展开「手动输入 Bearer Token」粘贴桌面版
+- **登录**：管理台「添加账号 → OrcaTerm」点「浏览器登录」，在腾讯云完成登录即可——
+  Control Plane 用发起流程时生成的会话 id 轮询 `OAuthExchangeToken` 换取凭据，所以
+  发起页要保持打开（导入完成后可关闭）。授权 URL 必须带 `source=desktop`：控制台只在
+  desktop 通道把登录绑定到会话 id，web 通道既不生成也不回传该 id，会导致轮询永远停在
+  未完成状态。也可展开「手动输入 Bearer Token」粘贴桌面版
   OrcaTerm 的 OAuth Token（桌面 App 数据目录
   `~/Library/Application Support/com.orcaterm-desktop.app/data.bin` 里的
   `oauth_access_token`），或用 `ORCATERM_TOKEN` 环境变量注入。

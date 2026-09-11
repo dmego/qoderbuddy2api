@@ -366,9 +366,11 @@ class TestOrcaTermAuth:
 
         assert started.session_id == "11111111-2222-3333-4444-555555555555"
         assert started.auth_url.startswith("https://orcaterm.com/oauth/authorize?")
-        # source=web makes the console bounce back to return_url instead of
-        # handing the result to the desktop app's custom scheme.
-        assert "source=web" in started.auth_url
+        # The console binds the login to session_id on its desktop channel only.
+        # source=web completes the login but redirects back without the id, so
+        # OAuthExchangeToken never binds and every poll stays pending.
+        assert "source=desktop" in started.auth_url
+        assert "source=web" not in started.auth_url
         assert "session_id=11111111-2222-3333-4444-555555555555" in started.auth_url
         assert "provider=txcloud" in started.auth_url
 
@@ -378,6 +380,7 @@ class TestOrcaTermAuth:
         started = build_authorize_url(return_url="http://localhost/cb")
 
         assert len(started.session_id) == 36  # uuid4 form
+        assert "source=desktop" in started.auth_url
 
     def test_exchange_maps_console_payload(self):
         import asyncio
