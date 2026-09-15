@@ -116,7 +116,71 @@ class AccountRepository(
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
             )
             await self._backfill_refreshable_flags()
+            history_changed = await self._backfill_metric_history_payloads()
+            recovered = await self._recover_lost_and_found()
             await self.db.commit()
+            if history_changed or recovered:
+                await self._compact_database()
+
+    async def _backfill_metric_history_payloads(self) -> bool:
+        """Drop per-package detail that predates the bounded history payload.
+
+        ``packages`` accounted for ~97% of the ``points`` bytes and the history
+        trend only reads scalar totals, so rows written before the collector
+        stopped recording it are pure dead weight (~120 MiB here). Returns
+        whether anything changed, so the caller only pays for a VACUUM then.
+        """
+        cursor = await self.db.execute(
+            """
+            UPDATE account_metric_history
+               SET metric_value_json = json_remove(metric_value_json, '$.packages')
+             WHERE CASE WHEN json_valid(metric_value_json)
+                        THEN json_type(metric_value_json, '$.packages') END = 'array'
+            """
+        )
+        return cursor.rowcount > 0
+
+    async def _compact_database(self) -> None:
+        """Return freed pages to the filesystem.
+
+        Must run outside a transaction, which is why the caller commits first.
+        """
+        await self.db.execute("VACUUM")
+
+    async def _recover_lost_and_found(self) -> int:
+        """Reclaim request events stranded by a past ``.recover`` and drop the remnant.
+
+        A damaged page earlier in this database's life forced a recovery run
+        that copied orphaned pages into SQLite's ``lost_and_found`` scratch
+        table instead of back into their original tables. Those rows are intact
+        request events (every NOT NULL column matches), so they are restored
+        before the scratch table is removed. Guarded on the table's existence,
+        so it is a no-op everywhere else and after the first run.
+        """
+        cursor = await self.db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='lost_and_found'"
+        )
+        if await cursor.fetchone() is None:
+            return 0
+        await self.db.execute("""
+            INSERT OR IGNORE INTO request_events
+                (event_id, request_id, provider, account_id, model_id, protocol,
+                 status, http_status, input_tokens, output_tokens, latency_ms,
+                 stream_committed, started_at, finished_at, error_code,
+                 redacted_error, reasoning_effort)
+            SELECT c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10,
+                   CASE WHEN c11 IN (0, 1) THEN c11 ELSE 0 END,
+                   c12, c13, c14, c15, c16
+              FROM lost_and_found
+             WHERE nfield = 17
+               AND typeof(c0) = 'text' AND typeof(c1) = 'text'
+               AND typeof(c2) = 'text' AND typeof(c4) = 'text'
+               AND typeof(c5) = 'text' AND typeof(c6) = 'text'
+               AND typeof(c12) = 'text' AND c12 LIKE '____-__-__T%'
+        """)
+        recovered = max(0, cursor.rowcount)
+        await self.db.execute("DROP TABLE lost_and_found")
+        return recovered
 
     async def _backfill_refreshable_flags(self) -> None:
         """Correct rows whose ``has_refresh_token`` predates a refresh contract.

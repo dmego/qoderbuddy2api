@@ -38,6 +38,20 @@ class MetricCollectionState:
     seen: set[MetricKey]
 
 
+def _history_value(value: Any) -> Any:
+    """Drop per-package detail from a stored history sample.
+
+    The ``packages`` list dominates the payload (~97% of the bytes for
+    CodeBuddy ``points``) and is per-sample detail that the history trend and
+    the credit chart never read: they only need the scalar totals, and the
+    full list is still served live by ``account_metric_snapshots``. Keeping it
+    grew ``account_metric_history`` to 133 MiB for 91k rows.
+    """
+    if not isinstance(value, dict) or not isinstance(value.get("packages"), list):
+        return value
+    return {key: item for key, item in value.items() if key != "packages"}
+
+
 class MetricSnapshotCollector(ProviderMetricCollectorMixin):
     """Collect persisted snapshots while retaining retry state across runs."""
 
@@ -227,7 +241,7 @@ class MetricSnapshotCollector(ProviderMetricCollectorMixin):
                 provider=key[0],
                 account_id=key[1],
                 metric_kind=key[2],
-                value=value,
+                value=_history_value(value),
                 status=status,
                 observed_at=observed_at,
             )
