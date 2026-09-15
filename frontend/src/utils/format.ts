@@ -31,3 +31,23 @@ export function formatBeijing(value?: string | number): string {
     hour12: false,
   }).format(date);
 }
+
+/** 秒以上按秒显示（保留一位小数），不足一秒按毫秒显示，避免大数值堆在毫秒列。 */
+const SECONDS_THRESHOLD_MS = 1000;
+
+/** 把毫秒耗时渲染成自适应单位：<1s 用 ms，>=1s 用 s（一位小数）。 */
+export function formatDuration(value?: number | null): string {
+  if (value == null || !Number.isFinite(value)) return "--";
+  const abs = Math.abs(value);
+  if (abs < SECONDS_THRESHOLD_MS) return `${Math.round(value)} ms`;
+  const seconds = value / SECONDS_THRESHOLD_MS;
+  // 一分钟以上用分:秒，避免 "612.3 s" 这种需要读者自己换算的写法。
+  if (Math.abs(seconds) >= 60) {
+    const sign = seconds < 0 ? "-" : "";
+    const total = Math.abs(seconds);
+    const minutes = Math.floor(total / 60);
+    const rest = total - minutes * 60;
+    return `${sign}${minutes}m ${rest.toFixed(1)}s`;
+  }
+  return `${seconds.toFixed(1)} s`;
+}

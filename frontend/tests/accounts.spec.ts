@@ -162,44 +162,7 @@ describe("AccountImportPanel", () => {
     expect(wrapper.text()).toContain("签到凭据已验证并保存");
   });
 
-  it("prefills and opens manual checkin import after automatic Qoder derivation fails", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => response({
-      status: "ok",
-      checkin_derived: false,
-      account: { provider: "qoder", account_id: "qd-new", label: "新账号" },
-    })));
-    const wrapper = mount(AccountImportPanel, {
-      props: { provider: "qoder" },
-      global: { plugins: [createPinia()] },
-    });
 
-    await wrapper.get('input[aria-label="Personal Access Token (PAT)"]').setValue("pat-secret");
-    await wrapper.findAll("button").find((button) => button.text().includes("验证并保存"))?.trigger("click");
-    await flushPromises();
-
-    const manualDetails = wrapper.findAll("details").find((details) => details.text().includes("手动导入签到凭据"));
-    expect(manualDetails?.attributes("open")).toBeDefined();
-    const accountIdInput = wrapper.get('input[aria-label="账号 ID"]').element as HTMLInputElement;
-    expect(accountIdInput.value).toBe("qd-new");
-    expect(wrapper.text()).toContain("签到未能自动启用");
-  });
-
-  it("explains rejected Qoder check-in credentials", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => response({ detail: "checkin_credential_rejected" }, 400)));
-    const wrapper = mount(AccountImportPanel, {
-      props: { provider: "qoder", accountId: "qd-demo" },
-      global: { plugins: [createPinia()] },
-    });
-
-    await wrapper.findAll("details").find((details) => details.text().includes("手动导入签到凭据"))?.find("summary").trigger("click");
-    await wrapper.get('input[aria-label="Qoder Access Token"]').setValue("access");
-    await wrapper.get('input[aria-label="Qoder 刷新令牌"]').setValue("refresh");
-    await wrapper.findAll("button").find((button) => button.text().includes("验证并启用"))?.trigger("click");
-    await flushPromises();
-
-    expect(wrapper.text()).toContain("签到凭据验证失败");
-    expect(wrapper.text()).toContain("来自同一个 Qoder 账号");
-  });
 
 });
 
@@ -209,12 +172,12 @@ describe("AccountImportPanel WorkBuddy 国际版", () => {
     sessionStorage.clear();
   });
 
-  it("offers all three providers and never renders check-in UI for the international provider", async () => {
+  it("offers both providers and never renders check-in UI for the international provider", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => response({ models: [] })));
     const wrapper = mount(AccountImportPanel, { global: { plugins: [createPinia()] } });
 
     const providers = wrapper.findAll(".segmented-control button").map((button) => button.text());
-    expect(providers).toEqual(["CodeBuddy", "WorkBuddy 国际版", "Qoder", "OrcaTerm"]);
+    expect(providers).toEqual(["WorkBuddy", "WorkBuddy 国际版"]);
 
     await wrapper.findAll(".segmented-control button")[1].trigger("click");
     await flushPromises();
@@ -312,68 +275,6 @@ describe("AccountImportPanel WorkBuddy 国际版", () => {
     expect(wrapper.text()).not.toContain("继续 OAuth 登录");
     expect(sessionStorage.getItem("qb2api.codebuddy.oauth.flow")).toContain("flow-cb");
     wrapper.unmount();
-  });
-});
-
-describe("AccountImportPanel OrcaTerm 浏览器登录", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    sessionStorage.clear();
-    window.history.replaceState({}, "", "/");
-  });
-
-  it("lands the console callback on a route that mounts this panel", async () => {
-    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
-    vi.stubGlobal("open", vi.fn());
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      calls.push({ url: String(input), body: init?.body ? JSON.parse(String(init.body)) : {} });
-      return response({ flow_id: "flow-orca", auth_url: "https://orcaterm.com/oauth/authorize", expires_at: futureIso(), label: "orcaterm", account_id: null, session_id: "sid-1" });
-    }));
-    const wrapper = mount(AccountImportPanel, {
-      props: { provider: "orcaterm" },
-      global: { plugins: [createPinia()] },
-    });
-
-    await wrapper.findAll("button").find((button) => button.text().includes("浏览器登录"))?.trigger("click");
-    await flushPromises();
-
-    // 账号页把导入面板藏在开关后面，回跳必须落在会直接挂载面板的路由。
-    expect(calls[0].body.return_url).toContain("/admin/accounts/add?provider=orcaterm");
-    wrapper.unmount();
-  });
-
-  it("completes the login from a callback tab that never saw the start response", async () => {
-    vi.useFakeTimers();
-    try {
-      window.history.replaceState({}, "", "/admin/accounts/add?provider=orcaterm&session_id=sid-callback");
-      const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
-      vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
-        calls.push({ url, body: init?.body ? JSON.parse(String(init.body)) : {} });
-        if (url.endsWith("/auth/orcaterm/poll")) {
-          return response({
-            status: "success",
-            account: { provider: "orcaterm", account_id: "orca-1", label: "OrcaTerm" },
-          });
-        }
-        return response({});
-      }));
-      const wrapper = mount(AccountImportPanel, {
-        props: { provider: "orcaterm" },
-        global: { plugins: [createPinia()] },
-      });
-
-      await vi.advanceTimersByTimeAsync(2_100);
-      await flushPromises();
-
-      const poll = calls.find((call) => call.url.endsWith("/auth/orcaterm/poll"));
-      // 回跳标签页没有 flow_id，只能靠 session_id 定位流程。
-      expect(poll?.body).toEqual({ session_id: "sid-callback" });
-      expect(wrapper.emitted("saved")?.[0]?.[0]).toEqual({ provider: "orcaterm", account_id: "orca-1", label: "OrcaTerm" });
-      wrapper.unmount();
-    } finally {
-      vi.useRealTimers();
-    }
   });
 });
 

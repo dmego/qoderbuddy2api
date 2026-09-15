@@ -47,7 +47,7 @@ describe("operations console workflows", () => {
     await flushPromises();
 
     await wrapper.get('button[aria-label="探测 model-a"]').trigger("click"); await flushPromises();
-    expect(wrapper.text()).toContain("132ms");
+    expect(wrapper.text()).toContain("132 ms");
     await wrapper.get('button[aria-label="停用 model-a"]').trigger("click");
     await confirmDialog();
 

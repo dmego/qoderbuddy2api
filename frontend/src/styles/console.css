@@ -28,6 +28,7 @@ h2 { margin-bottom: 4px; color: var(--text); font-size: var(--text-lg); font-wei
 
 .summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 .summary-grid--five { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.summary-grid--six { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 .summary-tile { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; row-gap: 5px; min-height: 90px; padding: 13px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
 .summary-tile svg { grid-row: span 3; width: 16px; margin-top: 3px; color: var(--accent); }
 .summary-tile span, .summary-tile small { overflow: hidden; color: var(--muted); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
@@ -82,7 +83,7 @@ h2 { margin-bottom: 4px; color: var(--text); font-size: var(--text-lg); font-wei
 .operation-items small { grid-column: 2; }
 
 @media (max-width: 1120px) {
-  .summary-grid--five { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .summary-grid--five, .summary-grid--six { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .service-layout, .overview-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 760px) {
@@ -90,11 +91,11 @@ h2 { margin-bottom: 4px; color: var(--text); font-size: var(--text-lg); font-wei
   .page-header { align-items: flex-start; flex-direction: column; gap: 14px; }
   .page-header > button, .page-header .header-actions { width: 100%; }
   .page-header .header-actions > * { flex: 1 1 auto; }
-  .summary-grid, .summary-grid--five { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .summary-grid, .summary-grid--five, .summary-grid--six { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .service-status-block, .checkin-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 480px) {
-  .summary-grid, .summary-grid--five { grid-template-columns: 1fr; }
+  .summary-grid, .summary-grid--five, .summary-grid--six { grid-template-columns: 1fr; }
   .summary-tile { min-height: 84px; }
   .service-status-block, .checkin-rail { grid-template-columns: 1fr; }
 }

@@ -67,7 +67,7 @@ describe("RoutingPage", () => {
     expect(wrapper.findAll(".routing-model")).toHaveLength(2);
     // Collapsed rows still summarise the policy, so the page reads as a compact list.
     expect(wrapper.text()).toContain("DeepSeek V4.1 Flash");
-    expect(wrapper.text()).toContain("CodeBuddy P0/W1");
+    expect(wrapper.text()).toContain("WorkBuddy P0/W1");
     // No editable inputs until a row is expanded.
     expect(wrapper.find('input[aria-label="deepseek-v4.1-flash codebuddy 优先级"]').exists()).toBe(false);
 

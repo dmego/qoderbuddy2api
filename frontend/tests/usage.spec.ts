@@ -20,7 +20,7 @@ describe("UsagePage", () => {
         return response({
           event_id: "event-q1",
           request_id: "request-q1",
-          provider: "qoder",
+          provider: "workbuddy_intl",
           account_id: "qd-1",
           model_id: "model-a",
           protocol: "openai",
@@ -37,7 +37,7 @@ describe("UsagePage", () => {
         });
       }
       if (url.includes("/usage/events")) {
-        return response({ events: [{ event_id: "event-q1", provider: "qoder", account_id: "qd-1", model_id: "model-a", protocol: "openai", status: "succeeded", http_status: 200, input_tokens: 4, output_tokens: 3, latency_ms: 120, started_at: "2026-07-23T00:00:00+00:00" }], next_cursor: url.includes("cursor=usage-next") ? null : "usage-next" });
+        return response({ events: [{ event_id: "event-q1", provider: "workbuddy_intl", account_id: "qd-1", model_id: "model-a", protocol: "openai", status: "succeeded", http_status: 200, input_tokens: 4, output_tokens: 3, latency_ms: 120, started_at: "2026-07-23T00:00:00+00:00" }], next_cursor: url.includes("cursor=usage-next") ? null : "usage-next" });
       }
       if (url.includes("/usage/summary")) {
         return response({ summary: { request_count: 1, input_tokens: 4, output_tokens: 3, success_count: 1, error_count: 0, token_event_count: 1, missing_token_count: 0 } });
@@ -63,20 +63,20 @@ describe("UsagePage", () => {
     expect(document.body.textContent).toContain("未提交首块");
     expect(document.body.textContent).not.toContain("must never render");
 
-    await wrapper.find('[aria-label="服务提供方"]').setValue("qoder");
+    await wrapper.find('[aria-label="服务提供方"]').setValue("workbuddy_intl");
     await wrapper.find('[aria-label="请求状态"]').setValue("failed");
     await flushPromises();
 
-    expect(wrapper.find('a[download="usage-events.csv"]').attributes("href")).toContain("provider=qoder");
+    expect(wrapper.find('a[download="usage-events.csv"]').attributes("href")).toContain("provider=workbuddy_intl");
     expect(wrapper.find('option[value="workbuddy"]').exists()).toBe(false);
-    expect(calls).toContain("/api/admin/usage/summary?provider=qoder&status=failed");
-    expect(calls).toContain("/api/admin/usage/timeseries?bucket_kind=minute&limit=60&provider=qoder&status=failed");
-    expect(calls).toContain("/api/admin/usage/events?provider=qoder&status=failed&limit=25");
+    expect(calls).toContain("/api/admin/usage/summary?provider=workbuddy_intl&status=failed");
+    expect(calls).toContain("/api/admin/usage/timeseries?bucket_kind=minute&limit=60&provider=workbuddy_intl&status=failed");
+    expect(calls).toContain("/api/admin/usage/events?provider=workbuddy_intl&status=failed&limit=25");
 
     const next = wrapper.findAll("button").find((button) => button.text().includes("下一页"));
     await next?.trigger("click");
     await flushPromises();
-    expect(calls).toContain("/api/admin/usage/events?provider=qoder&status=failed&limit=25&cursor=usage-next");
+    expect(calls).toContain("/api/admin/usage/events?provider=workbuddy_intl&status=failed&limit=25&cursor=usage-next");
   });
 
   it("keeps the rollup operation status scalar and exposes backend counters as detail items", async () => {
@@ -110,8 +110,8 @@ describe("UsagePage", () => {
   ])("renders stream_committed=%s as a distinct state", async (streamCommitted, expected) => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes("/usage/events/event-state")) return response({ event_id: "event-state", request_id: "request-state", provider: "qoder", account_id: null, model_id: "model-a", protocol: "openai", status: "succeeded", http_status: 200, input_tokens: null, output_tokens: null, latency_ms: null, stream_committed: streamCommitted, started_at: "2026-07-24T00:00:00Z" });
-      if (url.includes("/usage/events")) return response({ events: [{ event_id: "event-state", provider: "qoder", account_id: null, model_id: "model-a", protocol: "openai", status: "succeeded", http_status: 200, input_tokens: null, output_tokens: null, latency_ms: null, started_at: "2026-07-24T00:00:00Z" }], next_cursor: null });
+      if (url.includes("/usage/events/event-state")) return response({ event_id: "event-state", request_id: "request-state", provider: "workbuddy_intl", account_id: null, model_id: "model-a", protocol: "openai", status: "succeeded", http_status: 200, input_tokens: null, output_tokens: null, latency_ms: null, stream_committed: streamCommitted, started_at: "2026-07-24T00:00:00Z" });
+      if (url.includes("/usage/events")) return response({ events: [{ event_id: "event-state", provider: "workbuddy_intl", account_id: null, model_id: "model-a", protocol: "openai", status: "succeeded", http_status: 200, input_tokens: null, output_tokens: null, latency_ms: null, started_at: "2026-07-24T00:00:00Z" }], next_cursor: null });
       if (url.includes("/usage/summary")) return response({ summary: { request_count: 1, input_tokens: 0, output_tokens: 0, success_count: 1, error_count: 0, token_event_count: 0, missing_token_count: 1 } });
       return response({ rollups: [] });
     }));

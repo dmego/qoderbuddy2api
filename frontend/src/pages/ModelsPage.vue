@@ -13,6 +13,7 @@ import PanelHeader from "@/components/PanelHeader.vue";
 import StatePill from "@/components/StatePill.vue";
 import { appendQuery, useCursorPager } from "@/composables/useCursorPager";
 import { useNotifications } from "@/composables/useNotifications";
+import { formatDuration } from "@/utils/format";
 
 type ModelRoute = { provider: string; upstream_id: string; enabled: boolean; source: string };
 type Model = {
@@ -54,17 +55,17 @@ const refresh = useMutation({
 });
 const syncUpstream = useMutation({
   mutationFn: () => {
-    const endpoint = provider.value === "codebuddy" ? "/models/sync/codebuddy" : provider.value === "qoder" ? "/models/sync/qoder" : "/models/sync";
+    const endpoint = provider.value === "codebuddy" ? "/models/sync/codebuddy" : "/models/sync";
     return apiRequest<{ added: number; updated: number; removed?: number; disabled?: number; probed?: number; providers?: Record<string, { status: string; added?: number; error?: string }> }>(endpoint, { method: "POST" });
   },
   onSuccess: async (result) => {
     let detail: string;
     if (result.providers) {
-      const q = result.providers.qoder;
       const c = result.providers.codebuddy;
+      const intl = result.providers.workbuddy_intl;
       const wb = c && c.status === "succeeded" ? `WorkBuddy 新增 ${c.added ?? 0}` : "WorkBuddy 失败";
-      const qd = q && q.status === "succeeded" ? `Qoder 更新 ${q.added ?? 0}` : q?.error === "QoderError" ? "Qoder 无可用凭据" : "Qoder 未同步";
-      detail = `${wb} · ${qd}`;
+      const wbi = intl && intl.status === "succeeded" ? `国际版更新 ${intl.added ?? 0}` : "国际版未同步";
+      detail = `${wb} · ${wbi}`;
     } else if (provider.value === "codebuddy") {
       detail = `探测 ${result.probed ?? 0} · 新增 ${result.added} · 更新 ${result.updated} · 移除 ${result.removed ?? 0}`;
     } else {
@@ -73,7 +74,7 @@ const syncUpstream = useMutation({
     notify("上游同步完成", { message: detail, tone: "success" });
     await queryClient.invalidateQueries({ queryKey: ["models"] });
   },
-  onError: (error) => notify("上游同步失败", { message: String(error).includes("401") || String(error).includes("403") ? `${provider.value === "qoder" ? "Qoder" : "WorkBuddy"} 凭据失效，请在账号页检查` : String(error), tone: "error" }),
+  onError: (error) => notify("上游同步失败", { message: String(error).includes("401") || String(error).includes("403") ? "WorkBuddy 凭据失效，请在账号页检查" : String(error), tone: "error" }),
 });
 
 const toggle = useMutation({
@@ -84,7 +85,7 @@ const toggle = useMutation({
 const probe = useMutation({
   mutationFn: (model: Model) => apiRequest<ProbeResult>(`/models/${encodeURIComponent(model.model_id)}/probe`, { method: "POST" }),
   onSuccess: (result) => {
-    const detail = result.routes.map((route) => route.status === "succeeded" ? `${route.provider} ${route.latency_ms ?? "--"}ms` : `${route.provider} 失败`).join(" · ");
+    const detail = result.routes.map((route) => route.status === "succeeded" ? `${route.provider} ${formatDuration(route.latency_ms)}` : `${route.provider} 失败`).join(" · ");
     lastOperation.value = { action: "模型探测", ...result };
     notify(result.status === "succeeded" ? "模型探测成功" : "部分路线探测失败", { message: detail, tone: result.status === "succeeded" ? "success" : "warning" });
   },
@@ -102,14 +103,14 @@ function enabledRouteCount(model: Model): number { return model.routes.filter((r
   <section class="page-content">
     <header class="page-header">
       <div><h1>模型管理</h1><p>统一模型目录：同一模型跨提供商合并展示，请求内部自动轮询；可分别核对各路线可用性。</p></div>
-      <div class="header-actions"><button class="secondary-button" type="button" :disabled="models.isFetching.value" @click="models.refetch()"><RefreshCcw :class="{ spin: models.isFetching.value }" :size="16" />读取目录</button><button type="button" :disabled="refresh.isPending.value" @click="refresh.mutate()"><Boxes :size="16" />刷新目录</button><button type="button" :disabled="syncUpstream.isPending.value || (provider !== '' && provider !== 'qoder' && provider !== 'codebuddy')" aria-label="从上游同步" @click="syncUpstream.mutate()"><RefreshCcw :class="{ spin: syncUpstream.isPending.value }" :size="16" />从上游同步</button></div>
+      <div class="header-actions"><button class="secondary-button" type="button" :disabled="models.isFetching.value" @click="models.refetch()"><RefreshCcw :class="{ spin: models.isFetching.value }" :size="16" />读取目录</button><button type="button" :disabled="refresh.isPending.value" @click="refresh.mutate()"><Boxes :size="16" />刷新目录</button><button type="button" :disabled="syncUpstream.isPending.value || (provider !== '' && provider !== 'codebuddy' && provider !== 'workbuddy_intl')" aria-label="从上游同步" @click="syncUpstream.mutate()"><RefreshCcw :class="{ spin: syncUpstream.isPending.value }" :size="16" />从上游同步</button></div>
     </header>
 
     <section class="data-panel filter-panel">
       <PanelHeader title="目录筛选" description="筛选条件会随分页请求发送，避免在浏览器加载整个目录。"><Filter :size="17" /></PanelHeader>
       <div class="filter-grid filter-grid--five">
         <label class="filter-search">模型名称或 ID<div class="input-with-icon"><Search :size="15" /><input v-model="draftSearch" placeholder="输入后回车搜索" @keyup.enter="applySearch" /></div></label>
-        <label>包含提供方<select v-model="provider" @change="reset"><option value="">全部</option><option value="codebuddy">CodeBuddy</option><option value="qoder">Qoder</option></select></label>
+        <label>包含提供方<select v-model="provider" @change="reset"><option value="">全部</option><option value="codebuddy">WorkBuddy</option><option value="workbuddy_intl">WorkBuddy 国际版</option></select></label>
         <label>来源<select v-model="enabled" @change="reset"><option value="">全部</option><option value="true">启用</option><option value="false">停用</option></select></label>
         <label>能力<select v-model="capability" @change="reset"><option value="">全部</option><option value="chat">对话</option><option value="streaming">流式输出</option><option value="tool_calling">工具调用</option><option value="reasoning">推理</option></select></label>
         <div class="filter-actions"><button type="button" @click="applySearch"><Search :size="15" />应用</button><button class="secondary-button" type="button" @click="clearFilters"><X :size="15" />清除</button></div>
@@ -133,7 +134,7 @@ function enabledRouteCount(model: Model): number { return model.routes.filter((r
         <div class="tag-list"><span v-for="route in selected.routes" :key="route.provider"><span class="provider-mark" :class="`provider-mark--${route.provider}`">{{ route.provider }}</span><code class="mono">{{ route.upstream_id }}</code>{{ route.enabled ? "启用" : "停用" }}</span></div>
         <h3>当前筛选用量摘要</h3>
         <div v-if="modelUsage.isPending.value" class="loading-row">正在读取用量摘要…</div><div v-else-if="modelUsage.isError.value" class="data-state data-state--warning">用量摘要暂不可用，模型管理操作仍可继续。</div>
-        <div v-else class="detail-metrics"><div><span>请求数</span><strong>{{ modelUsage.data.value?.summary.request_count ?? 0 }}</strong></div><div><span>错误率</span><strong>{{ errorRate(modelUsage.data.value?.summary) }}</strong></div><div><span>P95 延迟</span><strong>{{ modelUsage.data.value?.summary.latency_p95_ms != null ? `${modelUsage.data.value.summary.latency_p95_ms} ms` : "--" }}</strong></div></div>
+        <div v-else class="detail-metrics"><div><span>请求数</span><strong>{{ modelUsage.data.value?.summary.request_count ?? 0 }}</strong></div><div><span>错误率</span><strong>{{ errorRate(modelUsage.data.value?.summary) }}</strong></div><div><span>P95 延迟</span><strong>{{ formatDuration(modelUsage.data.value?.summary.latency_p95_ms) }}</strong></div></div>
         <button type="button" :disabled="probe.isPending.value" @click="probe.mutate(selected)"><Activity :size="16" />执行安全探测</button>
       </template>
     </AccessibleDrawer>

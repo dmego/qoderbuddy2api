@@ -20,30 +20,30 @@ describe("provider select options", () => {
     vi.unstubAllGlobals();
   });
 
-  it("appends WorkBuddy 国际版 after CodeBuddy and Qoder on the accounts page", async () => {
+  it("appends WorkBuddy 国际版 after CodeBuddy on the accounts page", async () => {
     const wrapper = await mountPage(AccountsPage);
-    expect(providerOptions(wrapper)).toEqual(["", "codebuddy", "qoder", "workbuddy_intl", "orcaterm"]);
+    expect(providerOptions(wrapper)).toEqual(["", "codebuddy", "workbuddy_intl"]);
   });
 
   it("appends WorkBuddy 国际版 on the credits page", async () => {
     const wrapper = await mountPage(CreditsPage);
-    expect(providerOptions(wrapper)).toEqual(["", "codebuddy", "qoder", "workbuddy_intl", "orcaterm"]);
+    expect(providerOptions(wrapper)).toEqual(["", "codebuddy", "workbuddy_intl"]);
   });
 
   it("appends WorkBuddy 国际版 on the credentials page", async () => {
     const wrapper = await mountPage(CredentialsPage);
-    expect(providerOptions(wrapper)).toEqual(["", "codebuddy", "qoder", "workbuddy_intl", "orcaterm"]);
+    expect(providerOptions(wrapper)).toEqual(["", "codebuddy", "workbuddy_intl"]);
   });
 
   it("appends WorkBuddy 国际版 on the usage page", async () => {
     const wrapper = await mountPage(UsagePage);
-    expect(providerOptions(wrapper)).toEqual(["", "codebuddy", "qoder", "workbuddy_intl", "orcaterm"]);
+    expect(providerOptions(wrapper)).toEqual(["", "codebuddy", "workbuddy_intl"]);
   });
 
 
   it("never offers WorkBuddy 国际版 on the check-in page", async () => {
     const checkin = await mountPage(CheckinPage);
-    expect(providerOptions(checkin)).toEqual(["", "codebuddy", "qoder"]);
+    expect(providerOptions(checkin)).toEqual(["", "codebuddy"]);
     expect(checkin.text()).not.toContain(INTL.label);
   });
 
@@ -61,10 +61,9 @@ describe("AddAccountPage provider query", () => {
   });
 
   it.each([
-    ["codebuddy", "CodeBuddy"],
+    ["codebuddy", "WorkBuddy"],
     ["workbuddy_intl", "WorkBuddy 国际版"],
-    ["qoder", "Qoder"],
-  ])("honours ?provider=%s instead of defaulting to CodeBuddy", async (requested, expected) => {
+  ])("honours ?provider=%s instead of defaulting to WorkBuddy", async (requested, expected) => {
     stubSession();
     await router.push({ name: "account-add", query: { provider: requested } });
     await router.isReady();
@@ -76,14 +75,14 @@ describe("AddAccountPage provider query", () => {
     wrapper.unmount();
   });
 
-  it("falls back to CodeBuddy for an unknown provider", async () => {
+  it("falls back to WorkBuddy for an unknown provider", async () => {
     stubSession();
     await router.push({ name: "account-add", query: { provider: "unknown-provider" } });
     await router.isReady();
     const wrapper = mount(AddAccountPage, { global: { plugins: [createPinia(), VueQueryPlugin, router] } });
     await flushPromises();
 
-    expect(wrapper.get(".segmented-control button.active").text()).toBe("CodeBuddy");
+    expect(wrapper.get(".segmented-control button.active").text()).toBe("WorkBuddy");
     wrapper.unmount();
   });
 });

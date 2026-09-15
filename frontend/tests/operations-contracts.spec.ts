@@ -53,10 +53,10 @@ describe("operations API contracts", () => {
     await flushPromises();
 
     await wrapper.get(".filter-search input").setValue("model-a");
-    await wrapper.get(".filter-grid select").setValue("qoder");
+    await wrapper.get(".filter-grid select").setValue("workbuddy_intl");
     await buttonWithText(wrapper, "应用").trigger("click");
     await flushPromises();
-    expect(calls).toContain("/api/admin/models?limit=20&query=model-a&provider=qoder");
+    expect(calls).toContain("/api/admin/models?limit=20&query=model-a&provider=workbuddy_intl");
 
     const trigger = wrapper.get(".table-link");
     (trigger.element as HTMLElement).focus();
@@ -80,7 +80,7 @@ describe("operations API contracts", () => {
 
     await buttonWithText(wrapper, "下一页").trigger("click");
     await flushPromises();
-    expect(calls).toContain("/api/admin/models?limit=20&cursor=model-next&query=model-a&provider=qoder");
+    expect(calls).toContain("/api/admin/models?limit=20&cursor=model-next&query=model-a&provider=workbuddy_intl");
     wrapper.unmount();
   });
 
@@ -96,7 +96,7 @@ describe("operations API contracts", () => {
 
     await wrapper.get(".filter-search input").setValue("研发");
     const selects = wrapper.findAll(".filter-grid select");
-    await selects[0].setValue("qoder");
+    await selects[0].setValue("workbuddy_intl");
     await selects[2].setValue("action_required");
     await selects[3].setValue("chat");
     await buttonWithText(wrapper, "应用").trigger("click");
@@ -104,10 +104,10 @@ describe("operations API contracts", () => {
 
     expect(wrapper.find('option[value="workbuddy"]').exists()).toBe(false);
     expect(wrapper.find('option[value="needs_reauth"]').exists()).toBe(false);
-    expect(calls).toContain("/api/admin/accounts?limit=20&query=%E7%A0%94%E5%8F%91&provider=qoder&status=action_required&purpose=chat");
+    expect(calls).toContain("/api/admin/accounts?limit=20&query=%E7%A0%94%E5%8F%91&provider=workbuddy_intl&status=action_required&purpose=chat");
     await buttonWithText(wrapper, "下一页").trigger("click");
     await flushPromises();
-    expect(calls).toContain("/api/admin/accounts?limit=20&cursor=account-next&query=%E7%A0%94%E5%8F%91&provider=qoder&status=action_required&purpose=chat");
+    expect(calls).toContain("/api/admin/accounts?limit=20&cursor=account-next&query=%E7%A0%94%E5%8F%91&provider=workbuddy_intl&status=action_required&purpose=chat");
     expect(wrapper.get(".table-link").attributes("aria-label")).toBe("查看 研发账号 详情");
     expect(document.querySelector(".detail-drawer")).toBeNull();
     wrapper.unmount();

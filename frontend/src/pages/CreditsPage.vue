@@ -55,7 +55,7 @@ const histories = useQuery({
   queryFn: async (): Promise<HistoryResult[]> => Promise.all(visibleAccounts.value.slice(0, 200).map(async (account) => {
     const key = `${account.provider}:${account.account_id}`;
     try {
-      const metricKind = account.provider === "qoder" ? "quota" : "points";
+      const metricKind = "points";
       const result = await apiRequest<{ rows: HistoryRow[] }>(`/metrics/accounts/${encodeURIComponent(account.provider)}/${encodeURIComponent(account.account_id)}/history/${metricKind}?limit=500&since=${encodeURIComponent(bounds.value.from)}`);
       return { key, provider: account.provider, account_id: account.account_id, rows: result.rows };
     } catch (error) {
@@ -76,7 +76,7 @@ const currentRows = computed(() => {
     const metric = latest.get(`${account.provider}:${account.account_id}`);
     const total = metric ? metricRemaining(metric) : null;
     const history = histories.data.value?.find((item) => item.key === `${account.provider}:${account.account_id}`)?.rows ?? [];
-    const values = historyValues(history, bounds.value, account.provider);
+    const values = historyValues(history, bounds.value);
     const first = values[0]?.value;
     return { account, metric, total, unit: metricUnit(metric), change: typeof total === "number" && typeof first === "number" ? total - first : null, observedAt: metric?.observed_at ?? "", status: metric?.status ?? "unavailable" };
   });
@@ -87,7 +87,7 @@ const chart = computed(() => {
   const points = new Map<string, number>();
   for (const item of selected) for (const row of item.rows) {
     if (!withinBounds(row.observed_at, bounds.value)) continue;
-    const value = historyRemaining(row.value, item.provider);
+    const value = historyRemaining(row.value);
     if (value === null) continue;
     const key = row.observed_at.slice(0, 16);
     points.set(key, (points.get(key) ?? 0) + value);
@@ -134,28 +134,21 @@ async function fetchAllAccounts(): Promise<AccountPage> {
   } while (cursor);
   return { accounts: all, next_cursor: null };
 }
+// Only the points metric survives the provider cutover; the quota metric kind
+// existed solely for Qoder's separate quota endpoint.
 function metricRemaining(metric: Metric): number | null {
-  if (metric.metric_kind === "points") return numberValue(metric.value?.total_remaining);
-  if (metric.metric_kind !== "quota") return null;
-  return quotaRemaining(metric.value);
+  if (metric.metric_kind !== "points") return null;
+  return numberValue(metric.value?.total_remaining);
 }
 function metricUnit(metric: Metric | undefined): string {
   if (!metric?.value) return "credits";
-  if (typeof metric.value.unit === "string") return metric.value.unit;
-  const quota = metric.value.user_quota;
-  return quota && typeof quota === "object" && typeof (quota as Record<string, unknown>).unit === "string" ? String((quota as Record<string, unknown>).unit) : "credits";
+  return typeof metric.value.unit === "string" ? metric.value.unit : "credits";
 }
-function historyRemaining(value: Record<string, unknown> | null, providerName: string): number | null {
-  if (providerName === "qoder") return quotaRemaining(value);
+function historyRemaining(value: Record<string, unknown> | null): number | null {
   return numberValue(value?.total_remaining);
 }
-function quotaRemaining(value: Record<string, unknown> | null): number | null {
-  if (!value) return null;
-  const parts = [value.user_quota, value.add_on_quota].map((item) => item && typeof item === "object" ? numberValue((item as Record<string, unknown>).remaining) : null).filter((item): item is number => item !== null);
-  return parts.length ? parts.reduce((sum, item) => sum + item, 0) : numberValue(value.remaining);
-}
 function numberValue(value: unknown): number | null { return typeof value === "number" && Number.isFinite(value) ? value : null; }
-function historyValues(rows: HistoryRow[], range: { from: string; to: string }, providerName: string): { at: string; value: number }[] { return rows.filter((row) => withinBounds(row.observed_at, range)).map((row) => ({ at: row.observed_at, value: historyRemaining(row.value, providerName) })).filter((item): item is { at: string; value: number } => typeof item.value === "number"); }
+function historyValues(rows: HistoryRow[], range: { from: string; to: string }): { at: string; value: number }[] { return rows.filter((row) => withinBounds(row.observed_at, range)).map((row) => ({ at: row.observed_at, value: historyRemaining(row.value) })).filter((item): item is { at: string; value: number } => typeof item.value === "number"); }
 function withinBounds(observedAt: string, range: { from: string; to: string }): boolean { return (!range.from || observedAt >= range.from) && (!range.to || observedAt <= range.to); }
 function toIso(value: string): string { if (!value) return new Date(Date.now() - 7 * 86400000).toISOString(); const date = new Date(value); return Number.isNaN(date.valueOf()) ? "" : date.toISOString(); }
 function formatNumber(value: number | null): string { return value === null ? "--" : value.toLocaleString(); }
@@ -191,7 +184,7 @@ function findPackagesMetric(key: string): Metric | null {
   if (!key) return null;
   const [p, aid] = key.split(":");
   const snaps = metrics.data.value?.snapshots ?? [];
-  const kind = p === "qoder" ? "quota" : "points";
+  const kind = "points";
   return snaps.find((m) => m.provider === p && m.account_id === aid && m.metric_kind === kind) ?? null;
 }
 const detailMetric = computed(() => findPackagesMetric(detailAccount.value));
@@ -231,7 +224,7 @@ function setDetailPage(delta: number): void {
   <section class="page-content">
     <header class="page-header"><div><h1>积分监控</h1><p>查看账号池当前积分、变化曲线与采集状态；未知值保持不可用，不会伪装成 0。</p></div><div class="header-actions"><label class="refresh-control"><span>自动刷新</span><select v-model.number="refreshInterval" aria-label="自动刷新间隔"><option :value="0">关闭</option><option :value="30000">30 秒</option><option :value="60000">1 分钟</option><option :value="300000">5 分钟</option></select></label><button class="secondary-button" type="button" :disabled="refresh.isPending.value || metrics.isFetching.value" @click="refreshView"><RefreshCcw :class="{ spin: metrics.isFetching.value }" :size="16" />刷新视图</button><button type="button" :disabled="refresh.isPending.value" @click="refresh.mutate()"><RefreshCcw :class="{ spin: refresh.isPending.value }" :size="16" />{{ refresh.isPending.value ? "刷新中" : "立即刷新积分" }}</button></div></header>
 
-    <section class="data-panel credits-filters"><PanelHeader title="积分筛选" description="筛选条件同时作用于摘要、趋势和账号列表。"><button class="secondary-button compact-button" type="button" @click="clearFilters"><X :size="14" />清除</button></PanelHeader><div class="usage-filter-grid"><label>服务提供方<select v-model="provider" aria-label="服务提供方"><option value="">全部服务提供方</option><option value="codebuddy">CodeBuddy</option><option value="qoder">Qoder</option><option value="workbuddy_intl">WorkBuddy 国际版</option><option value="orcaterm">OrcaTerm</option></select></label><label>账号搜索<input v-model.trim="accountSearch" aria-label="账号搜索" placeholder="名称或账号 ID" /></label><label>趋势账号<select v-model="selectedAccount" aria-label="趋势账号"><option value="">全部账号汇总</option><option v-for="item in visibleAccounts" :key="`${item.provider}:${item.account_id}`" :value="`${item.provider}:${item.account_id}`">{{ item.label }} · {{ item.provider }}</option></select></label><label>时间窗口<select v-model="preset" aria-label="时间窗口"><option value="24h">最近 24 小时</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option><option value="custom">自定义</option></select></label><label v-if="preset === 'custom'">开始时间<input v-model="customFrom" type="datetime-local" aria-label="开始时间" /></label><label v-if="preset === 'custom'">结束时间<input v-model="customTo" type="datetime-local" aria-label="结束时间" /></label></div></section>
+    <section class="data-panel credits-filters"><PanelHeader title="积分筛选" description="筛选条件同时作用于摘要、趋势和账号列表。"><button class="secondary-button compact-button" type="button" @click="clearFilters"><X :size="14" />清除</button></PanelHeader><div class="usage-filter-grid"><label>服务提供方<select v-model="provider" aria-label="服务提供方"><option value="">全部服务提供方</option><option value="codebuddy">WorkBuddy</option><option value="workbuddy_intl">WorkBuddy 国际版</option></select></label><label>账号搜索<input v-model.trim="accountSearch" aria-label="账号搜索" placeholder="名称或账号 ID" /></label><label>趋势账号<select v-model="selectedAccount" aria-label="趋势账号"><option value="">全部账号汇总</option><option v-for="item in visibleAccounts" :key="`${item.provider}:${item.account_id}`" :value="`${item.provider}:${item.account_id}`">{{ item.label }} · {{ item.provider }}</option></select></label><label>时间窗口<select v-model="preset" aria-label="时间窗口"><option value="24h">最近 24 小时</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option><option value="custom">自定义</option></select></label><label v-if="preset === 'custom'">开始时间<input v-model="customFrom" type="datetime-local" aria-label="开始时间" /></label><label v-if="preset === 'custom'">结束时间<input v-model="customTo" type="datetime-local" aria-label="结束时间" /></label></div></section>
 
     <div v-if="partialUnavailable" class="data-state data-state--warning" role="status">部分账号的积分历史暂不可用，页面仍展示其余账号数据。</div>
     <div class="summary-grid summary-grid--five" :aria-busy="metrics.isPending.value"><article class="summary-tile"><Coins :size="18" /><span>当前积分总量</span><strong>{{ formatNumber(summary.total) }}</strong><small>可用账号 {{ summary.accountCount }}</small></article><article class="summary-tile"><Activity :size="18" /><span>窗口内变化</span><strong :class="(summary.change ?? 0) < 0 ? 'value-negative' : 'value-positive'">{{ formatChange(summary.change) }}</strong><small>{{ preset === 'custom' ? '自定义窗口' : `最近 ${preset === '24h' ? '24 小时' : preset === '7d' ? '7 天' : '30 天'}` }}</small></article><article class="summary-tile"><CalendarClock :size="18" /><span>最近采集</span><strong class="summary-date">{{ summary.observed ? summary.observed.slice(5, 16).replace('T', ' ') : '--' }}</strong><small>按账号最新快照</small></article><article class="summary-tile"><SlidersHorizontal :size="18" /><span>历史采样点</span><strong>{{ chart.values.length.toLocaleString() }}</strong><small>{{ selectedAccount ? accountLabel(selectedAccount) : '全部账号汇总' }}</small></article><article class="summary-tile"><RotateCcw :size="18" /><span>采集状态</span><strong><StatePill :value="metrics.isError.value ? 'unavailable' : metrics.isStale.value ? 'stale' : 'fresh'" /></strong><small>自动刷新 {{ refreshInterval ? '已开启' : '已关闭' }}</small></article></div>

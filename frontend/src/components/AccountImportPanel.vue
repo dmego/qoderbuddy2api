@@ -1,15 +1,15 @@
 <script setup lang="ts">
 import { CheckCircle2, ChevronDown, KeyRound, Link, LoaderCircle, LogIn, RefreshCcw } from "@lucide/vue";
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, reactive, ref } from "vue";
 
 import { apiRequest } from "@/api/client";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 
 export type AccountReference = { provider: string; account_id: string; label: string };
 
-type Flow = { flow_id?: string; auth_url?: string; expires_at: string; label?: string; account_id?: string | null; session_id?: string };
+type Flow = { flow_id?: string; auth_url?: string; expires_at: string; label?: string; account_id?: string | null };
 type ImportResult = { account?: AccountReference; checkin_derived?: boolean; checkin_verified?: boolean };
-export type Provider = "codebuddy" | "qoder" | "workbuddy_intl" | "orcaterm";
+export type Provider = "codebuddy" | "workbuddy_intl";
 
 const props = withDefaults(defineProps<{
   provider?: Provider;
@@ -20,7 +20,6 @@ const emit = defineEmits<{ saved: [account: AccountReference] }>();
 const provider = ref<Provider>(props.provider);
 const flowKey = computed(() => {
   if (provider.value === "workbuddy_intl") return "qb2api.workbuddy-intl.oauth.flow";
-  if (provider.value === "orcaterm") return "qb2api.orcaterm.oauth.flow";
   return "qb2api.codebuddy.oauth.flow";
 });
 const pending = ref(false);
@@ -41,14 +40,14 @@ const form = reactive({
   cookie: "",
   checkinMode: "bearer",
 });
-const hasCheckin = computed(() => provider.value === "codebuddy" || provider.value === "qoder");
+// Only the domestic deployment has a sign-in centre; the international one is chat-only.
+const hasCheckin = computed(() => provider.value === "codebuddy");
 
 const requiresAccountId = computed(() => Boolean(props.accountId));
-const chatTokenLabel = computed(() => provider.value === "qoder" ? "Personal Access Token (PAT)" : "Bearer Token");
+const chatTokenLabel = computed(() => "Bearer Token");
 const canSubmitChat = computed(() => form.token.trim().length > 0 && (!requiresAccountId.value || form.accountId.trim().length > 0));
 const canSubmitCheckin = computed(() => {
   if (!form.accountId.trim()) return false;
-  if (provider.value === "qoder") return form.token.trim().length > 0 && form.refreshToken.trim().length > 0;
   if (form.checkinMode === "cookie") return form.cookie.trim().length > 0;
   if (form.checkinMode === "bearer") return form.token.trim().length > 0;
   return form.token.trim().length > 0 || form.cookie.trim().length > 0;
@@ -70,8 +69,7 @@ async function submitChat(): Promise<void> {
   setMessage("");
   try {
     const body: Record<string, string | undefined> = { label: form.label || undefined, account_id: form.accountId || undefined };
-    if (provider.value === "qoder") body.pat = form.token;
-    else body.token = form.token;
+    body.token = form.token;
     if (provider.value === "workbuddy_intl" && form.refreshToken.trim()) body.refresh_token = form.refreshToken.trim();
     const result = await apiRequest<ImportResult>(chatEndpoint(), {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
@@ -80,8 +78,6 @@ async function submitChat(): Promise<void> {
     clearSecrets();
     if (provider.value === "workbuddy_intl") {
       setMessage("账号已保存，代理凭据已启用（国际版仅支持对话，无签到）。", false);
-    } else if (provider.value === "orcaterm") {
-      setMessage("账号已保存，代理凭据已启用（OrcaTerm 仅支持对话，token 约 2 小时过期，过期后重新导入即可）。", false);
     } else if (result.checkin_derived || result.checkin_verified) {
       setMessage("账号已保存，代理与签到均已自动启用。", false);
     } else {
@@ -110,11 +106,7 @@ async function doSubmitCheckin(): Promise<void> {
   setMessage("");
   try {
     const body: Record<string, string | undefined> = { account_id: form.accountId };
-    if (provider.value === "qoder") {
-      Object.assign(body, { access_token: form.token, refresh_token: form.refreshToken });
-    } else {
-      Object.assign(body, { mode: form.checkinMode, access_token: form.token || undefined, cookie: form.cookie || undefined });
-    }
+    Object.assign(body, { mode: form.checkinMode, access_token: form.token || undefined, cookie: form.cookie || undefined });
     const result = await apiRequest<ImportResult>(checkinEndpoint(), {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
@@ -130,20 +122,18 @@ async function doSubmitCheckin(): Promise<void> {
 }
 
 function chatEndpoint(): string {
-  if (provider.value === "qoder") return "/auth/qoder/chat";
   if (provider.value === "workbuddy_intl") return "/auth/workbuddy-intl/manual";
-  if (provider.value === "orcaterm") return "/auth/orcaterm/manual";
   return "/auth/codebuddy/manual";
 }
 
 function checkinEndpoint(): string {
-  return provider.value === "qoder" ? "/auth/qoder/checkin" : "/auth/codebuddy/checkin";
+  return "/auth/codebuddy/checkin";
 }
 
 function importErrorMessage(error: unknown): string {
   const message = String(error);
   if (message.includes("checkin_credential_rejected")) {
-    return "签到凭据验证失败，请确认 Access Token 和 Refresh Token 来自同一个 Qoder 账号。若 Qoder 返回 DISABLED，表示活动关闭，不是凭据失效。";
+    return "签到凭据验证失败，请确认 Access Token 与 Cookie 来自同一个 WorkBuddy 账号。";
   }
   return message;
 }
@@ -156,13 +146,6 @@ async function startOAuth(): Promise<void> {
       label: form.label || oauthDefaultLabel(),
       account_id: form.accountId || undefined,
     };
-    // OrcaTerm's console bounces the browser back to this address with the
-    // session id attached, so it must be an address the browser can reach and
-    // one that mounts this panel on load — the accounts page keeps it behind a
-    // toggle, so land on the dedicated add-account route instead.
-    if (provider.value === "orcaterm") {
-      body.return_url = new URL("/admin/accounts/add?provider=orcaterm", window.location.origin).href;
-    }
     const started = await apiRequest<Flow>(oauthStartEndpoint(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -171,12 +154,7 @@ async function startOAuth(): Promise<void> {
     flow.value = started;
     saveFlow(started);
     window.open(started.auth_url, "_blank", "noopener,noreferrer");
-    setMessage(
-      provider.value === "orcaterm"
-        ? "已打开腾讯云授权页；登录完成后保持本页打开，这里会自动完成导入。"
-        : "已打开授权页；此页面会继续检查授权状态。",
-      false,
-    );
+    setMessage("已打开授权页；此页面会继续检查授权状态。", false);
     schedulePoll();
   } catch (error) {
     setMessage(String(error), true);
@@ -196,7 +174,6 @@ async function pollOAuth(): Promise<void> {
   try {
     const pollBody: Record<string, string | undefined> = {};
     if (flow.value.flow_id) pollBody.flow_id = flow.value.flow_id;
-    if (provider.value === "orcaterm") pollBody.session_id = flow.value.session_id || capturedSessionId() || undefined;
     const result = await apiRequest<ImportResult & { status: string; message?: string; expires_at?: string }>(oauthPollEndpoint(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -232,25 +209,22 @@ async function pollOAuth(): Promise<void> {
 
 function oauthSuccessMessage(checkinVerified: boolean): string {
   if (provider.value === "workbuddy_intl") return "OAuth 登录成功，代理凭据已启用。";
-  if (provider.value === "orcaterm") return "OAuth 登录成功，代理凭据已启用。";
   if (checkinVerified) return "OAuth 登录成功，代理与签到均已自动启用。";
   return "OAuth 登录成功，代理已启用。签到未能自动验证，可在下方手动导入。";
 }
 
 function oauthStartEndpoint(): string {
   if (provider.value === "workbuddy_intl") return "/auth/workbuddy-intl/start";
-  if (provider.value === "orcaterm") return "/auth/orcaterm/start";
   return "/auth/codebuddy/start";
 }
 
 function oauthPollEndpoint(): string {
   if (provider.value === "workbuddy_intl") return "/auth/workbuddy-intl/poll";
-  if (provider.value === "orcaterm") return "/auth/orcaterm/poll";
   return "/auth/codebuddy/poll";
 }
 
 function oauthDefaultLabel(): string {
-  return provider.value === "workbuddy_intl" ? "WorkBuddy 国际版 OAuth" : "CodeBuddy OAuth";
+  return provider.value === "workbuddy_intl" ? "WorkBuddy 国际版 OAuth" : "WorkBuddy OAuth";
 }
 
 function schedulePoll(): void {
@@ -263,14 +237,6 @@ function schedulePoll(): void {
 
 function setMessage(value: string, isFailure = false): void { message.value = value; failed.value = isFailure; }
 function clearSecrets(): void { Object.assign(form, { token: "", refreshToken: "", cookie: "" }); }
-// The console appends ``session_id`` to the return URL without normalising an
-// existing query string, so parse it the same permissive way the desktop
-// client does instead of trusting URLSearchParams.
-function capturedSessionId(): string {
-  const match = window.location.search.match(/[?&]session_id=([^&]*)/);
-  return match ? decodeURIComponent(match[1]) : "";
-}
-
 function saveFlow(value: Flow): void { sessionStorage.setItem(flowKey.value, JSON.stringify(value)); }
 function clearFlow(): void { window.clearTimeout(pollTimer); flow.value = null; sessionStorage.removeItem(flowKey.value); }
 function loadFlow(): Flow | null {
@@ -280,57 +246,33 @@ function loadFlow(): Flow | null {
   } catch { return null; }
 }
 
-// The console may hand the browser back here with the session id appended, or
-// park it on its own "登录成功" page while it deep-links the desktop app. Both
-// are fine: the tab that called /start keeps polling the id it already stored,
-// and this path covers the landing tab, which has no stored flow.
-function resumeOrcaTermCallback(): void {
-  const sessionId = capturedSessionId();
-  if (!sessionId) return;
-  const stored = loadFlow();
-  provider.value = "orcaterm";
-  flow.value = { ...(stored ?? { expires_at: new Date(Date.now() + FLOW_TTL_MS).toISOString() }), session_id: sessionId };
-  saveFlow(flow.value);
-  schedulePoll();
-}
-
-onMounted(resumeOrcaTermCallback);
 onBeforeUnmount(() => window.clearTimeout(pollTimer));
 </script>
 
 <template>
   <section class="import-panel" aria-label="账号导入">
-    <div class="segmented-control" aria-label="服务提供方"><button type="button" :class="{ active: provider === 'codebuddy' }" @click="selectProvider('codebuddy')">CodeBuddy</button><button type="button" :class="{ active: provider === 'workbuddy_intl' }" @click="selectProvider('workbuddy_intl')">WorkBuddy 国际版</button><button type="button" :class="{ active: provider === 'qoder' }" @click="selectProvider('qoder')">Qoder</button><button type="button" :class="{ active: provider === 'orcaterm' }" @click="selectProvider('orcaterm')">OrcaTerm</button></div>
+    <div class="segmented-control" aria-label="服务提供方"><button type="button" :class="{ active: provider === 'codebuddy' }" @click="selectProvider('codebuddy')">WorkBuddy</button><button type="button" :class="{ active: provider === 'workbuddy_intl' }" @click="selectProvider('workbuddy_intl')">WorkBuddy 国际版</button></div>
     <div class="form-grid">
       <label>显示名称<input v-model="form.label" aria-label="显示名称" autocomplete="off" placeholder="例如：主账号" /></label>
       <label v-if="requiresAccountId">已有账号 ID<span class="required-mark">必填</span><input v-model="form.accountId" aria-label="账号 ID" autocomplete="off" /></label>
     </div>
 
-    <!-- 主入口：CodeBuddy / WorkBuddy 国际版 浏览器登录 -->
-    <div v-if="provider !== 'qoder'" class="form-actions">
+    <!-- 主入口：两个 WorkBuddy 部署都用浏览器登录导入 -->
+    <div class="form-actions">
       <button type="button" :disabled="pending" @click="startOAuth"><LogIn :size="16" />浏览器登录</button>
       <button v-if="flow" class="secondary-button" type="button" :disabled="polling" @click="pollOAuth"><RefreshCcw :class="{ spin: polling }" :size="16" />继续 OAuth 登录</button>
     </div>
     <p v-if="flow" class="helper-text">流程将在 {{ new Date(flow.expires_at).toLocaleTimeString() }} 过期；可离开此页后返回继续轮询。</p>
 
-    <!-- Qoder: PAT 输入 -->
-    <div v-if="provider === 'qoder'" class="form-grid">
-      <label class="form-span">{{ chatTokenLabel }}<div class="input-with-icon"><KeyRound :size="16" /><input v-model="form.token" :aria-label="chatTokenLabel" type="password" autocomplete="new-password" /></div></label>
-      <p class="helper-text form-span">在 QoderWork 客户端「设置 -> 个人令牌」中生成 PAT，粘贴到此处的密码框。签到凭据会自动从 PAT 派生。</p>
-      <div class="form-actions form-span">
-        <button type="button" :disabled="pending || !canSubmitChat" @click="submitChat"><LoaderCircle v-if="pending" class="spin" :size="16" /><Link v-else :size="16" />验证并保存</button>
-      </div>
-    </div>
-
-    <!-- 手动 Bearer Token 导入（折叠，CodeBuddy / WorkBuddy 国际版 / OrcaTerm） -->
-    <details v-if="provider !== 'qoder'" class="advanced-section">
+    <!-- 手动 Bearer Token 导入（折叠） -->
+    <details class="advanced-section">
       <summary><ChevronDown :size="14" /> 手动输入 Bearer Token</summary>
       <div class="form-grid">
         <label class="form-span">{{ chatTokenLabel }}<div class="input-with-icon"><KeyRound :size="16" /><input v-model="form.token" aria-label="Bearer Token" type="password" autocomplete="new-password" /></div></label>
         <label v-if="provider === 'workbuddy_intl'" class="form-span">刷新令牌（可选）<input v-model="form.refreshToken" aria-label="刷新令牌（可选）" type="password" autocomplete="new-password" /></label>
       </div>
       <p v-if="provider === 'workbuddy_intl'" class="helper-text">粘贴国际版账号的 Bearer Access Token；如同时提供刷新令牌，过期后可自动续期。</p>
-      <p v-if="provider === 'orcaterm'" class="helper-text">粘贴桌面版 OrcaTerm 的 OAuth Token（桌面 App 数据目录 data.bin 的 oauth_access_token，或浏览器登录 orcaterm.cloud.tencent.com 后从会话中获取）。token 约 2 小时过期，过期后重新导入即可。</p>
+      <p v-else class="helper-text">粘贴 WorkBuddy 账号的 Bearer Access Token，用于代理请求。</p>
       <div class="form-actions">
         <button type="button" :disabled="pending || !canSubmitChat" @click="submitChat"><LoaderCircle v-if="pending" class="spin" :size="16" /><Link v-else :size="16" />验证并保存</button>
       </div>
@@ -341,13 +283,10 @@ onBeforeUnmount(() => window.clearTimeout(pollTimer));
       <summary><ChevronDown :size="14" /> 手动导入签到凭据</summary>
       <div class="form-grid">
         <label v-if="!requiresAccountId" class="form-span">账号 ID<span class="required-mark">必填</span><input v-model="form.accountId" aria-label="账号 ID" autocomplete="off" /></label>
-        <label v-if="provider === 'codebuddy'">认证模式<select v-model="form.checkinMode" aria-label="签到认证模式"><option value="bearer">Bearer Token</option><option value="cookie">Cookie</option><option value="bearer_cookie">Bearer Token + Cookie</option></select></label>
-        <label v-if="provider === 'codebuddy' && form.checkinMode !== 'cookie'" class="form-span">WorkBuddy Bearer Token<div class="input-with-icon"><KeyRound :size="16" /><input v-model="form.token" aria-label="WorkBuddy Bearer Token" type="password" autocomplete="new-password" /></div></label>
-        <label v-if="provider === 'codebuddy' && form.checkinMode !== 'bearer'" class="form-span">WorkBuddy Cookie<div class="input-with-icon"><KeyRound :size="16" /><input v-model="form.cookie" aria-label="WorkBuddy Cookie" type="password" autocomplete="new-password" /></div></label>
-        <label v-if="provider === 'qoder'" class="form-span">Qoder 签到 Access Token<span class="required-mark">必填</span><input v-model="form.token" aria-label="Qoder Access Token" type="password" autocomplete="new-password" /></label>
-        <label v-if="provider === 'qoder'" class="form-span">Qoder 刷新令牌<span class="required-mark">必填</span><input v-model="form.refreshToken" aria-label="Qoder 刷新令牌" type="password" autocomplete="new-password" /></label>
+        <label>认证模式<select v-model="form.checkinMode" aria-label="签到认证模式"><option value="bearer">Bearer Token</option><option value="cookie">Cookie</option><option value="bearer_cookie">Bearer Token + Cookie</option></select></label>
+        <label v-if="form.checkinMode !== 'cookie'" class="form-span">WorkBuddy Bearer Token<div class="input-with-icon"><KeyRound :size="16" /><input v-model="form.token" aria-label="WorkBuddy Bearer Token" type="password" autocomplete="new-password" /></div></label>
+        <label v-if="form.checkinMode !== 'bearer'" class="form-span">WorkBuddy Cookie<div class="input-with-icon"><KeyRound :size="16" /><input v-model="form.cookie" aria-label="WorkBuddy Cookie" type="password" autocomplete="new-password" /></div></label>
       </div>
-      <p v-if="provider === 'qoder'" class="helper-text">签到 token 通常可通过 PAT 自动派生（推荐）；此入口仅在自动派生失败时使用。</p>
       <div class="form-actions">
         <button type="button" :disabled="pending || !canSubmitCheckin" @click="submitCheckin"><LoaderCircle v-if="pending" class="spin" :size="16" /><Link v-else :size="16" />验证并启用</button>
       </div>

@@ -34,10 +34,8 @@ type RoutingResponse = { models: RoutingModel[] };
 
 const INTL_PROVIDER = "workbuddy_intl";
 const PROVIDER_LABELS: Record<string, string> = {
-  codebuddy: "CodeBuddy",
-  qoder: "Qoder",
+  codebuddy: "WorkBuddy",
   workbuddy_intl: "WorkBuddy 国际版",
-  orcaterm: "OrcaTerm",
 };
 const MAX_PRIORITY = 99;
 const MAX_WEIGHT = 1000;
