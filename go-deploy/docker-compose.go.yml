@@ -1,0 +1,50 @@
+# qoderbuddy2api — Go rewrite, runs ALONGSIDE the Python deployment.
+#
+# Deliberately separate from docker-compose.yml so both stacks can run at once:
+#   * distinct container name, distinct host port (9998 vs 9999)
+#   * its own data copy, so the Go build's schema additions and history
+#     compaction cannot affect the running Python instance
+#   * same credential vault key, so the copied database's encrypted credentials
+#     decrypt without a re-login
+#
+# Migrate a snapshot of the live database in with:
+#   sqlite3 data/qb2api.sqlite3 ".backup 'go-data/qb2api.sqlite3'"
+name: qb2api-go
+
+services:
+  qb2api-go:
+    build:
+      context: ..
+      dockerfile: ../Dockerfile.go
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+    image: qb2api-go:local
+    container_name: qb2api-go
+    restart: unless-stopped
+    env_file:
+      - .env.go
+    environment:
+      QB2API_MODE: control
+      # The Go build serves the proxy and the console from one process, so every
+      # listener is reachable from the host on the single mapped port.
+      QB2API_HOST: 0.0.0.0
+      QB2API_PORT: "9998"
+      QB2API_CONTROL_HOST: 0.0.0.0
+      QB2API_CONTROL_PORT: "9998"
+      # Container-internal paths (the .env uses relative host paths).
+      QB2API_DATA_DIR: /data
+      QB2API_LOG_DIR: /logs
+      QB2API_MODEL_CONFIG: /config/models.json
+      QB2API_WEB_DIR: /app/web/dist
+    ports:
+      - "9998:9998"
+    volumes:
+      - ./go-data:/data
+      - ./go-logs:/logs
+      - ./config:/config:ro
+    healthcheck:
+      test: ["CMD", "/app/qb2api", "-print-version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
