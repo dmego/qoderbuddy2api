@@ -6,7 +6,7 @@ copies. Nothing here touches the running Python deployment.
 | | Python (unchanged) | Go rewrite |
 |---|---|---|
 | container | `qb2api-control` | `qb2api-go` |
-| host port | `9999` | `9998` |
+| host port | `9999` | `9997` |
 | data | `data/qb2api.sqlite3` | `go-data/qb2api.sqlite3` |
 | image | `qb2api-control:local` | `qb2api-go:local` |
 
@@ -28,8 +28,8 @@ service does not need to stop. Re-run it whenever you want to refresh the copy.
 
 ```sh
 sed \
-  -e 's|^QB2API_CONTROL_PORT=.*|QB2API_CONTROL_PORT=9998|' \
-  -e 's|^QB2API_PORT=.*|QB2API_PORT=9998|' \
+  -e 's|^QB2API_CONTROL_PORT=.*|QB2API_CONTROL_PORT=9997|' \
+  -e 's|^QB2API_PORT=.*|QB2API_PORT=9997|' \
   .env > .env.go
 chmod 600 .env.go
 ```
@@ -52,6 +52,12 @@ cd ~/docker-space/qoderbuddy2api
 docker compose -f docker-compose.go.yml up -d --build
 ```
 
+Port note: 9998 was the first choice but is already bound on this host by an
+unrelated service (`homework/rca-resarch-net/tools/net_sync.py`, listening on
+`0.0.0.0:9998`), which shadowed the container because a specific-address bind
+wins over a wildcard one for the same port. The deployment therefore uses 9997,
+which was verified free.
+
 `Dockerfile.go` lives at the repository root and takes the repository root as
 its build context, so compose resolves it relative to this file's directory.
 
@@ -59,18 +65,18 @@ its build context, so compose resolves it relative to this file's directory.
 
 ```sh
 # health (public)
-curl --noproxy '*' http://127.0.0.1:9998/health
+curl --noproxy '*' http://127.0.0.1:9997/health
 
 # unified model list (needs the proxy key)
 curl --noproxy '*' -H "Authorization: Bearer $QB2API_PROXY_API_KEY" \
-  http://127.0.0.1:9998/v1/models
+  http://127.0.0.1:9997/v1/models
 
 # signed-in accounts, read back out of the copied database
 curl --noproxy '*' -H "Authorization: Bearer $QB2API_ADMIN_KEY" \
-  http://127.0.0.1:9998/api/admin/accounts
+  http://127.0.0.1:9997/api/admin/accounts
 
 # the console
-open http://127.0.0.1:9998/admin
+open http://127.0.0.1:9997/admin
 ```
 
 A working end-to-end call:
@@ -79,7 +85,7 @@ A working end-to-end call:
 curl --noproxy '*' -N -H "Authorization: Bearer $QB2API_PROXY_API_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"model":"deepseek-v4.1-flash","stream":true,"messages":[{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":"say hi"}]}' \
-  http://127.0.0.1:9998/v1/chat/completions
+  http://127.0.0.1:9997/v1/chat/completions
 ```
 
 The request path must never be pointed at the local TUN proxy. Both the Go
