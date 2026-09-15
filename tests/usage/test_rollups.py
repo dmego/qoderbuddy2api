@@ -65,6 +65,41 @@ async def test_rollup_prunes_only_expired_detail_events(tmp_path):
     await repository.close()
 
 
+@pytest.mark.asyncio
+async def test_rollup_buckets_events_into_exactly_one_window(tmp_path):
+    """One read feeds three nested windows; events must not leak across them.
+
+    Every kind now comes from a single read of the widest window, so a stale
+    narrowing predicate would silently attribute older events to the current
+    minute. Each event belongs to exactly one bucket of each kind.
+    """
+    repository = AccountRepository(str(tmp_path / "windows.sqlite3"))
+    await repository.connect()
+    await repository.migrate()
+    now = datetime(2026, 7, 23, 12, 34, 30, tzinfo=UTC)
+    await repository.add_request_events(
+        [
+            _event("this-minute", now, status="succeeded"),
+            _event("earlier-today", now - timedelta(hours=2), status="succeeded"),
+            _event("earlier-this-month", now - timedelta(days=5), status="succeeded"),
+        ]
+    )
+    service = UsageRollupService(
+        settings=Settings(usage_detail_retention_days=90),
+        repository=repository,
+    )
+    await service.rollup_once(now)
+
+    async def counts(kind: str) -> dict[str, int]:
+        rows = await repository.list_usage_rollups(bucket_kind=kind, limit=500)
+        return {row["bucket_start"]: row["request_count"] for row in rows}
+
+    assert await counts("minute") == {"2026-07-23T12:34:00+00:00": 1}
+    assert await counts("day") == {"2026-07-23T00:00:00+00:00": 2}
+    assert await counts("month") == {"2026-07-01T00:00:00+00:00": 3}
+    await repository.close()
+
+
 def _event(event_id: str, started_at: datetime, **values):
     return {
         "event_id": event_id,

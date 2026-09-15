@@ -202,11 +202,10 @@ class TelemetryRepositoryMixin:
         async with self._operation() as db:
             cursor = await db.execute(
                 """
-                SELECT provider, account_id, model_id, status, input_tokens,
-                       output_tokens, latency_ms
+                SELECT started_at, provider, account_id, model_id, status,
+                       input_tokens, output_tokens, latency_ms
                 FROM request_events
                 WHERE started_at >= ? AND started_at < ?
-                ORDER BY started_at
                 """,
                 (started_at, ended_at),
             )

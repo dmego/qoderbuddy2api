@@ -53,13 +53,18 @@ class UsageRollupService:
 
     async def rollup_once(self, now: datetime | None = None) -> dict[str, int]:
         current = (now or datetime.now(UTC)).astimezone(UTC)
+        windows = _rollup_windows(current)
+        # The windows nest (minute ⊂ day ⊂ month), so one read of the widest
+        # window carries every bucket. Reading per window re-decoded the same
+        # rows up to three times per cycle for identical results.
+        widest = windows[-1]
+        events = await self.repository.request_events_between(
+            widest.start.isoformat(),
+            widest.end.isoformat(),
+        )
         groups = 0
-        for window in _rollup_windows(current):
-            events = await self.repository.request_events_between(
-                window.start.isoformat(),
-                window.end.isoformat(),
-            )
-            for values in _aggregate(events, window):
+        for window in windows:
+            for values in _aggregate(_events_within(events, window), window):
                 await self.repository.upsert_usage_rollup(values)
                 groups += 1
         cutoff = current - timedelta(days=max(1, self.settings.usage_detail_retention_days))
@@ -85,6 +90,23 @@ def _rollup_windows(current: datetime) -> tuple[RollupWindow, ...]:
         RollupWindow("day", current.replace(hour=0, minute=0, second=0, microsecond=0)),
         RollupWindow("month", current.replace(day=1, hour=0, minute=0, second=0, microsecond=0)),
     )
+
+
+def _events_within(
+    events: list[dict[str, Any]], window: RollupWindow
+) -> list[dict[str, Any]]:
+    """Narrow a wider read to one window.
+
+    ``started_at`` is stored as a fixed-width UTC ISO string, so the same
+    lexicographic comparison SQLite applies to the range query is exact here.
+    """
+    start = window.start.isoformat()
+    end = window.end.isoformat()
+    return [
+        event
+        for event in events
+        if start <= str(event.get("started_at") or "") < end
+    ]
 
 
 def _aggregate(events: list[dict[str, Any]], window: RollupWindow) -> list[dict[str, Any]]:
