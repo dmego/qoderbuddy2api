@@ -14,8 +14,10 @@ name: qb2api-go
 services:
   qb2api-go:
     build:
-      context: ..
-      dockerfile: ../Dockerfile.go
+      # Context is the repository root: Dockerfile.go needs both gobackend/ and
+      # src/qb2api/web/dist (the prebuilt admin console).
+      context: /Users/dmego/vibeCoding/qoderbuddy2api
+      dockerfile: /Users/dmego/vibeCoding/qoderbuddy2api/Dockerfile.go
       args:
         GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
     image: qb2api-go:local
