@@ -3,7 +3,6 @@ package server
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -172,7 +171,7 @@ func (a *API) streamChat(w http.ResponseWriter, r *http.Request, request *chatwi
 				streamErr = err
 				// A failure after the first downstream frame cannot fail over;
 				// it is reported in-band the way the Python adapter did.
-				request.RecordStreamError(typeName(err))
+				request.RecordStreamError(providers.ErrorCode(err))
 				frame = openAIErrorFrame(err.Error(), "upstream_error")
 			}
 		}
@@ -269,7 +268,7 @@ func (a *API) streamAnthropic(w http.ResponseWriter, r *http.Request, request *c
 		frame, err := stream.Next()
 		if err != nil && !errors.Is(err, io.EOF) {
 			streamErr = err
-			request.RecordStreamError(typeName(err))
+			request.RecordStreamError(providers.ErrorCode(err))
 		}
 		if len(frame) > 0 {
 			if firstToken == 0 && providers.FrameHasContent(frame) {
@@ -302,20 +301,27 @@ func (a *API) recordEvent(request *chatwire.ChatRequest, entry models.Unified, p
 		return
 	}
 	telemetry := request.Telemetry()
+	finished := store.NowISO()
 	status := "succeeded"
 	httpStatus := http.StatusOK
-	errorCode := any(nil)
+	code := providers.ErrorCode(err)
 	if !success {
-		status = "failed"
-		httpStatus = http.StatusOK
-		if err != nil {
-			httpStatus = providers.StatusCode(err)
-			errorCode = typeName(err)
-		} else if request.StreamError != "" {
-			errorCode = request.StreamError
+		if err != nil && providers.IsClientAbort(err) {
+			// The caller went away: neither a success nor a proxy fault, so it
+			// must not be counted as an error. 499 is the nginx convention for
+			// "client closed request" and keeps the HTTP column meaningful
+			// instead of reporting a fabricated 502.
+			status = "cancelled"
+			httpStatus = 499
+		} else {
+			status = "failed"
+			if err != nil {
+				httpStatus = providers.StatusCode(err)
+			} else if request.StreamError != "" {
+				code = request.StreamError
+			}
 		}
 	}
-	now := store.NowISO()
 	event := store.RequestEvent{
 		EventID:         randomToken(16),
 		RequestID:       randomToken(16),
@@ -325,8 +331,11 @@ func (a *API) recordEvent(request *chatwire.ChatRequest, entry models.Unified, p
 		Status:          status,
 		HTTPStatus:      &httpStatus,
 		StreamCommitted: request.StreamCommitted,
-		StartedAt:       now,
-		FinishedAt:      &now,
+		// started_at is the instant the request arrived, not the instant this
+		// row was written: the console orders and buckets events by it, and a
+		// multi-minute request must not be filed under its completion minute.
+		StartedAt:  store.FormatISO(started),
+		FinishedAt: &finished,
 	}
 	if account, ok := telemetry["account_id"].(string); ok && account != "" {
 		event.AccountID = &account
@@ -340,7 +349,7 @@ func (a *API) recordEvent(request *chatwire.ChatRequest, entry models.Unified, p
 	if tokens, ok := telemetry["output_tokens"].(int); ok {
 		event.OutputTokens = &tokens
 	}
-	if code, ok := errorCode.(string); ok && code != "" {
+	if code != "" {
 		event.ErrorCode = &code
 	}
 	latency := int(time.Since(started).Milliseconds())
@@ -362,13 +371,6 @@ func orDefaultString(value any, fallback string) string {
 		return text
 	}
 	return fallback
-}
-
-func typeName(err error) string {
-	if err == nil {
-		return ""
-	}
-	return fmt.Sprintf("%T", err)
 }
 
 func truncate(value string, limit int) string {

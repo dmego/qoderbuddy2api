@@ -7,8 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/dmego/qoderbuddy2api/internal/chatwire"
@@ -104,6 +108,64 @@ func StatusCode(err error) int {
 		return upstream.StatusCode
 	}
 	return 502
+}
+
+// ErrorCode renders a stable, low-cardinality classification of a failed
+// request for telemetry.
+//
+// The recorder used to store the Go type name (`*errors.errorString`,
+// `*fmt.wrapError`), which collapsed every distinct failure into one
+// uninformative value — a wrapped transport error is always `*fmt.wrapError`.
+// The classification is deliberately stable: the console and the CSV export
+// group by it, so new members are added, never renamed.
+func ErrorCode(err error) string {
+	if err == nil {
+		return ""
+	}
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "client_canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	case errors.Is(err, UnavailableError):
+		return "no_available_routes"
+	}
+	var blocked *ChannelBlockedError
+	if errors.As(err, &blocked) {
+		return "channel_blocked"
+	}
+	var quota *QuotaExceededError
+	if errors.As(err, &quota) {
+		return "quota_exceeded"
+	}
+	var upstream *UpstreamError
+	if errors.As(err, &upstream) {
+		return "upstream_error"
+	}
+	// Transport-level failures, checked last so a typed upstream error above
+	// always wins over the generic net.Error it may wrap.
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "upstream_timeout"
+	}
+	switch {
+	case errors.Is(err, io.ErrUnexpectedEOF):
+		return "upstream_truncated"
+	case errors.Is(err, io.EOF):
+		return "upstream_eof"
+	}
+	return "unknown_error"
+}
+
+// IsClientAbort reports whether a request ended because the caller went away or
+// gave up, rather than because of an upstream or proxy fault. Such a request is
+// neither a success nor a failure: the client stopped listening, so the proxy
+// cannot claim the outcome.
+func IsClientAbort(err error) bool {
+	return errors.Is(err, context.Canceled) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, http.ErrAbortHandler)
 }
 
 func parseResetAt(message string) *time.Time {

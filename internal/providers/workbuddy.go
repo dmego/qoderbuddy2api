@@ -44,12 +44,12 @@ type WorkBuddy struct {
 }
 
 // NewWorkBuddy builds a provider for one account credential.
-func NewWorkBuddy(token, endpoint, defaultEffort string) *WorkBuddy {
+func NewWorkBuddy(token, endpoint, defaultEffort string, headerTimeout time.Duration) *WorkBuddy {
 	return &WorkBuddy{
 		Token:         token,
 		Endpoint:      strings.TrimRight(endpoint, "/"),
 		DefaultEffort: strings.ToLower(strings.TrimSpace(defaultEffort)),
-		client:        newUpstreamClient(),
+		client:        newUpstreamClient(headerTimeout),
 	}
 }
 
@@ -180,12 +180,12 @@ type WorkBuddyIntl struct {
 const IntlFallbackSystemPrompt = neutralSystemPrompt
 
 // NewWorkBuddyIntl builds a provider for one international account credential.
-func NewWorkBuddyIntl(token, endpoint, defaultEffort string) *WorkBuddyIntl {
+func NewWorkBuddyIntl(token, endpoint, defaultEffort string, headerTimeout time.Duration) *WorkBuddyIntl {
 	return &WorkBuddyIntl{
 		Token:         token,
 		Endpoint:      strings.TrimRight(endpoint, "/"),
 		DefaultEffort: strings.ToLower(strings.TrimSpace(defaultEffort)),
-		client:        newUpstreamClient(),
+		client:        newUpstreamClient(headerTimeout),
 	}
 }
 
@@ -330,13 +330,22 @@ func (s *upstreamStream) Close() error {
 // Proxy environment variables are deliberately ignored: this process runs next
 // to a TUN-mode proxy on the developer's machine, and a half-dead pooled
 // connection through it cost 200+ second stalls on non-streaming requests.
-func newUpstreamClient() *http.Client {
+//
+// headerTimeout bounds the wait for response headers after the request body has
+// been written. It is the Go equivalent of the Python build's
+// `httpx.Timeout(300, connect=10)` read timeout, and it is what keeps a stalled
+// upstream from holding a request open until the caller gives up: the timeout
+// fires pre-commit, so the pool and router can still fail over to a healthy
+// route. It never bounds the response body, so a slow stream is unaffected.
+// Zero disables it.
+func newUpstreamClient(headerTimeout time.Duration) *http.Client {
 	transport := &http.Transport{
 		Proxy:                 nil,
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   16,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: headerTimeout,
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     true,
 	}

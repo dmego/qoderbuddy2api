@@ -287,19 +287,23 @@ func (p *ProxyPlane) Reload(ctx context.Context, db *store.DB) error {
 		key := account.Provider + ":" + account.AccountID
 		switch account.Provider {
 		case models.ProviderWorkBuddy:
-			slots[account.Provider][key] = providers.NewWorkBuddy(token, p.settings.CodeBuddyEndpoint, p.settings.CodeBuddyDefaultReasoning)
+			slots[account.Provider][key] = providers.NewWorkBuddy(token, p.settings.CodeBuddyEndpoint, p.settings.CodeBuddyDefaultReasoning,
+				upstreamHeaderTimeout(p.settings))
 		case models.ProviderWorkBuddyIntl:
-			slots[account.Provider][key] = providers.NewWorkBuddyIntl(token, p.settings.WorkBuddyIntlEndpoint, p.settings.WorkBuddyIntlReasoning)
+			slots[account.Provider][key] = providers.NewWorkBuddyIntl(token, p.settings.WorkBuddyIntlEndpoint, p.settings.WorkBuddyIntlReasoning,
+				upstreamHeaderTimeout(p.settings))
 		}
 	}
 	// Legacy env-provided tokens stay supported for a bare .env deployment.
 	for index, token := range p.settings.LegacyCodeBuddyTokens {
 		slots[models.ProviderWorkBuddy]["codebuddy:cb-env-"+itoa(index)] =
-			providers.NewWorkBuddy(token, p.settings.CodeBuddyEndpoint, p.settings.CodeBuddyDefaultReasoning)
+			providers.NewWorkBuddy(token, p.settings.CodeBuddyEndpoint, p.settings.CodeBuddyDefaultReasoning,
+				upstreamHeaderTimeout(p.settings))
 	}
 	for index, token := range p.settings.LegacyIntlTokens {
 		slots[models.ProviderWorkBuddyIntl]["workbuddy_intl:wbintl-env-"+itoa(index)] =
-			providers.NewWorkBuddyIntl(token, p.settings.WorkBuddyIntlEndpoint, p.settings.WorkBuddyIntlReasoning)
+			providers.NewWorkBuddyIntl(token, p.settings.WorkBuddyIntlEndpoint, p.settings.WorkBuddyIntlReasoning,
+				upstreamHeaderTimeout(p.settings))
 	}
 
 	// Catalog enablement from the admin model page.
@@ -387,6 +391,15 @@ func (p *ProxyPlane) Close() {
 	for _, pool := range pools {
 		pool.UpdateSlots(nil)
 	}
+}
+
+// upstreamHeaderTimeout renders the configured upstream response-header ceiling.
+// A non-positive setting disables the bound, matching the transport's default.
+func upstreamHeaderTimeout(settings config.Settings) time.Duration {
+	if settings.UpstreamHeaderTimeoutSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(settings.UpstreamHeaderTimeoutSeconds) * time.Second
 }
 
 // primaryToken extracts the bearer value from a decrypted credential payload.

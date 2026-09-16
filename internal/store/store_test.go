@@ -283,6 +283,59 @@ func TestRollupKeepsUnattributedBucketsSingular(t *testing.T) {
 	}
 }
 
+// TestCancelledRequestsAreNotErrors proves the three-way outcome split: a
+// request the caller abandoned counts toward request_count but neither toward
+// success_count nor error_count in every aggregate the console reads.
+func TestCancelledRequestsAreNotErrors(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	now := NowISO()
+	for index, status := range []string{"succeeded", "failed", "cancelled", "cancelled"} {
+		latency := 1000 + index
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO request_events
+				(event_id, request_id, provider, model_id, protocol, status, latency_ms, started_at, finished_at)
+			VALUES (?, ?, 'codebuddy', 'deepseek-v4.1-flash', 'openai', ?, ?, ?, ?)`,
+			"evt-"+strconvItoa(index), "req-"+strconvItoa(index), status, latency, now, now); err != nil {
+			t.Fatalf("insert %s: %v", status, err)
+		}
+	}
+
+	summary, err := db.SummarizeUsage(ctx, UsageFilter{})
+	if err != nil {
+		t.Fatalf("SummarizeUsage: %v", err)
+	}
+	if summary.RequestCount != 4 || summary.SuccessCount != 1 || summary.ErrorCount != 1 || summary.CancelledCount != 2 {
+		t.Fatalf("summary split wrong: %+v", summary)
+	}
+
+	if _, _, err := db.RollupOnce(ctx, mustParse(t, now), 90); err != nil {
+		t.Fatalf("RollupOnce: %v", err)
+	}
+	rollups, err := db.ListRollups(ctx, UsageFilter{}, "minute", 5, 0)
+	if err != nil {
+		t.Fatalf("ListRollups: %v", err)
+	}
+	if len(rollups) != 1 {
+		t.Fatalf("expected one minute bucket, got %d", len(rollups))
+	}
+	bucket := rollups[0]
+	if bucket.RequestCount != 4 || bucket.SuccessCount != 1 || bucket.ErrorCount != 1 {
+		t.Fatalf("rollup split wrong: %+v", bucket)
+	}
+
+	series, err := db.TimeseriesFromEvents(ctx, UsageFilter{Status: "cancelled"}, "minute", 5)
+	if err != nil {
+		t.Fatalf("TimeseriesFromEvents: %v", err)
+	}
+	if len(series) != 1 {
+		t.Fatalf("expected one status-filtered bucket, got %d", len(series))
+	}
+	if series[0].RequestCount != 2 || series[0].ErrorCount != 0 || series[0].SuccessCount != 0 {
+		t.Fatalf("filtered timeseries split wrong: %+v", series[0])
+	}
+}
+
 func newTestDB(t *testing.T) *DB {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "qb2api.sqlite3")

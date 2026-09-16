@@ -20,7 +20,7 @@ func (d *DB) TimeseriesFromEvents(ctx context.Context, filter UsageFilter, bucke
 		       COALESCE(account_id, '') AS account_id, model_id,
 		       COUNT(*) AS request_count,
 		       SUM(CASE WHEN status='succeeded' THEN 1 ELSE 0 END) AS success_count,
-		       SUM(CASE WHEN status!='succeeded' THEN 1 ELSE 0 END) AS error_count,
+		       SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS error_count,
 		       COALESCE(SUM(input_tokens), 0) AS input_tokens,
 		       COALESCE(SUM(output_tokens), 0) AS output_tokens,
 		       SUM(CASE WHEN input_tokens IS NOT NULL OR output_tokens IS NOT NULL THEN 1 ELSE 0 END) AS token_event_count,

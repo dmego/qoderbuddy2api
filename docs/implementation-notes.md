@@ -92,6 +92,30 @@ internal/server       HTTP surface, admin auth, schedulers wiring
 由自适应格式化函数渲染（`<1s` 用 ms，`>=1s` 用一位小数秒，`>=60s` 用 `m s`），
 避免长思考请求打印六位数毫秒。
 
+`started_at` 是**请求到达**的时刻，`finished_at` 是写入遥测的时刻，两者相差
+`latency_ms`。控制台按 `started_at` 排序与分桶，所以跨越整分钟的请求不会被记到
+它结束的那一分钟里。
+
+## 请求结局（三分支）
+
+`request_events.status` 有三个取值，用量页的成功/已取消/失败都按它统计：
+
+| status | 含义 | 计入 |
+|---|---|---|
+| `succeeded` | 正常完成 | `success_count` |
+| `failed` | 上游或代理自身的故障 | `error_count` |
+| `cancelled` | 调用方主动断开或放弃（`context.Canceled`、EPIPE、ECONNRESET） | 仅 `request_count` |
+
+调用方取消既不是成功也不是故障：把它记成失败会虚高错误率，把 `http_status`
+一律写成 502 则会让客户端行为看起来像上游故障。因此取消记 `http_status=499`
+（nginx 的 client-closed-request 约定），`error_code=client_canceled`。
+
+`error_code` 是**稳定的分类**（`providers.ErrorCode`），不是 Go 类型名：
+`upstream_error`、`channel_blocked`、`quota_exceeded`、`no_available_routes`、
+`client_canceled`、`upstream_timeout`、`upstream_truncated`、`upstream_eof`、
+`deadline_exceeded`、`unknown_error`。之前存的是 `%T`（`*fmt.wrapError`），
+把所有失败压成同一个无信息的值。新增成员只增不改名，控制台和 CSV 按它分组。
+
 ## 环境变量
 
 变量名与 Python 版完全一致。Go 新增：
@@ -101,6 +125,13 @@ internal/server       HTTP surface, admin auth, schedulers wiring
 | `QB2API_EVENT_FLUSH_MILLIS` | `250` | telemetry batch window |
 | `QB2API_EVENT_FLUSH_MAX` | `200` | events per batch |
 | `QB2API_WEB_DIR` | auto | admin console directory override |
+| `QB2API_UPSTREAM_HEADER_TIMEOUT_SECONDS` | `300` | 等待上游响应头的上限（不含响应体），`0` 关闭 |
+
+`QB2API_UPSTREAM_HEADER_TIMEOUT_SECONDS` 对应 Python 版的
+`httpx.Timeout(300, connect=10)`：它只约束「请求体写完 → 收到响应头」这段，
+从不约束响应体，因此慢流式输出不受影响。超时发生在 commit 之前，
+所以账号轮询与路由故障转移仍可接管。设置过小会误伤合法的大上下文请求
+（250k tokens 的首字实测可到 ~100s），只应当作「上游挂死」的兜底。
 
 `QB2API_CREDENTIAL_KEY` 是必需的：没有它已存凭据无法解密，进程会拒绝启动。
 

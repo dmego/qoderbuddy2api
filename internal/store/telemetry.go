@@ -258,6 +258,7 @@ type UsageSummary struct {
 	OutputTokens      int      `json:"output_tokens"`
 	SuccessCount      int      `json:"success_count"`
 	ErrorCount        int      `json:"error_count"`
+	CancelledCount    int      `json:"cancelled_count"`
 	TokenEventCount   int      `json:"token_event_count"`
 	MissingTokenCount int      `json:"missing_token_count"`
 	LatencyAvgMS      *float64 `json:"latency_avg_ms"`
@@ -273,12 +274,13 @@ func (d *DB) SummarizeUsage(ctx context.Context, filter UsageFilter) (UsageSumma
 	err := d.QueryRowContext(ctx, `
 		SELECT COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
 		       COALESCE(SUM(CASE WHEN status='succeeded' THEN 1 ELSE 0 END), 0),
-		       COALESCE(SUM(CASE WHEN status!='succeeded' THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN status='cancelled' THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN input_tokens IS NOT NULL OR output_tokens IS NOT NULL THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN input_tokens IS NULL AND output_tokens IS NULL THEN 1 ELSE 0 END), 0)
 		  FROM request_events WHERE `+where, args...).
 		Scan(&summary.RequestCount, &summary.InputTokens, &summary.OutputTokens, &summary.SuccessCount,
-			&summary.ErrorCount, &summary.TokenEventCount, &summary.MissingTokenCount)
+			&summary.ErrorCount, &summary.CancelledCount, &summary.TokenEventCount, &summary.MissingTokenCount)
 	if err != nil {
 		return UsageSummary{}, err
 	}
@@ -556,9 +558,13 @@ func aggregate(events []eventForRollup, window RollupWindow) []Rollup {
 		rollup.AccountID = &account
 		var latencies, ttfts []int
 		for _, row := range rows {
-			if row.Status == "succeeded" {
+			// Cancelled requests are neither: the caller stopped listening, so
+			// they stay in request_count without inflating the error rate.
+			switch row.Status {
+			case "succeeded":
 				rollup.SuccessCount++
-			} else {
+			case "cancelled":
+			default:
 				rollup.ErrorCount++
 			}
 			if row.InputTokens != nil || row.OutputTokens != nil {

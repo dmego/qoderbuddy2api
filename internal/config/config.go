@@ -42,6 +42,7 @@ type Settings struct {
 	WorkBuddyIntlEndpoint        string
 	WorkBuddyIntlReasoning       string
 	WorkBuddyIntlCreditsPath     string
+	UpstreamHeaderTimeoutSeconds int
 	CodeBuddyCheckinBase         string
 	CodeBuddyCheckinStatusPath   string
 	CodeBuddyCheckinClaimPath    string
@@ -126,6 +127,11 @@ func Load() Settings {
 		WorkBuddyIntlEndpoint:     env("WORKBUDDY_INTL_ENDPOINT", "https://www.workbuddy.ai"),
 		WorkBuddyIntlReasoning:    strings.ToLower(strings.TrimSpace(env("QB2API_INTL_DEFAULT_REASONING_EFFORT", "low"))),
 		WorkBuddyIntlCreditsPath:  env("WORKBUDDY_INTL_CREDITS_PATH", "/billing/meter/get-user-resource"),
+		// Bounds the wait for upstream response headers (never the body). The
+		// Python build used httpx.Timeout(300, connect=10); this restores that
+		// ceiling so a stalled upstream fails over instead of hanging until the
+		// caller gives up. 0 disables.
+		UpstreamHeaderTimeoutSeconds: envInt("QB2API_UPSTREAM_HEADER_TIMEOUT_SECONDS", 300),
 
 		CodeBuddyCheckinBase:         env("CODEBUDDY_CHECKIN_BASE", "https://www.workbuddy.cn"),
 		CodeBuddyCheckinStatusPath:   env("CODEBUDDY_CHECKIN_STATUS_PATH", "/billing/meter/checkin-status"),

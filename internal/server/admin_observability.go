@@ -51,9 +51,11 @@ func (a *API) probeAccount(r *http.Request, provider, accountID string) probeRes
 	var upstream providers.Provider
 	switch provider {
 	case models.ProviderWorkBuddy:
-		upstream = providers.NewWorkBuddy(token, a.Settings.CodeBuddyEndpoint, a.Settings.CodeBuddyDefaultReasoning)
+		upstream = providers.NewWorkBuddy(token, a.Settings.CodeBuddyEndpoint, a.Settings.CodeBuddyDefaultReasoning,
+			upstreamHeaderTimeout(a.Settings))
 	case models.ProviderWorkBuddyIntl:
-		upstream = providers.NewWorkBuddyIntl(token, a.Settings.WorkBuddyIntlEndpoint, a.Settings.WorkBuddyIntlReasoning)
+		upstream = providers.NewWorkBuddyIntl(token, a.Settings.WorkBuddyIntlEndpoint, a.Settings.WorkBuddyIntlReasoning,
+			upstreamHeaderTimeout(a.Settings))
 	default:
 		return probeResult{OK: false, Detail: "unsupported provider: " + provider}
 	}
