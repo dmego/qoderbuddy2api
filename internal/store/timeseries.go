@@ -46,10 +46,7 @@ func (d *DB) TimeseriesFromEvents(ctx context.Context, filter UsageFilter, bucke
 			return nil, err
 		}
 		rollup.BucketKind = bucketKind
-		if accountID != "" {
-			account := accountID
-			rollup.AccountID = &account
-		}
+		rollup.AccountID = &accountID
 		if latencyAvg != nil {
 			value := int(*latencyAvg)
 			rollup.LatencyAvgMS = &value

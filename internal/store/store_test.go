@@ -241,6 +241,48 @@ func TestEventWriterBatchesInserts(t *testing.T) {
 	}
 }
 
+// TestRollupKeepsUnattributedBucketsSingular proves a bucket whose events carry
+// no account id is updated in place instead of appended. SQLite treats NULL as
+// distinct in a unique index, so a NULL account_id escapes the ON CONFLICT
+// target and leaves one duplicate bucket behind per rollup round.
+func TestRollupKeepsUnattributedBucketsSingular(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	now := NowISO()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO request_events
+			(event_id, request_id, provider, model_id, protocol, status, latency_ms, started_at, finished_at)
+		VALUES ('evt-1', 'req-1', 'codebuddy', 'deepseek-v4.1-flash', 'openai', 'failed', 120, ?, ?)`,
+		now, now); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+
+	for round := range 3 {
+		if _, _, err := db.RollupOnce(ctx, mustParse(t, now), 90); err != nil {
+			t.Fatalf("RollupOnce round %d: %v", round, err)
+		}
+	}
+
+	var stored int
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM usage_rollups WHERE bucket_kind='minute'").Scan(&stored); err != nil {
+		t.Fatalf("count rollups: %v", err)
+	}
+	if stored != 1 {
+		t.Fatalf("expected one minute bucket for the unattributed account, got %d", stored)
+	}
+	rollups, err := db.ListRollups(ctx, UsageFilter{}, "minute", 10, 0)
+	if err != nil {
+		t.Fatalf("ListRollups: %v", err)
+	}
+	if rollups[0].AccountID == nil {
+		t.Fatal("unattributed bucket must carry an empty account id, not NULL")
+	}
+	if rollups[0].ErrorCount != 1 || rollups[0].RequestCount != 1 {
+		t.Fatalf("bucket counts drifted across rounds: %#v", rollups[0])
+	}
+}
+
 func newTestDB(t *testing.T) *DB {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "qb2api.sqlite3")

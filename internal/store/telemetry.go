@@ -547,10 +547,13 @@ func aggregate(events []eventForRollup, window RollupWindow) []Rollup {
 			ModelID:      groupKey.modelID,
 			RequestCount: len(rows),
 		}
-		if groupKey.accountID != "" {
-			account := groupKey.accountID
-			rollup.AccountID = &account
-		}
+		// The empty account is stored as "" rather than NULL, matching the Python
+		// rollup and, more importantly, keeping the upsert idempotent: SQLite
+		// treats NULLs as distinct in a unique index, so a NULL account_id never
+		// matches the ON CONFLICT target and every round would insert a fresh
+		// duplicate row for the same bucket.
+		account := groupKey.accountID
+		rollup.AccountID = &account
 		var latencies, ttfts []int
 		for _, row := range rows {
 			if row.Status == "succeeded" {
