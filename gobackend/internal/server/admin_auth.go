@@ -109,8 +109,16 @@ func (a *AdminAuth) VerifyRequest(r *http.Request) error {
 		return errUnauthorized
 	}
 	if isMutating(r.Method) {
+		// The expected token is re-derived from the session id rather than read
+		// from the stored digest. The token is a deterministic function of the
+		// session id and the server secret, so the two are equivalent in
+		// strength — but comparing against the derived value cannot drift. A
+		// stored digest becomes unverifiable whenever the derivation changes or
+		// the rows were written by a different implementation, which is exactly
+		// what happens to sessions carried across a restart or a migration, and
+		// the failure mode is a silent 403 on every save.
 		presented := r.Header.Get(CSRFHeaderName)
-		if presented == "" || !constantTimeEqual(hashToken(presented), session.CSRFHash) {
+		if presented == "" || !constantTimeEqual(presented, a.csrfToken(cookie.Value)) {
 			return errCSRF
 		}
 	}

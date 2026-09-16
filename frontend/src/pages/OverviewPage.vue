@@ -25,7 +25,7 @@ const rollups = useQuery({ queryKey: ["usage-rollups", "minute"], queryFn: () =>
 const chart = computed(() => { const rows = [...(rollups.data.value?.rollups ?? [])].reverse(); return { labels: rows.map((row) => row.bucket_start.slice(11, 16)), values: rows.map((row) => row.request_count) }; });
 const alerts = computed(() => { const accountIssues = (accounts.data.value?.accounts ?? []).filter((item) => item.summary_status === "action_required").length; const stale = (metrics.data.value?.snapshots ?? []).filter((item) => item.status === "stale" || item.status === "unavailable").length; return accountIssues + stale + (service.data.value?.observed_state === "FAILED" ? 1 : 0); });
 const summary = computed(() => [
-  { label: "可用账号", value: String((accounts.data.value?.accounts ?? []).filter((item) => item.enabled).length), note: "CodeBuddy / WorkBuddy 国际版 / Qoder", icon: UsersRound },
+  { label: "可用账号", value: String((accounts.data.value?.accounts ?? []).filter((item) => item.enabled).length), note: "WorkBuddy / WorkBuddy 国际版", icon: UsersRound },
   { label: "启用模型", value: String((models.data.value?.models ?? []).filter((item) => item.enabled).length), note: statusLabel(service.data.value?.observed_state ?? "代理服务未连接"), icon: Cpu },
   { label: "请求总数", value: String(usage.data.value?.summary?.request_count ?? 0), note: `错误 ${usage.data.value?.summary?.error_count ?? 0}`, icon: Activity },
   { label: "Token", value: usage.data.value?.summary?.token_event_count ? formatTokens((usage.data.value.summary.input_tokens ?? 0) + (usage.data.value.summary.output_tokens ?? 0)) : "不可用", note: "仅统计实际用量事件", icon: Coins },
