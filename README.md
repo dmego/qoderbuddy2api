@@ -1,211 +1,156 @@
 # qoderbuddy2api
 
-<p align="center">
-  <b>Self-hosted multi-account model gateway for CodeBuddy &amp; Qoder</b>
-  <br/>
-  One OpenAI / Anthropic compatible endpoint in front of an encrypted account
-  pool, with daily check-in and growth automation — operated from a local
-  admin console.
-</p>
+Turn a pool of WorkBuddy accounts into a single **OpenAI-compatible** and
+**Anthropic-compatible** inference endpoint, with a self-hosted admin console
+attached.
 
-<p align="center">
-  <a href="#features">Features</a> ·
-  <a href="#quick-start">Quick start</a> ·
-  <a href="#docker-deployment">Docker deployment</a> ·
-  <a href="#client-usage">Client usage</a> ·
-  <a href="#documentation">Documentation</a> ·
-  <a href="README.zh.md">中文</a>
-</p>
+Go implementation: one process, one static binary. Everything except the model
+call itself — account pool, credential rotation, daily sign-in, growth-centre
+automation, credits collection, usage telemetry — happens in that process.
 
-<p align="center">
-  <img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776AB" />
-  <img alt="License" src="https://img.shields.io/badge/License-MIT-blue" />
-  <img alt="Platform" src="https://img.shields.io/badge/Platform-amd64%20%7C%20arm64-0b7285" />
-  <img alt="Frontend" src="https://img.shields.io/badge/Frontend-Vue%203-42b883" />
-  <img alt="Docker" src="https://img.shields.io/badge/Docker-compose-2496ed" />
-</p>
-
-> **A trusted-operator tool.** This project is designed for a single operator
-> on their own machine or private server — it is **not** a public multi-tenant
-> gateway. The proxy Worker stays loopback-only and credentials are encrypted
-> at rest.
+English | [中文](README.zh.md)
 
 ## Features
 
-- **Unified model gateway** — one base URL (`/v1`) serves OpenAI and Anthropic
-  compatible clients; requests are routed across CodeBuddy, WorkBuddy
-  International and Qoder account pools with failover before the first output
-  token.
-- **WorkBuddy International** — a dedicated `workbuddy_intl` provider
-  (www.workbuddy.ai) with browser plugin-OAuth login, manual bearer import and
-  credit monitoring. Its free tier covers exactly three models —
-  `hy4-preview`, `hy3` and `deepseek-v4.1-flash` — and it has no check-in or
-  growth centre.
-- **Per-model routing weights** — give each provider a priority and weight per
-  unified model, so e.g. `deepseek-v4.1-flash` prefers the free international
-  accounts and only falls back to the domestic pool.
-- **Encrypted account pool** — durable accounts, purpose-scoped credentials
-  (chat / check-in), versioned rotation, and an admin console to import,
-  verify, and promote accounts.
-- **Model catalog management** — unified lower-case model IDs across providers
-  (shared models exposed once), with one-click upstream sync: Qoder via its
-  official catalog API and WorkBuddy via live probing of new models.
-- **Daily automation** — scheduled check-in, growth-center task / lottery /
-  travel automation, and a decoupled **login automation** (one WorkBuddy
-  conversation per account per day to keep the streak alive, with post-run
-  upstream verification and a manual retry button).
-- **Observability** — token usage rollups, credit / points history charts,
-  request events, audit log, and SQLite backups with restore validation.
-- **Safety by default** — three separate keys (proxy / admin / credential),
-  loopback-only Worker, no raw tokens in logs, URLs, or browser storage.
+**Proxy**
+- `/v1/chat/completions` (OpenAI) and `/v1/messages` (Anthropic), streaming included
+- Unified model catalog: one model served by several providers collapses to a
+  single id, routed internally by policy
+- Account-level failover, only before the first downstream chunk
+- Reasoning passthrough (`reasoning_content` → Anthropic `thinking` block)
+- Upstream tool calls and multimodal messages passed through
+
+**Admin console** (`/admin`)
+- Accounts: import, probe, enable/disable, per-purpose configuration
+- Models and routing policy: per-model provider priority, weight and enablement
+- Credentials: version, mode, expiry state and renewability; ciphertext never leaves the DB
+- Usage: first-token and total latency reported separately, adaptive ms/s display, CSV export
+- Sign-in and growth centre: scheduling, manual runs, per-batch detail
+- Credits monitoring, audit log, proxy keys, runtime settings, service status
+
+**Automation**
+- Daily sign-in with catch-up window and jitter
+- Growth-centre tasks, lottery, travel, redemption, and the ACP conversation that lights the active day
+- Proactive credential rotation (short-lived tokens refreshed before expiry)
+- Usage rollup and detail retention policy
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    C[CLI / IDE clients] -->|OpenAI / Anthropic /v1| CP[Control Plane :9999]
-    B[Browser] -->|/admin| CP
-    CP -->|"/v1/* forwarded"| W[Proxy Worker 127.0.0.1:10001]
-    CP -->|supervise| W
-    W --> CB[CodeBuddy / WorkBuddy]
-    W --> QD[Qoder]
+```
+client ──▶ :9999 ──┬── /v1/*        proxy (OpenAI / Anthropic)
+                   ├── /api/admin/* admin API
+                   └── /admin       admin console (static assets)
+                        │
+                        ├── SQLite (accounts, encrypted credentials, telemetry, scheduler state)
+                        └── upstream: copilot.tencent.com / www.workbuddy.ai
 ```
 
-The **Control Plane** is the only persistent service: admin UI, SQLite,
-encrypted credentials, schedulers, backups, and Worker supervision. The
-**Proxy Worker** is a supervised child process that only listens on loopback
-and never touches SQLite or the admin / credential keys.
+One process. The Python build ran a Control Plane and a supervised Proxy Worker
+that exchanged a versioned JSON snapshot over a loopback handshake; folding both
+surfaces into one binary removes the handshake, the snapshot serialization and a
+second interpreter.
+
+The security boundary is enforced by types rather than process isolation: the
+proxy handlers receive only a `*ProxyPlane` (provider pools and model routing)
+and cannot reach the database, the admin key or the credential master key.
+Credentials are decrypted once per pool rebuild.
+
+See [docs/design/architecture.md](docs/design/architecture.md).
 
 ## Quick start
 
-The recommended way to run qoderbuddy2api is Docker (see
-[Docker deployment](#docker-deployment)). To run from source (Python 3.11+):
-
-```bash
-git clone https://github.com/dmego/qoderbuddy2api.git
-cd qoderbuddy2api
-python3 -m venv .venv
-.venv/bin/pip install -e '.[dev]'
-cp .env.example .env
-chmod 600 .env
-mkdir -p data logs && chmod 700 data logs
+```sh
+# Three keys are required. Generate the credential key with:
+python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-Generate **three distinct** values and put them in `.env`:
+```sh
+cat > .env <<'EOF'
+QB2API_PROXY_API_KEY=<proxy key used by clients>
+QB2API_ADMIN_KEY=<admin console key>
+QB2API_CREDENTIAL_KEY=<the Fernet key from above>
+QB2API_DATA_DIR=./data
+QB2API_LOG_DIR=./logs
+QB2API_MODEL_CONFIG=./config/models.json
+QB2API_ADMIN_UI_ENABLED=true
+QB2API_ADMIN_COOKIE_SECURE=auto
+EOF
 
-```bash
-python3 -c 'import secrets; print(secrets.token_urlsafe(32))'   # QB2API_PROXY_API_KEY
-python3 -c 'import secrets; print(secrets.token_urlsafe(32))'   # QB2API_ADMIN_KEY
-python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'  # QB2API_CREDENTIAL_KEY
+go run ./cmd/qb2api
 ```
 
-Start from the repository root (so `.env` is picked up):
-
-```bash
-.venv/bin/qb2api --mode control
-```
-
-Then open <http://127.0.0.1:9999/admin/> and log in with `QB2API_ADMIN_KEY`.
-The Worker is started automatically.
+Open <http://127.0.0.1:9999/admin>, sign in with `QB2API_ADMIN_KEY`, and import
+credentials on the Accounts page.
 
 ## Docker deployment
 
-Official images are published to GHCR on every release tag and on every push
-to `main`, for both `linux/amd64` and `linux/arm64`:
-
-```text
-ghcr.io/dmego/qoderbuddy2api:1.0.0   # release (pinned)
-ghcr.io/dmego/qoderbuddy2api:latest  # latest release
-ghcr.io/dmego/qoderbuddy2api:edge    # rolling build from main
+```sh
+docker compose -f go-deploy/docker-compose.go.yml up -d --build
 ```
 
-### docker-compose (recommended)
+Alpine-based image holding one static binary, about 37 MB. Data, logs and the
+model config are mounted as volumes.
 
-Use the [`docker-compose.yml`](docker-compose.yml) in the repository root:
+### Switching from the Python build
 
-```bash
-git clone https://github.com/dmego/qoderbuddy2api.git
-cd qoderbuddy2api
-cp .env.example .env
-chmod 600 .env
-# fill in QB2API_PROXY_API_KEY / QB2API_ADMIN_KEY / QB2API_CREDENTIAL_KEY
-docker compose up -d
+```sh
+cd go-deploy
+./switch-to-go.sh --dry-run   # rehearses the steps, changes nothing
+./switch-to-go.sh             # interactive confirmation, then switches
+./switch-to-go.sh --yes       # unattended
 ```
 
-Ports and mounted state:
+The script stops the Python service, moves the Go service to port 9999, restarts
+and verifies it (`/health`, `/admin`, `/v1/models`, account count, and a real
+`deepseek-v4.1-flash` streaming call), and rolls back automatically if any check
+fails. See [go-deploy/README.md](go-deploy/README.md).
 
-| Item | Value | Notes |
-| --- | --- | --- |
-| Control Plane / unified `/v1` | `9999` | only published port; admin console at `/admin` |
-| Proxy Worker | `10001` | loopback inside the container, never published |
-| `./data` | → `/data` | SQLite, `worker.internal`, backups |
-| `./logs` | → `/logs` | request / service logs |
-| `./config` | → `/config` | `models.json` model catalog |
-| `.env` | → container env | full configuration, passed verbatim |
-
-The Worker internal token is auto-generated into `./data/worker.internal`
-(0600) on first start. `restart: unless-stopped` re-launches the container
-after a host reboot. Only port `9999` is exposed; the loopback Worker stays
-inside the container.
-
-### Plain docker run
-
-```bash
-docker run -d --name qb2api-control \
-  --env-file .env \
-  -e QB2API_CONTROL_HOST=0.0.0.0 \
-  -e QB2API_DATA_DIR=/data \
-  -e QB2API_LOG_DIR=/logs \
-  -e QB2API_MODEL_CONFIG=/config/models.json \
-  -p 9999:9999 \
-  -v "$PWD/data:/data" \
-  -v "$PWD/logs:/logs" \
-  -v "$PWD/config:/config" \
-  --restart unless-stopped \
-  ghcr.io/dmego/qoderbuddy2api:latest
-```
-
-> Note: `QB2API_CONTROL_HOST` must be `0.0.0.0` inside the container so the
-> published port works.
+**Existing data carries over as-is.** The Go Fernet implementation is
+byte-compatible with Python's `cryptography`, so pointing the binary at the
+existing `qb2api.sqlite3` is enough — **no re-login required**.
 
 ## Client usage
 
-Point any OpenAI / Anthropic compatible client at the unified entry:
-
-```text
-Base URL: http://127.0.0.1:9999/v1
-API Key:  QB2API_PROXY_API_KEY
-```
-
-```bash
-curl http://127.0.0.1:9999/v1/chat/completions \
+```sh
+# OpenAI-compatible
+curl -N http://127.0.0.1:9999/v1/chat/completions \
   -H "Authorization: Bearer $QB2API_PROXY_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": "你好"}]}'
+  -H 'Content-Type: application/json' \
+  -d '{"model":"deepseek-v4.1-flash","stream":true,
+       "messages":[{"role":"system","content":"You are a helpful assistant."},
+                   {"role":"user","content":"hello"}]}'
 ```
 
-Model IDs are canonical lowercase names (e.g. `deepseek-v4-flash`, `glm-5.2`,
-`qwen3.7-max`); shared models are exposed once and routed internally. The
-admin console at `http://127.0.0.1:9999/admin/` lets you import accounts,
-sync the model catalog from upstream, and run check-in / growth automation.
+```sh
+# Anthropic-compatible
+curl http://127.0.0.1:9999/v1/messages \
+  -H "Authorization: Bearer $QB2API_PROXY_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"deepseek-v4.1-flash","max_tokens":256,
+       "messages":[{"role":"user","content":"hello"}]}'
+```
+
+List models with `curl http://127.0.0.1:9999/v1/models`.
 
 ## Documentation
 
-| Doc | Contents |
-| --- | --- |
-| [Configuration guide](docs/configuration.md) | Keys, `.env` reference, remote access, client examples |
-| [Architecture](docs/design/architecture.md) | System architecture and security model |
+- [Configuration](docs/configuration.md) — every environment variable, remote access setup
+- [Architecture](docs/design/architecture.md) — components, security model, data model, routing
+- [Deployment and switch](go-deploy/README.md) — compose, switch script, rollback
+- [Implementation notes](docs/implementation-notes.md) — storage compatibility, timestamps, write batching, percentile formulas
+- [Development](CLAUDE.md) — common commands and the invariants that matter
 
 ## Development
 
-```bash
-pytest -q
-ruff check src tests
-python -m compileall -q src/qb2api
-cd frontend && npm run test && npm run typecheck && npm run lint && npm run build
-git diff --check
+```sh
+export GOPROXY=https://goproxy.cn,direct
+go vet ./... && go test ./...
+cd frontend && npm install --registry=https://registry.npmmirror.com && npm test && npm run build
 ```
+
+The frontend builds to `web/dist` at the repository root and is served
+same-origin by the Go service.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[MIT](LICENSE)

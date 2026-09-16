@@ -1,198 +1,144 @@
 # qoderbuddy2api
 
-<p align="center">
-  <b>CodeBuddy / Qoder 多账号自托管模型网关</b>
-  <br/>
-  一个 OpenAI / Anthropic 兼容入口 + 加密账号池，内置每日签到与成长自动化，
-  全部通过本地运维控制台管理。
-</p>
+把 WorkBuddy 账号池包装成 **OpenAI 兼容**与 **Anthropic 兼容**的统一推理入口，
+并附带一个自托管管理台。
 
-<p align="center">
-  <a href="#功能特性">功能特性</a> ·
-  <a href="#快速开始">快速开始</a> ·
-  <a href="#docker-部署">Docker 部署</a> ·
-  <a href="#客户端接入">客户端接入</a> ·
-  <a href="#文档">文档</a> ·
-  <a href="README.md">English</a>
-</p>
+Go 实现，单进程、单二进制。除模型调用外的一切——账号池、凭据轮换、签到、
+成长中心、积分采集、用量遥测——都在同一个进程里完成。
 
-<p align="center">
-  <img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776AB" />
-  <img alt="License" src="https://img.shields.io/badge/License-MIT-blue" />
-  <img alt="Platform" src="https://img.shields.io/badge/Platform-amd64%20%7C%20arm64-0b7285" />
-  <img alt="Frontend" src="https://img.shields.io/badge/Frontend-Vue%203-42b883" />
-  <img alt="Docker" src="https://img.shields.io/badge/Docker-compose-2496ed" />
-</p>
+[English](README.md) | 中文
 
-> **面向可信运维者**：本项目为单运维者在自己机器或私有服务器上运行而设计，
-> **不是**公网多租户网关。Proxy Worker 仅监听 loopback，凭据加密落盘。
+## 特性
 
-## 功能特性
+**代理**
+- `/v1/chat/completions`（OpenAI）与 `/v1/messages`（Anthropic），含流式
+- 统一模型目录：同一模型跨 provider 合并为一条，请求内部按策略轮询
+- 账号级故障转移，仅在第一个下游 chunk 之前发生
+- 思考内容透传（`reasoning_content` → Anthropic `thinking` block）
+- 上游工具调用与多模态消息透传
 
-- **统一模型网关** —— 单一 base URL（`/v1`）同时服务 OpenAI 与 Anthropic 兼容客户端；
-  CodeBuddy、WorkBuddy 国际版、OrcaTerm 与 Qoder 账号池按策略路由，首个输出前自动故障转移。
-- **加密账号池** —— 持久账号、按用途隔离的凭据（chat / check-in）、版本化轮换，
-  管理台可导入、验证、提升账号。
-- **WorkBuddy 国际版** —— 独立提供商 `workbuddy_intl`（www.workbuddy.ai）：浏览器
-  plugin OAuth 登录与 Bearer 手动导入、积分监控，免费额度覆盖
-  `hy4-preview` / `hy3` / `deepseek-v4.1-flash` 三个模型；该版本没有签到与成长中心。
-- **OrcaTerm** —— 独立提供商 `orcaterm`（腾讯云 lightai agent 后端，与桌面版 AI 助手同源）：
-  手动粘贴桌面 OAuth Token 导入，免费额度覆盖 `hy4-preview`、`hy3`、`kimi-k3`、
-  `glm-5.3`、`glm-5.3-flash`、`glm-5.2`、`deepseek-v4-flash`、`deepseek-v4-pro` 八个模型；
-  该版本同样没有签到与成长中心。
-- **按模型路由权重** —— 为每个统一模型配置各提供商的优先级与权重，例如让
-  `deepseek-v4.1-flash` 先走国际版免费账号、失败再回落国内账号，或把 `glm-5.3`
-  固定交给 OrcaTerm、CodeBuddy 仅作兜底。
-- **模型目录管理** —— 跨提供商统一小写模型 ID（共有模型只暴露一条），一键上游同步：
-  Qoder 走官方目录接口，WorkBuddy 通过实时探测发现新模型。
-- **每日自动化** —— 定时签到、成长中心任务/抽奖/旅行自动化，以及解耦的
-  **登录自动化**（每账号每天一次 WorkBuddy 对话点亮连登，带上游后置确认与手动重试）。
-- **可观测性** —— Token 用量聚合、积分历史曲线、请求事件、审计日志、
-  SQLite 备份与恢复校验。
-- **默认安全** —— Proxy / Admin / Credential 三把独立密钥，Worker 仅 loopback，
-  原始 token 不进日志、URL 或浏览器存储。
+**管理台**（`/admin`）
+- 账号池：导入、探测、启停、按用途分别配置
+- 模型与路由策略：按模型设置 provider 优先级、权重与启停
+- 凭据：版本、模式、过期状态与可续期能力，密文永不出库
+- 用量：首字耗时与请求耗时分开统计，自适应 ms/s 显示，CSV 导出
+- 签到与成长中心：调度、手动执行、批次明细与脱敏结果
+- 积分监控、审计、代理密钥、运行设置、服务状态
+
+**自动化**
+- 每日签到（含补跑窗口与抖动）
+- 成长中心任务/抽奖/旅行/兑换，以及通过正式对话点亮的活跃日
+- 凭据主动轮换（短效 token 在到期前刷新）
+- 用量聚合与明细保留策略
 
 ## 架构
 
-```mermaid
-flowchart LR
-    C[CLI / IDE 客户端] -->|OpenAI / Anthropic /v1| CP[Control Plane :9999]
-    B[浏览器] -->|/admin| CP
-    CP -->|"/v1/* 转发"| W[Proxy Worker 127.0.0.1:10001]
-    CP -->|监督| W
-    W --> CB[CodeBuddy / WorkBuddy]
-    W --> QD[Qoder]
+```
+client ──▶ :9999 ──┬── /v1/*        代理（OpenAI / Anthropic）
+                   ├── /api/admin/* 管理 API
+                   └── /admin       管理台（静态资源）
+                        │
+                        ├── SQLite（账号、凭据密文、遥测、调度状态）
+                        └── 上游：copilot.tencent.com / www.workbuddy.ai
 ```
 
-**Control Plane** 是唯一常驻服务：管理台、SQLite、加密凭据、调度器、备份与 Worker
-监督。**Proxy Worker** 是受管子进程，只监听 loopback，不访问 SQLite，不持有
-Admin Key 或凭据加密主密钥。
+单进程。Python 版本曾是 Control Plane + Proxy Worker 双进程、通过 loopback 上的
+版本化 JSON 快照握手；Go 版合成一个二进制后省掉了握手、快照序列化和第二份解释器。
+
+安全边界靠类型而不是进程隔离：代理处理路径只拿到 `*ProxyPlane`（只暴露 provider 池与
+模型路由），拿不到数据库、Admin Key 或凭据主密钥。凭据只在每次池重建时解密一次。
+
+详见 [docs/design/architecture.md](docs/design/architecture.md)。
 
 ## 快速开始
 
-推荐使用 Docker 运行（见 [Docker 部署](#docker-部署)）。从源码运行需要 Python 3.11+：
-
-```bash
-git clone https://github.com/dmego/qoderbuddy2api.git
-cd qoderbuddy2api
-python3 -m venv .venv
-.venv/bin/pip install -e '.[dev]'
-cp .env.example .env
-chmod 600 .env
-mkdir -p data logs && chmod 700 data logs
+```sh
+# 需要三个密钥；凭据主密钥生成方式：
+python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-生成**三份互不相同**的随机值填入 `.env`：
+```sh
+cat > .env <<'EOF'
+QB2API_PROXY_API_KEY=<客户端用的代理密钥>
+QB2API_ADMIN_KEY=<管理台密钥>
+QB2API_CREDENTIAL_KEY=<上面的 Fernet key>
+QB2API_DATA_DIR=./data
+QB2API_LOG_DIR=./logs
+QB2API_MODEL_CONFIG=./config/models.json
+QB2API_ADMIN_UI_ENABLED=true
+QB2API_ADMIN_COOKIE_SECURE=auto
+EOF
 
-```bash
-python3 -c 'import secrets; print(secrets.token_urlsafe(32))'   # QB2API_PROXY_API_KEY
-python3 -c 'import secrets; print(secrets.token_urlsafe(32))'   # QB2API_ADMIN_KEY
-python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'  # QB2API_CREDENTIAL_KEY
+go run ./cmd/qb2api
 ```
 
-从仓库根目录启动（以便读取 `.env`）：
-
-```bash
-.venv/bin/qb2api --mode control
-```
-
-然后打开 <http://127.0.0.1:9999/admin/>，用 `QB2API_ADMIN_KEY` 登录。Worker 自动启动。
+打开 <http://127.0.0.1:9999/admin>，用 `QB2API_ADMIN_KEY` 登录，在「账号」页导入凭据。
 
 ## Docker 部署
 
-官方镜像在每次打发布 tag 与每次推送 `main` 时自动构建并推送到 GHCR，
-同时支持 `linux/amd64` 与 `linux/arm64`：
-
-```text
-ghcr.io/dmego/qoderbuddy2api:1.0.0   # 发布版（固定版本）
-ghcr.io/dmego/qoderbuddy2api:latest  # 最新发布版
-ghcr.io/dmego/qoderbuddy2api:edge    # main 滚动构建
+```sh
+docker compose -f go-deploy/docker-compose.go.yml up -d --build
 ```
 
-### docker-compose（推荐）
+镜像基于 Alpine，单静态二进制，约 37 MB。数据、日志、模型配置以 volume 挂载。
 
-使用仓库根目录的 [`docker-compose.yml`](docker-compose.yml)：
+### 从 Python 版本切换
 
-```bash
-git clone https://github.com/dmego/qoderbuddy2api.git
-cd qoderbuddy2api
-cp .env.example .env
-chmod 600 .env
-# 填入 QB2API_PROXY_API_KEY / QB2API_ADMIN_KEY / QB2API_CREDENTIAL_KEY
-docker compose up -d
+```sh
+cd go-deploy
+./switch-to-go.sh --dry-run   # 预演：只打印将要执行的动作
+./switch-to-go.sh             # 交互确认后执行
+./switch-to-go.sh --yes       # 无人值守
 ```
 
-端口与数据外挂：
+脚本会停止 Python 服务、把 Go 服务移到 9999、重启并验证（`/health`、`/admin`、
+`/v1/models`、账号数，以及一次真实的 `deepseek-v4.1-flash` 流式调用），
+任何一步失败会自动回滚。详见 [go-deploy/README.md](go-deploy/README.md)。
 
-| 项 | 值 | 说明 |
-| --- | --- | --- |
-| Control Plane / 统一 `/v1` | `9999` | 唯一对外端口；管理台在 `/admin` |
-| Proxy Worker | `10001` | 容器内 loopback，永不对外发布 |
-| `./data` | → `/data` | SQLite、`worker.internal`、备份 |
-| `./logs` | → `/logs` | 请求 / 服务日志 |
-| `./config` | → `/config` | 模型目录 `models.json` |
-| `.env` | → 容器环境变量 | 完整配置原样传入 |
-
-Worker 内部 token 首次启动自动生成到 `./data/worker.internal`（0600）。
-`restart: unless-stopped` 保证宿主机重启后自动拉起；仅暴露 9999，
-loopback Worker 留在容器内。
-
-### 直接 docker run
-
-```bash
-docker run -d --name qb2api-control \
-  --env-file .env \
-  -e QB2API_CONTROL_HOST=0.0.0.0 \
-  -e QB2API_DATA_DIR=/data \
-  -e QB2API_LOG_DIR=/logs \
-  -e QB2API_MODEL_CONFIG=/config/models.json \
-  -p 9999:9999 \
-  -v "$PWD/data:/data" \
-  -v "$PWD/logs:/logs" \
-  -v "$PWD/config:/config" \
-  --restart unless-stopped \
-  ghcr.io/dmego/qoderbuddy2api:latest
-```
-
-> 注意：容器内 `QB2API_CONTROL_HOST` 必须为 `0.0.0.0`，发布端口才能生效。
+**数据可直接沿用**：Go 的 Fernet 实现与 Python `cryptography` 字节兼容，
+指向既有 `qb2api.sqlite3` 即可，**不需要重新登录**。
 
 ## 客户端接入
 
-任意 OpenAI / Anthropic 兼容客户端指向统一入口：
-
-```text
-Base URL: http://127.0.0.1:9999/v1
-API Key:  QB2API_PROXY_API_KEY
-```
-
-```bash
-curl http://127.0.0.1:9999/v1/chat/completions \
+```sh
+# OpenAI 兼容
+curl -N http://127.0.0.1:9999/v1/chat/completions \
   -H "Authorization: Bearer $QB2API_PROXY_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": "你好"}]}'
+  -H 'Content-Type: application/json' \
+  -d '{"model":"deepseek-v4.1-flash","stream":true,
+       "messages":[{"role":"system","content":"You are a helpful assistant."},
+                   {"role":"user","content":"你好"}]}'
 ```
 
-模型 ID 为统一小写规范名（如 `deepseek-v4-flash`、`glm-5.2`、`qwen3.7-max`）；
-共有模型只暴露一个条目，请求在内部按提供商路由。管理台
-`http://127.0.0.1:9999/admin/` 可导入账号、从上游同步模型目录、执行签到与成长自动化。
+```sh
+# Anthropic 兼容
+curl http://127.0.0.1:9999/v1/messages \
+  -H "Authorization: Bearer $QB2API_PROXY_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"deepseek-v4.1-flash","max_tokens":256,
+       "messages":[{"role":"user","content":"你好"}]}'
+```
+
+可用模型：`curl http://127.0.0.1:9999/v1/models`。
 
 ## 文档
 
-| 文档 | 内容 |
-| --- | --- |
-| [配置指南](docs/configuration.md) | 密钥、`.env` 参考、远程访问、客户端示例 |
-| [架构设计](docs/design/architecture.md) | 系统架构与安全模型 |
+- [配置指南](docs/configuration.md) — 全部环境变量与远程访问配置
+- [系统架构](docs/design/architecture.md) — 组件、安全模型、数据模型、路由
+- [部署与切换](go-deploy/README.md) — compose、切换脚本、回滚
+- [实现说明](docs/implementation-notes.md) — 存储兼容、时间戳格式、写盘策略、百分位口径
+- [开发说明](CLAUDE.md) — 常用命令与关键不变量
 
-## 开发验证
+## 开发
 
-```bash
-pytest -q
-ruff check src tests
-python -m compileall -q src/qb2api
-cd frontend && npm run test && npm run typecheck && npm run lint && npm run build
-git diff --check
+```sh
+export GOPROXY=https://goproxy.cn,direct
+go vet ./... && go test ./...
+cd frontend && npm install --registry=https://registry.npmmirror.com && npm test && npm run build
 ```
+
+前端构建输出到仓库根 `web/dist`，由 Go 服务同源托管。
 
 ## 许可证
 
-MIT — 见 [LICENSE](LICENSE)。
+[MIT](LICENSE)

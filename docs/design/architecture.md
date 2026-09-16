@@ -6,35 +6,38 @@
 ## 1. 概述
 
 qoderbuddy2api 是一个运行在自托管主机（本机 / 私有服务器）的**多账号模型网关与运维控制台**：
-把 CodeBuddy 与 Qoder 的多个账号收敛为一个 OpenAI / Anthropic 兼容入口，并提供账号、
-凭据、签到、成长中心自动化、用量与积分的统一管理面。
+把 WorkBuddy（国内 `codebuddy`）与 WorkBuddy 国际版（`workbuddy_intl`）的多个账号
+收敛为一个 OpenAI / Anthropic 兼容入口，并提供账号、凭据、签到、成长中心自动化、
+用量与积分的统一管理面。
 
-系统由两个进程组成：
+**单进程、单二进制**（Go）：
 
 ```text
 Browser (admin) ──┐
-CLI clients (/v1) ┴──> Control Plane :9999
-                        ├─ Admin UI / Admin API / SQLite / 调度器 / 备份 / Supervisor
-                        └─ /v1/* 转发 ──> Proxy Worker 127.0.0.1:10001
-                                              └─ CodeBuddy / WorkBuddy / Qoder 上游
+CLI clients (/v1) ┴──> qb2api :9999
+                        ├─ 代理：OpenAI / Anthropic 兼容路由
+                        ├─ 管理 API / 管理台 SPA
+                        ├─ SQLite（账号、凭据密文、遥测、调度状态）
+                        └─ 调度器（签到 / 成长 / 指标 / 用量聚合 / 凭据轮换）
+                              └─ 上游：copilot.tencent.com / www.workbuddy.ai
 ```
 
-- **Control Plane** 是唯一常驻服务：管理台、管理 API、SQLite、凭据加密、调度器、
-  备份和 Worker 监督。即使 Worker 停止，管理面仍可用。
-- **Proxy Worker** 是 Control Plane 的受管子进程，仅监听 loopback，处理 OpenAI /
-  Anthropic 兼容模型请求，不访问 SQLite，不持有 Admin Key 与凭据加密主密钥。
+早期 Python 版本是 Control Plane + 受管 Proxy Worker 双进程，通过 loopback 上的
+版本化 JSON 快照握手；Go 版把两个面合成一个进程，省掉了握手、快照序列化和第二份解释器
+（实测常驻内存 322 MB → 25 MB）。
 
-客户端只配置一个地址：`http://127.0.0.1:9999/v1`（OpenAI base URL 与 Anthropic
-Messages 均在此），Control Plane 将 `/v1/*` 原样转发给 Worker。
+安全边界不靠进程隔离，而靠**类型**：代理处理路径只拿到 `*ProxyPlane`，它只暴露
+provider 池与模型路由，拿不到数据库、Admin Key 或凭据主密钥。凭据只在每次池重建时
+解密一次，以不透明的 bearer 串交给 provider。
 
 ## 2. 核心设计决策
 
 | 决策 | 结论 |
 | --- | --- |
-| 进程形态 | Python/FastAPI 常驻 Control Plane + 独立受控 Proxy Worker，不重写上游客户端 |
-| 对外入口 | 统一单端口 `9999`：`/admin`、`/api/admin/*` 由 Control Plane 处理，`/v1/*` 转发 Worker |
+| 进程形态 | Go 单进程、单静态二进制，代理与管理面同进程 |
+| 对外入口 | 统一单端口 `9999`：`/admin`、`/api/admin/*`、`/v1/*` 均由同一进程处理 |
 | 凭据分离 | `QB2API_PROXY_API_KEY`（代理）、`QB2API_ADMIN_KEY`（管理）、`QB2API_CREDENTIAL_KEY`（静态加密）三值互不相同 |
-| Worker 边界 | 只监听 loopback，不打开 SQLite，不经手管理密钥 |
+| 代理边界 | 代理处理路径只持有 `*ProxyPlane`（provider 池 + 路由），不打开 SQLite、不经手管理密钥 |
 | 持久化 | SQLite 单写者；凭据字段用 `cryptography` Fernet 加密，版本化 CAS 写入 |
 | 模型路由 | 统一模型目录 + 账号级轮询池，首个下游 chunk 前故障转移，输出后绝不跨账号重试 |
 | 调度 | 进程内多调度器（签到 / 成长 / 指标 / 模型同步 / 用量聚合），账号间失败隔离 |
@@ -46,9 +49,10 @@ Messages 均在此），Control Plane 将 `/v1/*` 原样转发给 Worker。
 
 | 组件 | 职责 | 不负责 |
 | --- | --- | --- |
-| `ControlPlaneApp` | 管理 API、SPA、SQLite、凭据、审计、调度、Supervisor | 处理模型请求、直接代理上游 |
-| `ProxyWorkerApp` | OpenAI/Anthropic 兼容 API、Provider Pool、请求遥测、模型快照 | 修改账号/凭据、签到、启动其他进程 |
-| `ServiceSupervisor` | 校验 Worker 命令、启停/重启/健康检查、PID/进程组保护、内部 token 轮换 | 持有上游凭据、代理请求 |
+| `internal/server` | HTTP 面、管理端鉴权与 CSRF、调度器装配 | 直接实现模型协议细节 |
+| `internal/providers` | 上游客户端、账号池、跨 provider 路由、冷却与配额封锁 | 访问 SQLite、签发凭据 |
+| `internal/store` | SQLite schema/迁移、各表仓储、遥测批写 | 解密凭据、发起上游请求 |
+| `internal/vault` | Fernet 兼容的凭据加解密与指纹 | 向 UI 返回明文 |
 | `AccountRegistry` | 账号元数据、purpose 状态、能力摘要、动态快照 | 直接发上游 HTTP |
 | `CredentialVault` | 加密保存/读取 Secret、版本化、原子更新 | 向 UI 返回 Secret |
 | `CredentialResolver` | 按 provider/account/purpose 解析临时凭据、单飞 refresh | 返回凭据给浏览器 |
@@ -56,27 +60,23 @@ Messages 均在此），Control Plane 将 `/v1/*` 原样转发给 Worker。
 | `CheckinService` / `GrowthAutomation` | 签到与成长中心自动化执行、分类、落库、账号隔离 | 计算调度时间 |
 | 调度器家族 | 时区窗口、批次锁、生命周期、补跑 | 构造上游 HTTP 请求 |
 
-### 3.1 Worker 生命周期
+### 3.1 进程模型
 
-Supervisor 以 PID、启动时间、owner 与内部 token 校验 Worker，禁止按端口盲杀：
+单进程，无子进程监督。启动顺序：加载配置 → 打开 SQLite 并迁移 → 建凭据 vault →
+构建 provider 池（解密一次凭据）→ 启动调度器 → 开始监听。
 
-```text
-STOPPED -> STARTING -> RUNNING(HEALTHY/DEGRADED/FAILED) -> DRAINING -> STOPPED
-```
+- 收到 `SIGINT`/`SIGTERM` 后：停止调度器 → 停止接收新请求（20 秒优雅期）→
+  刷写遥测批 → `wal_checkpoint(TRUNCATE)`。
+- 凭据只在池重建时解密。重建由管理端变更（导入/轮换/启停账号、改路由策略）触发。
+- 调度器各自独立循环，单账号失败不影响其他账号，也不影响代理面。
 
-- 停止前按 `PROVIDER_DRAIN_TIMEOUT_SECONDS` 排空活动请求，再发送已校验的 `SIGTERM`；
-  超过 `QB2API_WORKER_SHUTDOWN_TIMEOUT_SECONDS` 才发送已校验的 `SIGKILL`。
-- Control Plane 重启会停止 Worker 并撤销全部管理会话（预期安全语义）。
-- Worker 的 `/internal/*` 只接受 loopback 与内部 token，不可对 LAN 暴露，
-  也不能用 Admin/Proxy Key 代替内部 token。
-
-### 3.2 统一入口
+### 3.2 单一监听端口
 
 ```text
-/v1/*           转发到 Worker（模型请求，Bearer Proxy Key）
-/api/admin/*    管理 API（Bearer Admin Key / 会话）
-/admin          前端 SPA
-/health         存活探针
+/v1/*           代理（模型请求，Bearer Proxy Key）
+/api/admin/*    管理 API（Bearer Admin Key / 会话 Cookie + CSRF）
+/admin          管理台 SPA（同源静态资源）
+/health /version 公开探针
 ```
 
 模型请求只携带 Proxy Key；管理面与代理面是两把独立密钥，互不通用。
@@ -109,8 +109,7 @@ STOPPED -> STARTING -> RUNNING(HEALTHY/DEGRADED/FAILED) -> DRAINING -> STOPPED
 ### 4.3 凭据加密与文件权限
 
 - 持久凭据以 Fernet 加密写入 SQLite，加密密钥来自 `QB2API_CREDENTIAL_KEY`。
-- 数据目录、日志目录收紧为 `0700`，SQLite / `worker.internal` / 备份文件为 `0600`。
-- `worker.internal` 自动生成 256-bit 内部 token，Worker 重启时递增 auth version。
+- 数据目录、日志目录收紧为 `0700`，SQLite 与备份文件为 `0600`。
 - 原始 token、Cookie、Authorization、prompt/completion 不得写入日志、审计、SQLite、
   前端持久化或提交记录。
 
@@ -141,8 +140,8 @@ SQLite（`data/qb2api.sqlite3`，schema 版本 7）主要表：
 ### 5.1 账号模型
 
 账号以 `(provider, account_id)` 唯一标识；每个账号按用途（`chat`、`checkin`）维护独立
-凭据、状态与能力。CodeBuddy 的 chat 与 WorkBuddy 签到可复用同一账号 ID，但凭据与
-状态域相互独立。Qoder chat（PAT/COSY）与签到（access/refresh）是两套不同凭据。
+凭据、状态与能力。国内 `codebuddy` 的 chat 与签到复用同一账号 ID，但凭据与状态域
+相互独立；国际版 `workbuddy_intl` 只有 chat（无签到与成长中心）。
 
 ### 5.2 凭据版本化
 
@@ -153,13 +152,12 @@ SQLite（`data/qb2api.sqlite3`，schema 版本 7）主要表：
 
 ### 6.1 统一模型目录
 
-- 对外只暴露规范小写 ID（如 `deepseek-v4-flash`、`glm-5.2`、`qwen3.7-max`），
-  不带 `provider/` 前缀；两端共有模型合并为单一条目。
-- Qoder 模型列表唯一事实源为 `model_catalog` 表（`source=upstream`），由
-  ModelSyncScheduler 每 6 小时从官方接口同步（`QB2API_MODEL_SYNC_ENABLED` /
-  `QB2API_MODEL_SYNC_INTERVAL_SECONDS`），有变化自动 reload Worker。
-- 旧前缀 ID（`codebuddy/glm-5.2`）与旧裸上游 ID（`DeepSeek-V4-Flash`）仍可解析
-  （deprecated 兼容），但不再列出。
+- 对外只暴露规范小写 ID（如 `deepseek-v4.1-flash`、`glm-5.2`），不带 `provider/`
+  前缀；两个 provider 共有的模型合并为单一条目，内部按路由策略轮询。
+- 模型定义来自 `config/models.json`，`model_catalog` 表记录管理台的启停状态；
+  定义文件的变更由管理台「刷新目录」写入并立即重建运行时。
+- 旧前缀 ID（`codebuddy/glm-5.2`）与上游裸 ID 仍可解析（deprecated 兼容），
+  但不再列出。
 
 ### 6.2 账号池与故障转移
 
@@ -181,10 +179,11 @@ reasoning 内容默认剥离，可通过开关透传。
 | CheckinScheduler | `checkin.at`（如 10:30）+ 时区 | 每日签到批次、catch-up 窗口、抖动 |
 | GrowthScheduler | 每 30 分钟（最小 10 分钟） | 成长中心自动化：任务/抽奖/旅行/兑换/Buddy/登录 |
 | MetricsScheduler | 每 15 分钟 | 配额/积分快照采集 |
-| ModelSyncScheduler | 每 6 小时 | Qoder 上游模型目录同步 |
 | UsageRollup | 每 60 秒 | 请求明细聚合到趋势桶 |
 
-调度器在 Control Plane 进程内运行，按账号串行执行，单账号失败不阻断其他账号。
+调度器在同一进程内运行，按账号串行执行，单账号失败不阻断其他账号。
+另有凭据轮换循环：按 `QB2API_CREDENTIAL_REFRESH_LEAD_SECONDS` 提前刷新即将到期的
+短效 token（目前只有 `workbuddy_intl` 有刷新契约；国内凭据无刷新端点，到期前只告警）。
 
 ### 7.2 签到
 
@@ -240,8 +239,8 @@ Vue 3 + TypeScript + Vite + Pinia + Vue Router + TanStack Vue Query + ECharts，
 
 ## 9. 可观测性与治理
 
-- 请求遥测：Worker 记录脱敏请求事件（模型、状态、延迟、token），Control 聚合成
-  用量趋势桶，支持 CSV 导出。
+- 请求遥测：记录脱敏请求事件（模型、状态、首字耗时、总耗时、token），聚合成
+  用量趋势桶，支持 CSV 导出。事件按批写入，写盘失败只计数不重试，绝不影响代理请求。
 - 指标快照：周期性采集账号配额/积分，保留历史窗口（可配置）。
 - 审计：管理操作全部记录 `audit_events`。
 - 备份：SQLite 在线备份 + restore dry-run（checksum / integrity / schema 校验）；

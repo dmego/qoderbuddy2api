@@ -1,14 +1,22 @@
-.venv/
+# Build context exclusions for the Go image.
 .git/
 .worktrees/
 .claude/
+.venv/
+
+# Runtime state: never bake data or logs into the image.
 data/
 logs/
 *.sqlite3*
 *.log
 nohup.out
+
+# Tooling caches.
 .pytest_cache/
 .ruff_cache/
 node_modules/
 frontend/node_modules/
 frontend/test-results/
+
+# Local deployment scratch (switch logs and config backups).
+go-deploy/switch-*/

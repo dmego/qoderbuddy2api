@@ -35,7 +35,10 @@ docker compose -f ~/docker-space/qoderbuddy2api-go/docker-compose.go.yml down
 # then restore the two files from switch-backup-<timestamp>/
 ```
 
-## Running both side by side (pre-switch layout)
+## Running side by side (pre-switch layout)
+
+Use a free port other than 9999 for the second instance; the compose file ships
+with 9999 because that is the production port after the switch.
 
 ## 1. Seed the Go data copy from the live database
 

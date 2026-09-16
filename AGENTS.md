@@ -42,10 +42,10 @@
 - 每个大型任务完成后运行一次任务级聚合验证。
 - 多个大型任务合并后运行一次 Wave 级完整门禁，而不是对每个 cherry-pick 重复跑完整套件。
 - Wave 级门禁通常包括：
-  - Python full suite；
-  - Ruff 和 compileall；
-  - 前端 test、typecheck、lint、build；
-  - 必要的真实双进程、迁移、重启恢复或浏览器 smoke；
+  - Go full suite（`go test ./...`）；
+  - `go vet ./...` 与 `gofmt -l cmd internal` 为空；
+  - 前端 test、typecheck、build；
+  - 必要的真实上游调用、数据迁移、重启恢复或浏览器 smoke；
   - `git diff --check`。
 - 没有实际验证证据不能声称通过，但允许明确标记“代码完成，等待 Wave 集成验证”。
 - 外部账号、真实 Windows、真实上游或其他当前环境无法验证的行为必须如实标记，不为此阻塞其他可完成工作。
@@ -81,12 +81,15 @@
 - 流式响应只允许在第一个下游 chunk 之前 refresh / failover；输出后禁止跨账号重试。
 - 数据库 mutation、migration、备份恢复和凭据轮换必须保留数据安全与失败恢复语义。
 - 前端必须是功能完整的管理台，不以“简约演示页”代替真实管理能力；主要功能应能在 UI 中配置、执行并观察结果。
+- 代理请求路径不得读取 SQLite、Admin Key 或凭据主密钥；凭据只在池重建时解密一次。
 - 最终任务必须清理废弃代码、旧前端构建、无用兼容层和过时文档，并同步实际部署、配置和运维说明。
 
 ## 9. 环境与命令
 
 - 本机 shell 命令使用 `rtk` 前缀。
+- Go 依赖拉取需 `GOPROXY=https://goproxy.cn,direct`（proxy.golang.org 不可达）。
 - 前端依赖安装使用阿里镜像：`--registry=https://registry.npmmirror.com`。
+- 本地 curl 需 `--noproxy '*'` 并先 `unset http_proxy https_proxy`，否则 127.0.0.1 请求会被系统代理劫持。
 - 保留用户已有改动，不使用 `git reset --hard`、破坏性 checkout 或未经授权的删除。
 - 未经用户明确要求，不 push、不创建 PR、不改写远程历史。
 

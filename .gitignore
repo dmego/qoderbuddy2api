@@ -1,29 +1,44 @@
+# Build artifacts
+dist/
+build/
+*.exe
+qb2api
+
+# Python-era caches (kept so a stale checkout stays clean)
 __pycache__/
 *.pyc
 *.pyo
 .venv/
-dist/
-build/
-.env
-logs/
-*.log
-*.egg-info/
 .pytest_cache/
 .ruff_cache/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+creds/
+
+# Runtime state: never commit a database or request log
+data/
+logs/
+*.sqlite3
+*.sqlite3-*
+*.log
 nohup.out
+
+# Local deployment scratch
+go-deploy/switch-*/
+go-deploy/*.log
+
+node_modules/
+frontend/node_modules/
+frontend/test-results/
+
 .DS_Store
 .worktrees/
 .claude/
-*.lock
-data/
-creds/
-*.sqlite3
-*.sqlite3-*
-*/node_modules/
-frontend/test-results/
-docs/analysis/archive/
 
-# The admin console is built and served as same-origin Control Plane assets.
+# The admin console is built from frontend/ and committed as served assets.
 !frontend/package-lock.json
-!src/qb2api/web/dist/
-!src/qb2api/web/dist/**
+!web/dist/
+!web/dist/**

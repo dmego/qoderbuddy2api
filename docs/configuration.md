@@ -40,13 +40,15 @@ mkdir -p data logs && chmod 700 data logs
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `QB2API_MODE` | `control` | 常驻进程模式；不要为 Worker 单独建服务 |
-| `QB2API_CONTROL_HOST` / `PORT` | `127.0.0.1` / `9999` | Control Plane 监听地址 |
-| `QB2API_WORKER_HOST` / `PORT` | `127.0.0.1` / `10001` | Proxy Worker 监听地址（仅 loopback） |
-| `QB2API_WORKER_AUTOSTART` | `true` | Control 启动时自动拉起 Worker |
-| `QB2API_WORKER_INTERNAL_TOKEN` | 自动生成 | 留空会在 `data/worker.internal`（0600）生成；不能复用其他 key |
+| `QB2API_HOST` / `PORT` | `0.0.0.0` / `9999` | 监听地址。单进程同时提供代理、管理 API 与管理台 |
 | `QB2API_DATA_DIR` / `LOG_DIR` | `./data` / `./logs` | SQLite、备份、日志目录（运行用户独占） |
 | `QB2API_MODEL_CONFIG` | `./config/models.json` | 模型配置路径 |
+| `QB2API_WEB_DIR` | 自动探测 | 管理台静态资源目录；默认取可执行文件旁的 `web/dist` |
+| `QB2API_EVENT_FLUSH_MILLIS` | `250` | 遥测批写窗口（毫秒）。调大 = 更少、更大的写事务 |
+| `QB2API_EVENT_FLUSH_MAX` | `200` | 单批事件上限，达到即立即刷写 |
+
+> `QB2API_CONTROL_PORT` / `QB2API_WORKER_PORT` / `QB2API_MODE` 等双进程时代的变量仍会被读取，
+> 便于沿用旧 `.env`，但单进程下只有 `QB2API_PORT` 决定实际监听端口。
 
 ### 管理台与远程访问
 
@@ -62,73 +64,20 @@ mkdir -p data logs && chmod 700 data logs
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `CODEBUDDY_TOKEN` / `QODER_TOKEN` / `WORKBUDDY_INTL_TOKEN` / `ORCATERM_TOKEN` | 空 | 旧式静态 token（transient chat slot）；长期账号请在管理台导入 |
+| `CODEBUDDY_TOKEN` / `WORKBUDDY_INTL_TOKEN` | 空 | 旧式静态 token（transient chat slot）；长期账号请在管理台导入 |
 | `WORKBUDDY_INTL_ENDPOINT` | `https://www.workbuddy.ai` | WorkBuddy 国际版入口 |
 | `WORKBUDDY_INTL_OAUTH_ENABLED` | `true` | 是否允许管理台发起国际版浏览器登录 |
 | `WORKBUDDY_INTL_CREDITS_PATH` | `/billing/meter/get-user-resource` | 国际版积分查询路径 |
 | `QB2API_INTL_DEFAULT_REASONING_EFFORT` | `low` | 客户端未传 `reasoning_effort` 时注入的档位 |
-| `ORCATERM_ENDPOINT` | `https://lightai.cloud.tencent.com` | OrcaTerm lightai 后端入口 |
-| `ORCATERM_USER_ID` | 空 | 会话 ID 使用的上游用户号（token 内的 `userId`） |
-| `ORCATERM_TIMEOUT` | `300` | OrcaTerm 请求超时（秒） |
-| `QB2API_MODEL_SYNC_ENABLED` | `true` | Qoder 上游模型目录自动同步 |
-| `QB2API_MODEL_SYNC_INTERVAL_SECONDS` | `21600` | 同步间隔（秒） |
-| `QB2API_CREDENTIAL_REFRESH_ENABLED` | `true` | 短效凭据（OrcaTerm）主动轮换 |
+| `QB2API_CREDENTIAL_REFRESH_ENABLED` | `true` | 短效凭据主动轮换 |
 | `QB2API_CREDENTIAL_REFRESH_INTERVAL_SECONDS` | `900` | 轮换扫描间隔（秒） |
 | `QB2API_CREDENTIAL_REFRESH_LEAD_SECONDS` | `1800` | 提前多久轮换（秒） |
 | `CHECKIN_ENABLED` | `false` | 全局签到调度开关（也可在管理台设置） |
 | `CHECKIN_AT` / `CHECKIN_TIMEZONE` | `00:10` / `Asia/Shanghai` | 每日签到时间与时区 |
-| `GROWTH_AUTO_ACTIVE_DAY_RECHECKIN` | `true` | 活跃日未点亮时先补一次签到再走 ACP；已签到则跳过。按本地日期格子而非官方 `today` 判断，避免 UTC 日界线误判 |
+| `GROWTH_AUTO_ACTIVE_DAY` | `true` | 活跃日自动化开关；由成长调度器每日执行一次正式对话点亮 |
 
 其余签到/指标/用量变量见 `.env.example` 内注释；管理台「设置」页可持久化运行时配置
 （签到时间、成长自动化开关、兑换档位等），优先级高于启动默认值。
-
-### WorkBuddy 国际版（www.workbuddy.ai）
-
-国际版与国内版共用 `/v2/chat/completions` 协议，但属于**独立提供商** `workbuddy_intl`：
-独立域名、独立登录、独立积分接口，并且**没有签到与成长中心**（因此它的账号只有
-`chat` 用途，不会出现在签到/成长页面）。
-
-- **免费额度只覆盖三个模型**：`hy4-preview`、`hy3`、`deepseek-v4.1-flash`。
-  其余模型既不可用也不做上游探测，`config/models.json` 的 `workbuddy_intl` 段
-  即为唯一事实源；管理台「从上游同步」对国际版不生效。
-- **登录**：管理台「添加账号 → WorkBuddy 国际版」发起 plugin OAuth，在浏览器完成登录后
-  自动回收凭据；也可直接粘贴 Bearer Token 手动导入。访问令牌有效期约一年，
-  到期前 Control Plane 会用 `X-Refresh-Token` 自动轮换。
-- **积分监控**：与国内版同一套 `/billing/meter/get-user-resource` 响应结构，
-  按账号写入 `points` 快照，在「积分」页与国内账号一起展示。
-- 国际版首个上游消息**必须是 system**，且拒绝 OpenAI 的 `developer` 角色；
-  代理层会自动补一条 system 消息并把 `developer` 折叠为 `system`。
-
-### OrcaTerm（腾讯云 lightai agent 后端）
-
-OrcaTerm 是**独立提供商** `orcaterm`，与腾讯云 OrcaTerm 桌面版 AI 助手共用后端
-（`https://lightai.cloud.tencent.com`），同样是**聊天专用**：账号只有 `chat` 用途，
-没有签到与成长中心。
-
-- **免费额度覆盖八个模型**：`hy4-preview`、`hy3`、`kimi-k3`、`glm-5.3`、
-  `glm-5.3-flash`、`glm-5.2`、`deepseek-v4-flash`、`deepseek-v4-pro`。
-  上游模型 ID 为 `<Provider>/<model>` 形式（如 `TokenHub/glm-5.3`、
-  `Hunyuan3/hy4-preview`），由 `config/models.json` 的 `metadata.upstream_id`
-  声明，管理台与 `/v1/models` 只暴露统一的短 ID。
-- **登录**：管理台「添加账号 → OrcaTerm」点「浏览器登录」，在腾讯云完成登录即可——
-  Control Plane 用发起流程时生成的会话 id 轮询 `OAuthExchangeToken` 换取凭据，所以
-  发起页要保持打开（导入完成后可关闭）。授权 URL 必须带 `source=desktop`：控制台只在
-  desktop 通道把登录绑定到会话 id，web 通道既不生成也不回传该 id，会导致轮询永远停在
-  未完成状态。也可展开「手动输入 Bearer Token」粘贴桌面版
-  OrcaTerm 的 OAuth Token（桌面 App 数据目录
-  `~/Library/Application Support/com.orcaterm-desktop.app/data.bin` 里的
-  `oauth_access_token`），或用 `ORCATERM_TOKEN` 环境变量注入。
-  **Token 约 2 小时过期**，但 Control Plane 会主动轮换：OrcaTerm 的
-  `OAuthRefreshToken` 用当前 access token 自身换新 token（没有独立的 refresh
-  token），因此只要在过期前刷新就能一直续下去，账号 ID 不变。调度器每 15 分钟扫描
-  一次，对 30 分钟内到期的凭据强制轮换并 reload Worker，无需人工干预。轮换失败
-  （token 已过期，上游返回 `TOKEN_EXPIRED`）才会退化为重新登录/导入。
-- **协议差异**：OrcaTerm 不是裸补全接口，而是 agent 接口——代理层会先注册会话
-  （`/assistant/conversation`）再流式对话（`/assistant/chat`），并把 agent 返回的
-  JSON（`taskCompletion` / `thinking`）拆成标准的 `content` 与 `reasoning_content`。
-  对话历史以 `historyMessages` 形式携带，system 消息会被折叠进历史。
-- **上游限速**：上游对 `chat-rpm` 有限制，代理层把 429 归类为配额错误并交由
-  路由层故障转移；建议不要把 `orcaterm` 单独设为一个模型的唯一路由。
 
 ### 按模型的提供商路由权重
 
@@ -143,8 +92,11 @@ OrcaTerm 是**独立提供商** `orcaterm`，与腾讯云 OrcaTerm 桌面版 AI 
 
 典型配置：给 `deepseek-v4.1-flash` 的 `workbuddy_intl` 设 `priority=0`、
 `codebuddy` 设 `priority=1`，即国际版免费额度优先，请求失败再回落国内账号。
-未配置策略的模型保持默认行为（同梯队等权重轮询）。策略随运行快照下发到 Worker，
-修改后立即生效，无需重启。
+未配置策略的模型保持默认行为（同梯队等权重轮询）。修改后立即生效，无需重启。
+
+注意两条路线的**有效上下文上限不同**：国际版上游把上下文窗口按
+`prompt_tokens + min(max_tokens, 384000) ≤ 1048576` 判定，因此有效输入上限约 664K；
+国内路线不套用该规则，同批请求可到 780K 以上。
 
 ## 3. 统一入口与端口
 

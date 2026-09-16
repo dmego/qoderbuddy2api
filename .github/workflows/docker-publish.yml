@@ -24,20 +24,24 @@ env:
 
 jobs:
   test:
-    name: Lint and test
+    name: Vet and test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-go@v5
         with:
-          python-version: "3.12"
-          cache: pip
-      - name: Install
-        run: pip install -e ".[dev]"
-      - name: Ruff
-        run: ruff check src tests
-      - name: Pytest
-        run: pytest -q
+          go-version-file: go.mod
+          cache: true
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l cmd internal)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt required for:"; echo "$unformatted"; exit 1
+          fi
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./...
 
   build:
     name: Build and push image
@@ -51,17 +55,21 @@ jobs:
 
       - name: Resolve version
         id: version
+        # 版本号唯一来源：控制台 /version 返回的 server.Version。
         run: |
-          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)
+          VERSION=$(sed -n 's/.*Version = "\(.*\)"/\1/p' internal/server/server.go)
+          if [ -z "$VERSION" ]; then
+            echo "::error::cannot read server.Version from internal/server/server.go"; exit 1
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      # tag 与 pyproject 版本一致性校验（手工发版防错位）
-      - name: Verify tag matches pyproject version
+      # tag 与代码内版本一致性校验（手工发版防错位）
+      - name: Verify tag matches server version
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
           if [ "${TAG#v}" != "${{ steps.version.outputs.version }}" ]; then
-            echo "::error::tag $TAG does not match pyproject version ${{ steps.version.outputs.version }}"
+            echo "::error::tag $TAG does not match server version ${{ steps.version.outputs.version }}"
             exit 1
           fi
 

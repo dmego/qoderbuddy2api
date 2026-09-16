@@ -12,7 +12,7 @@ export default defineConfig(({ mode }) => ({
     },
   },
   build: {
-    outDir: "../src/qb2api/web/dist",
+    outDir: "../web/dist",
     emptyOutDir: true,
     sourcemap: mode === "debug",
     rollupOptions: {

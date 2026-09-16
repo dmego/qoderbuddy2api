@@ -1,12 +1,13 @@
 # qoderbuddy2api — Go rewrite, runs ALONGSIDE the Python deployment.
 #
 # Deliberately separate from docker-compose.yml so both stacks can run at once:
-#   * distinct container name, distinct host port (9997 vs 9999)
+#   * the service listens on 9999, same as the Python build it replaces
 #
-# Port note: 9998 was the first choice but is already bound on this host by an
-# unrelated service (homework/rca-resarch-net/tools/net_sync.py, listening on
-# 0.0.0.0:9998), which shadowed the container because a specific-address bind
-# wins over a wildcard bind for the same port. 9997 was verified free.
+# Port history: 9998 is bound on this host by an unrelated service
+# (homework/rca-resarch-net/tools/net_sync.py, listening on 0.0.0.0:9998), which
+# shadows a container published on the same port because a specific-address bind
+# wins over a wildcard one. A side-by-side run therefore used 9997; once the
+# Python service stopped, the Go build took over 9999.
 #   * its own data copy, so the Go build's schema additions and history
 #     compaction cannot affect the running Python instance
 #   * same credential vault key, so the copied database's encrypted credentials
@@ -19,10 +20,10 @@ name: qb2api-go
 services:
   qb2api-go:
     build:
-      # Context is the repository root: Dockerfile.go needs both gobackend/ and
-      # src/qb2api/web/dist (the prebuilt admin console).
+      # Context is the repository root: the Dockerfile needs cmd/, internal/ and
+      # the prebuilt admin console in web/dist.
       context: /Users/dmego/vibeCoding/qoderbuddy2api
-      dockerfile: /Users/dmego/vibeCoding/qoderbuddy2api/Dockerfile.go
+      dockerfile: /Users/dmego/vibeCoding/qoderbuddy2api/Dockerfile
       args:
         GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
     image: qb2api-go:local
@@ -35,16 +36,16 @@ services:
       # The Go build serves the proxy and the console from one process, so every
       # listener is reachable from the host on the single mapped port.
       QB2API_HOST: 0.0.0.0
-      QB2API_PORT: "9997"
+      QB2API_PORT: "9999"
       QB2API_CONTROL_HOST: 0.0.0.0
-      QB2API_CONTROL_PORT: "9997"
+      QB2API_CONTROL_PORT: "9999"
       # Container-internal paths (the .env uses relative host paths).
       QB2API_DATA_DIR: /data
       QB2API_LOG_DIR: /logs
       QB2API_MODEL_CONFIG: /config/models.json
       QB2API_WEB_DIR: /app/web/dist
     ports:
-      - "9997:9997"
+      - "9999:9999"
     volumes:
       - ./go-data:/data
       - ./go-logs:/logs
