@@ -96,6 +96,18 @@ internal/server       HTTP surface, admin auth, schedulers wiring
 `latency_ms`。控制台按 `started_at` 排序与分桶，所以跨越整分钟的请求不会被记到
 它结束的那一分钟里。
 
+## 思考档位（reasoning_effort）优先级
+
+**客户端传了就用客户端的**；只有客户端没传时才注入各 provider 的默认值
+（`QB2API_CODEBUDDY_DEFAULT_REASONING_EFFORT`=`max` /
+`QB2API_INTL_DEFAULT_REASONING_EFFORT`=`low`）。管理台「思考」列显示的就是这条
+规则的结果。
+
+`reasoning_effort` 是**具名结构体字段**，因此 `ChatRequest.UnmarshalJSON` 会把它
+从 `Extra` 里删掉。这意味着它必须像 `temperature` 那样在 `requestValues` 里有
+**显式 case**：只把它列进 `passthroughKeys` 会走 `ExtraValue` 分支而永远取不到值，
+结果是客户端档位被静默丢弃、全部请求回落成 provider 默认值。
+
 ## 请求结局（三分支）
 
 `request_events.status` 有三个取值，用量页的成功/已取消/失败都按它统计：

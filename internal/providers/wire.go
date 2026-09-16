@@ -362,6 +362,13 @@ func requestValues(request *chatwire.ChatRequest, keys []string) map[string]any 
 			if request.User != "" {
 				out[key] = request.User
 			}
+		case "reasoning_effort":
+			// reasoning_effort is a typed field, so UnmarshalJSON keeps it out of
+			// Extra and the default branch would silently drop it — which made
+			// every request fall through to the provider's default effort.
+			if request.ReasoningEffort != "" {
+				out[key] = request.ReasoningEffort
+			}
 		default:
 			if value, ok := request.ExtraValue(key); ok && value != nil {
 				out[key] = value
