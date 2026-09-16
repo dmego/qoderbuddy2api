@@ -79,7 +79,7 @@ func (a *API) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 				"anthropic_base_url": "http://localhost:9999",
 				"api_key":            "optional",
 			},
-			"models": ids,
+			"models": list(ids),
 		})
 		return
 	}

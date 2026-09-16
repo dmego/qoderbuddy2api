@@ -383,7 +383,7 @@ func (a *API) handleListAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"events":      events,
+		"events":      list(events),
 		"next_cursor": nextCursor(offset, limit, len(events)),
 		"total":       total,
 	})
@@ -430,7 +430,7 @@ func (a *API) handleListBackups(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"backups":     runs,
+		"backups":     list(runs),
 		"next_cursor": nextCursor(offset, limit, len(runs)),
 	})
 }

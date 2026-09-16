@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"sort"
@@ -141,7 +142,7 @@ func (a *API) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 	total := len(views)
 	page := paginate(views, offset, limit)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"accounts":    page,
+		"accounts":    list(page),
 		"next_cursor": nextCursor(offset, limit, len(page)),
 		"total":       total,
 	})
@@ -180,41 +181,8 @@ func (a *API) handleGetAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	credentials, err := a.DB.ListCredentials(r.Context(), []string{provider})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
 	view := buildAccountView(account, purposes)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"account":      view,
-		"credentials":  filterCredentials(credentials, accountID),
-		"quota_blocks": a.quotaBlocksFor(provider, accountID),
-	})
-}
-
-func filterCredentials(credentials []store.Credential, accountID string) []store.Credential {
-	out := []store.Credential{}
-	for _, credential := range credentials {
-		if credential.AccountID == accountID {
-			out = append(out, credential)
-		}
-	}
-	return out
-}
-
-// quotaBlocksFor lists the active model blocks affecting one account.
-func (a *API) quotaBlocksFor(provider, accountID string) []providers.QuotaBlock {
-	if a.Plane == nil {
-		return []providers.QuotaBlock{}
-	}
-	out := []providers.QuotaBlock{}
-	for _, block := range a.Plane.QuotaBlocks() {
-		if block.Provider == provider && block.AccountID == accountID {
-			out = append(out, block)
-		}
-	}
-	return out
+	writeJSON(w, http.StatusOK, view)
 }
 
 func (a *API) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
@@ -441,7 +409,7 @@ func (a *API) handleListCredentials(w http.ResponseWriter, r *http.Request) {
 	for _, credential := range credentials {
 		views = append(views, credentialView(credential))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"credentials": views})
+	writeJSON(w, http.StatusOK, map[string]any{"credentials": list(views)})
 }
 
 // credentialView renders credential metadata. The expiry state is judged
@@ -682,7 +650,7 @@ func (a *API) handleListModels(w http.ResponseWriter, r *http.Request) {
 	total := len(views)
 	page := paginate(views, offset, limit)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"models":      page,
+		"models":      list(page),
 		"next_cursor": nextCursor(offset, limit, len(page)),
 		"total":       total,
 	})
@@ -840,19 +808,50 @@ func (a *API) handleProbeModel(w http.ResponseWriter, r *http.Request) {
 
 // ---- routing ----
 
+// routeAccountView is one chat-capable account in the per-model block grid.
+type routeAccountView struct {
+	AccountID string     `json:"account_id"`
+	Label     string     `json:"label"`
+	Source    string     `json:"source"`
+	Blocked   bool       `json:"blocked"`
+	Block     *blockView `json:"block"`
+}
+
+// blockView describes why one account is excluded from one model.
+type blockView struct {
+	Source       string `json:"source"`
+	Reason       string `json:"reason"`
+	BlockedUntil string `json:"blocked_until"`
+}
+
 func (a *API) handleGetRouting(w http.ResponseWriter, r *http.Request) {
-	policyRows, err := a.DB.ListRoutePolicies(r.Context())
+	ctx := r.Context()
+	policyRows, err := a.DB.ListRoutePolicies(ctx)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	byModel := map[string]map[string]store.RoutePolicyRow{}
+	configured := map[string]bool{}
 	for _, row := range policyRows {
 		if byModel[row.ModelID] == nil {
 			byModel[row.ModelID] = map[string]store.RoutePolicyRow{}
 		}
 		byModel[row.ModelID][row.Provider] = row
+		configured[row.ModelID] = true
 	}
+
+	accountsByProvider, err := a.chatAccountsByProvider(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	blocks, err := a.blockIndex(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
 	catalog := a.catalogForRequest()
 	modelsList := make([]map[string]any, 0, len(catalog))
 	for _, entry := range catalog {
@@ -861,27 +860,154 @@ func (a *API) handleGetRouting(w http.ResponseWriter, r *http.Request) {
 		}
 		routes := make([]map[string]any, 0, len(entry.Routes))
 		for _, route := range entry.Routes {
-			policy, ok := byModel[entry.ID][route.Provider]
+			// Defaults reproduce the historical behaviour: one tier, equal
+			// weight, every route enabled.
 			priority, weight, enabled := 0, 1, true
-			if ok {
+			if policy, ok := byModel[entry.ID][route.Provider]; ok {
 				priority, weight, enabled = policy.Priority, policy.Weight, policy.Enabled
 			}
 			routes = append(routes, map[string]any{
-				"provider": route.Provider, "upstream_id": route.UpstreamID,
-				"priority": priority, "weight": weight, "enabled": enabled,
+				"provider":     route.Provider,
+				"priority":     priority,
+				"weight":       weight,
+				"enabled":      enabled,
+				"capabilities": capabilityNames(entry.Capabilities),
+				"accounts":     list(routeAccounts(accountsByProvider[route.Provider], route.Provider, entry.ID, blocks)),
 			})
 		}
 		modelsList = append(modelsList, map[string]any{
-			"model_id": entry.ID, "display_name": entry.Name, "routes": routes,
+			"model_id":   entry.ID,
+			"name":       entry.Name,
+			"configured": configured[entry.ID],
+			"routes":     routes,
 		})
 	}
 	sort.Slice(modelsList, func(i, j int) bool {
 		return modelsList[i]["model_id"].(string) < modelsList[j]["model_id"].(string)
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
-		"models":       modelsList,
+		"models":       list(modelsList),
 		"quota_blocks": quotaBlocksJSON(a),
 	})
+}
+
+// routeAccounts attaches block state to the chat-capable accounts of one provider.
+func routeAccounts(accounts []routeAccountView, provider, modelID string, blocks map[[3]string]blockView) []routeAccountView {
+	out := make([]routeAccountView, 0, len(accounts))
+	for _, account := range accounts {
+		account.Blocked = false
+		account.Block = nil
+		if block, ok := blocks[[3]string{provider, account.AccountID, modelID}]; ok {
+			copied := block
+			account.Blocked = true
+			account.Block = &copied
+		}
+		out = append(out, account)
+	}
+	return out
+}
+
+// chatAccountsByProvider lists the accounts eligible for chat traffic, keyed by
+// provider. This is the same population the proxy plane loads into its pools:
+// an enabled account whose chat purpose is active.
+func (a *API) chatAccountsByProvider(ctx context.Context) (map[string][]routeAccountView, error) {
+	accounts, err := a.DB.ListAccounts(ctx, models.KnownProviders)
+	if err != nil {
+		return nil, err
+	}
+	purposes, err := a.DB.ListAllPurposes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	active := map[string]bool{}
+	for _, purpose := range purposes {
+		if purpose.Purpose == "chat" && purpose.Enabled && purpose.Status == "active" {
+			active[purpose.Provider+":"+purpose.AccountID] = true
+		}
+	}
+	grouped := map[string][]routeAccountView{}
+	for _, account := range accounts {
+		if !account.Enabled {
+			continue
+		}
+		if !models.ChatOnlyProviders[account.Provider] && !active[account.Provider+":"+account.AccountID] {
+			continue
+		}
+		label := account.Label
+		if label == "" {
+			label = account.AccountID
+		}
+		grouped[account.Provider] = append(grouped[account.Provider], routeAccountView{
+			AccountID: account.AccountID,
+			Label:     label,
+			Source:    account.Source,
+		})
+	}
+	return grouped, nil
+}
+
+// blockIndex maps (provider, account, model) to block info, merging stored
+// manual exclusions with the live auto-detected ones. Stored rows win: a manual
+// block stays authoritative even before the pool picks up the new snapshot.
+func (a *API) blockIndex(ctx context.Context) (map[[3]string]blockView, error) {
+	index := map[[3]string]blockView{}
+	rows, err := a.DB.ListAccountModelBlocks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		source := row.Source
+		if source == "" {
+			source = "manual"
+		}
+		index[[3]string{row.Provider, row.AccountID, row.ModelID}] = blockView{
+			Source:       source,
+			Reason:       row.Reason,
+			BlockedUntil: derefString(row.BlockedUntil),
+		}
+	}
+	if a.Plane == nil {
+		return index, nil
+	}
+	for _, block := range a.Plane.QuotaBlocks() {
+		if block.Provider == "" || block.AccountID == "" || block.ModelID == "" {
+			continue
+		}
+		key := [3]string{block.Provider, block.AccountID, block.ModelID}
+		if _, stored := index[key]; stored {
+			continue
+		}
+		source := block.Source
+		if source == "" {
+			source = "auto"
+		}
+		index[key] = blockView{Source: source, Reason: block.Reason, BlockedUntil: block.BlockedUntil}
+	}
+	return index, nil
+}
+
+// capabilityNames renders the capability flags the way the console expects
+// them: a list of enabled names, not a map of booleans.
+func capabilityNames(capabilities models.Capabilities) []string {
+	ordered := []struct {
+		name    string
+		enabled bool
+	}{
+		{"chat", capabilities.Chat},
+		{"streaming", capabilities.Streaming},
+		{"tool_calling", capabilities.ToolCalling},
+		{"reasoning", capabilities.Reasoning},
+		{"reasoning_effort", capabilities.ReasoningEffort},
+		{"context_window", capabilities.ContextWindow},
+		{"max_output_tokens", capabilities.MaxOutputTokens},
+	}
+	names := []string{}
+	for _, item := range ordered {
+		if item.enabled {
+			names = append(names, item.name)
+		}
+	}
+	return names
 }
 
 func quotaBlocksJSON(a *API) []providers.QuotaBlock {
@@ -998,7 +1124,7 @@ func (a *API) handleListProxyKeys(w http.ResponseWriter, r *http.Request) {
 			"revoked_at": key.RevokedAt,
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"keys": views})
+	writeJSON(w, http.StatusOK, map[string]any{"keys": list(views)})
 }
 
 func (a *API) handleCreateProxyKey(w http.ResponseWriter, r *http.Request) {

@@ -400,3 +400,187 @@ func TestSessionCSRFTokenCanBeUsedToSave(t *testing.T) {
 		t.Fatalf("a cookie request without CSRF must be refused, got %d", unsignedRecorder.Code)
 	}
 }
+
+// An empty result must serialise as [] and never as null.
+//
+// The console dereferences these fields directly (`state.events.length`), so a
+// null where an array belongs throws during render and the page shows blank —
+// indistinguishable from a broken API even though the request answered 200.
+// This is the shape every list endpoint returns against a fresh database.
+func TestEmptyListsSerializeAsArrays(t *testing.T) {
+	api, _ := newTestAPI(t)
+	cases := []struct {
+		path  string
+		field string
+	}{
+		{"/api/admin/usage/events", "events"},
+		{"/api/admin/usage/rollups?bucket_kind=minute", "rollups"},
+		{"/api/admin/usage/timeseries?bucket_kind=minute", "rollups"},
+		{"/api/admin/accounts", "accounts"},
+		{"/api/admin/credentials", "credentials"},
+		{"/api/admin/models", "models"},
+		{"/api/admin/proxy-keys", "keys"},
+		{"/api/admin/audit", "events"},
+		{"/api/admin/backup", "backups"},
+		{"/api/admin/service/events", "events"},
+		{"/api/admin/checkin/runs", "runs"},
+		{"/api/admin/metrics/accounts", "snapshots"},
+	}
+	for _, testCase := range cases {
+		recorder := adminRequest(t, api, http.MethodGet, testCase.path, nil)
+		if recorder.Code != http.StatusOK {
+			t.Errorf("%s: status %d (%s)", testCase.path, recorder.Code, recorder.Body.String())
+			continue
+		}
+		var payload map[string]json.RawMessage
+		if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+			t.Errorf("%s: decode: %v", testCase.path, err)
+			continue
+		}
+		raw, ok := payload[testCase.field]
+		if !ok {
+			t.Errorf("%s: field %q missing", testCase.path, testCase.field)
+			continue
+		}
+		if string(raw) == "null" {
+			t.Errorf("%s: %q is null on an empty result; the console needs []", testCase.path, testCase.field)
+		}
+		if len(raw) == 0 || raw[0] != '[' {
+			t.Errorf("%s: %q is not an array: %s", testCase.path, testCase.field, raw)
+		}
+	}
+}
+
+// The console reads the account detail straight off the response root
+// (`account.purposes.chat`), so the endpoint must answer the bare view object.
+// Wrapping it in an envelope throws during render and the page shows blank,
+// even though the request answered 200.
+func TestAccountDetailReturnsBareView(t *testing.T) {
+	api, db := newTestAPI(t)
+	if _, err := db.UpsertAccount(context.Background(), store.Account{
+		Provider: "codebuddy", AccountID: "cb-detail", Label: "Detail", Source: "oauth", Enabled: true,
+	}); err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+	recorder := adminRequest(t, api, http.MethodGet, "/api/admin/accounts/codebuddy/cb-detail", nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status %d (%s)", recorder.Code, recorder.Body.String())
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, wrapped := payload["account"]; wrapped {
+		t.Errorf("detail is wrapped in an envelope; the console reads the root object: %s", recorder.Body.String())
+	}
+	for _, field := range []string{"provider", "account_id", "label", "source", "enabled", "summary_status", "purposes"} {
+		if _, ok := payload[field]; !ok {
+			t.Errorf("detail is missing root field %q", field)
+		}
+	}
+	if string(payload["purposes"]) == "null" {
+		t.Error("purposes is null; the console dereferences purposes.chat")
+	}
+}
+
+// The routing page renders per-route capabilities as a name list and reads a
+// per-route account grid, so the response must carry `name`/`configured` and
+// resolve the same chat-capable accounts the proxy plane loads.
+func TestRoutingResponseMatchesConsoleShape(t *testing.T) {
+	api, db := newTestAPI(t)
+	// The routing view is derived from the unified catalog, which lives on the
+	// proxy plane; the default test API leaves it nil.
+	api.Plane = NewProxyPlane(api.Settings, api.Vault)
+	ctx := context.Background()
+	for _, account := range []store.Account{
+		{Provider: "codebuddy", AccountID: "cb-a", Label: "A", Source: "oauth", Enabled: true},
+		{Provider: "codebuddy", AccountID: "cb-b", Label: "B", Source: "oauth", Enabled: true},
+		{Provider: "codebuddy", AccountID: "cb-off", Label: "Off", Source: "oauth", Enabled: false},
+	} {
+		if _, err := db.UpsertAccount(ctx, account); err != nil {
+			t.Fatalf("seed account: %v", err)
+		}
+	}
+	for _, purpose := range []store.Purpose{
+		{Provider: "codebuddy", AccountID: "cb-a", Purpose: "chat", Enabled: true, Status: "active"},
+		{Provider: "codebuddy", AccountID: "cb-b", Purpose: "chat", Enabled: true, Status: "active"},
+	} {
+		if err := db.UpsertPurpose(ctx, purpose); err != nil {
+			t.Fatalf("seed purpose: %v", err)
+		}
+	}
+	if err := db.UpsertAccountModelBlock(ctx, store.AccountModelBlock{
+		Provider: "codebuddy", AccountID: "cb-a", ModelID: "auto", Reason: "quota", Source: "manual",
+	}); err != nil {
+		t.Fatalf("seed block: %v", err)
+	}
+
+	recorder := adminRequest(t, api, http.MethodGet, "/api/admin/routing", nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status %d (%s)", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		Models []struct {
+			ModelID    string `json:"model_id"`
+			Name       string `json:"name"`
+			Configured bool   `json:"configured"`
+			Routes     []struct {
+				Provider     string   `json:"provider"`
+				Capabilities []string `json:"capabilities"`
+				Accounts     []struct {
+					AccountID string `json:"account_id"`
+					Label     string `json:"label"`
+					Blocked   bool   `json:"blocked"`
+					Block     *struct {
+						Source string `json:"source"`
+					} `json:"block"`
+				} `json:"accounts"`
+			} `json:"routes"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(payload.Models) == 0 {
+		t.Fatal("no models returned")
+	}
+	var auto bool
+	for _, model := range payload.Models {
+		if model.ModelID != "auto" {
+			continue
+		}
+		auto = true
+		if model.Name == "" {
+			t.Error("model name is empty; the console renders model.name")
+		}
+		for _, route := range model.Routes {
+			if len(route.Capabilities) == 0 {
+				t.Errorf("route %s has no capabilities; the console renders them as tags", route.Provider)
+			}
+			if route.Provider != "codebuddy" {
+				continue
+			}
+			// The disabled account must not appear, the active one must, with
+			// its manual block reflected.
+			seen := map[string]bool{}
+			for _, account := range route.Accounts {
+				seen[account.AccountID] = true
+				if account.Label == "" {
+					t.Errorf("account %s has no label", account.AccountID)
+				}
+				if account.AccountID == "cb-a" && (!account.Blocked || account.Block == nil || account.Block.Source != "manual") {
+					t.Errorf("cb-a block not reflected: %+v", account)
+				}
+			}
+			if !seen["cb-a"] || !seen["cb-b"] {
+				t.Errorf("chat-capable accounts missing: %v", seen)
+			}
+			if seen["cb-off"] {
+				t.Error("disabled account appears in the routing grid")
+			}
+		}
+	}
+	if !auto {
+		t.Error("model auto missing from the routing response")
+	}
+}

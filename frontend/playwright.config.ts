@@ -1,3 +1,8 @@
+// Playwright config for the admin console acceptance tests.
+//
+// The service under test is the Go binary, started on a private port with its
+// own throwaway data directory and freshly generated keys, so a run can never
+// touch a developer's real .env or database.
 import { defineConfig, devices } from "@playwright/test";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
@@ -19,15 +24,13 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   webServer: {
-    command: "python e2e/control_server.py",
+    command: "bash e2e/run-server.sh",
     cwd: frontendRoot,
     url: "http://127.0.0.1:19299/health",
     reuseExistingServer,
-    timeout: 30_000,
+    timeout: 60_000,
     env: {
-      PYTHONPATH: resolve(projectRoot, "src"),
-      QB2API_E2E_CONTROL_PORT: "19299",
-      QB2API_E2E_WORKER_PORT: "19301",
+      QB2API_E2E_ROOT: projectRoot,
     },
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],

@@ -139,6 +139,7 @@ List models with `curl http://127.0.0.1:9999/v1/models`.
 - [Deployment and switch](go-deploy/README.md) — compose, switch script, rollback
 - [Implementation notes](docs/implementation-notes.md) — storage compatibility, timestamps, write batching, percentile formulas
 - [Development](CLAUDE.md) — common commands and the invariants that matter
+- [Historical design docs](docs/history/README.md) — Python-era research, specs and plans (archive only)
 
 ## Development
 

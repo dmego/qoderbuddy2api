@@ -22,20 +22,6 @@ test.describe.serial("2api Control Plane", () => {
     expect(await page.evaluate(() => ({ ...localStorage, ...sessionStorage }))).toEqual({});
   });
 
-  test("可从控制台启动并停止独立 Worker", async ({ page }) => {
-    await login(page);
-    await page.getByRole("link", { name: "代理服务" }).click();
-    await expect(page.getByRole("heading", { name: "代理服务" })).toBeVisible();
-    const serviceStatus = page.locator(".service-status-block");
-    const observedState = serviceStatus.locator(":scope > div").nth(1).locator("strong");
-    await page.getByRole("button", { name: "启动" }).click();
-    await expect(observedState).toHaveText("运行正常");
-    await expect(page.getByRole("button", { name: "停止" })).toBeEnabled();
-    await page.getByRole("button", { name: "停止" }).click();
-    await page.getByRole("button", { name: "确认停止" }).click();
-    await expect(observedState).toHaveText("已停止");
-  });
-
   test("主要管理页面可访问且显示安全空状态", async ({ page }) => {
     await login(page);
     const pages = [

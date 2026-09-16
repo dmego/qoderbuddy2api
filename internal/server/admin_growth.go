@@ -166,7 +166,7 @@ func (a *API) handleGrowthHistory(w http.ResponseWriter, r *http.Request) {
 		pages = (total + pageSize - 1) / pageSize
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"logs":      logs,
+		"logs":      list(logs),
 		"total":     total,
 		"page":      page,
 		"page_size": pageSize,

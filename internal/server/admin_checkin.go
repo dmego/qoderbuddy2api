@@ -165,7 +165,7 @@ func (a *API) handleCheckinRuns(w http.ResponseWriter, r *http.Request) {
 		views = append(views, a.checkinRunView(r, run))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"runs":        views,
+		"runs":        list(views),
 		"next_cursor": nextCursor(offset, limit, len(views)),
 		"total":       total,
 		"limit":       limit,
@@ -190,7 +190,7 @@ func (a *API) handleCheckinRunDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"run":      a.checkinRunView(r, run),
-		"attempts": views,
+		"attempts": list(views),
 	})
 }
 

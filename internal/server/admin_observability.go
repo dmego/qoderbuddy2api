@@ -244,7 +244,7 @@ func (a *API) handleServiceEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"events":      events,
+		"events":      list(events),
 		"next_cursor": nextCursor(offset, limit, len(events)),
 	})
 }
@@ -326,7 +326,7 @@ func (a *API) handleUsageEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"events":      events,
+		"events":      list(events),
 		"next_cursor": nextCursor(offset, limit, len(events)),
 	})
 }
@@ -352,7 +352,7 @@ func (a *API) handleUsageRollups(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"rollups": rollups})
+	writeJSON(w, http.StatusOK, map[string]any{"rollups": list(rollups)})
 }
 
 // handleUsageTimeseries aggregates request events directly when a status filter
@@ -377,7 +377,7 @@ func (a *API) handleUsageTimeseries(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"rollups": rollups})
+		writeJSON(w, http.StatusOK, map[string]any{"rollups": list(rollups)})
 		return
 	}
 	rollups, err := a.DB.ListRollups(r.Context(), filter, bucketKind, limit, 0)
@@ -385,7 +385,7 @@ func (a *API) handleUsageTimeseries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"rollups": rollups})
+	writeJSON(w, http.StatusOK, map[string]any{"rollups": list(rollups)})
 }
 
 func (a *API) handleUsageRollupNow(w http.ResponseWriter, r *http.Request) {
@@ -455,7 +455,7 @@ func (a *API) handleMetricSnapshots(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"snapshots": paginate(snapshots, 0, limit)})
+	writeJSON(w, http.StatusOK, map[string]any{"snapshots": list(paginate(snapshots, 0, limit))})
 }
 
 func (a *API) handleAccountMetrics(w http.ResponseWriter, r *http.Request) {
@@ -464,7 +464,7 @@ func (a *API) handleAccountMetrics(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"snapshots": snapshots})
+	writeJSON(w, http.StatusOK, map[string]any{"snapshots": list(snapshots)})
 }
 
 func (a *API) handleMetricHistory(w http.ResponseWriter, r *http.Request) {
@@ -479,7 +479,7 @@ func (a *API) handleMetricHistory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"rows": rows})
+	writeJSON(w, http.StatusOK, map[string]any{"rows": list(rows)})
 }
 
 func (a *API) handleMetricsRefresh(w http.ResponseWriter, r *http.Request) {
@@ -503,6 +503,19 @@ func (a *API) handleMetricsRefreshStatus(w http.ResponseWriter, r *http.Request)
 		"result": operation.Result, "error_code": operation.ErrorCode,
 		"created_at": operation.CreatedAt, "finished_at": operation.FinishedAt,
 	})
+}
+
+// list renders a slice so that an empty result marshals as [] rather than null.
+//
+// A nil Go slice serialises to JSON null, and the console dereferences these
+// fields directly (`state.events.length`). A null where an array belongs makes
+// the whole page throw during render and show as blank, which looks like the
+// API failed even though it answered 200.
+func list[T any](values []T) []T {
+	if values == nil {
+		return []T{}
+	}
+	return values
 }
 
 // ---- small pointer helpers ----

@@ -128,6 +128,7 @@ curl http://127.0.0.1:9999/v1/messages \
 - [部署与切换](go-deploy/README.md) — compose、切换脚本、回滚
 - [实现说明](docs/implementation-notes.md) — 存储兼容、时间戳格式、写盘策略、百分位口径
 - [开发说明](CLAUDE.md) — 常用命令与关键不变量
+- [历史设计文档](docs/history/README.md) — Python 版本时期的调研、设计规格与实施计划（仅存档）
 
 ## 开发
 
