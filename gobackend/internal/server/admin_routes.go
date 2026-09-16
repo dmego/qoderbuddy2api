@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/dmego/qoderbuddy2api/gobackend/internal/store"
@@ -102,20 +103,21 @@ func (a *API) handleSessionInfo(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid_admin_key")
 		return
 	}
-	// A bearer-key caller has no cookie session and therefore no CSRF token.
-	csrf := ""
+	// The console re-fetches its CSRF token on every page load. The token is
+	// derived from the session id, so it is reproducible from the cookie alone;
+	// returning the stored digest instead would hand the console a value that
+	// can never verify, and every save would fail with a silent 403.
+	csrf := any(nil)
 	if cookie, err := r.Cookie(AdminCookieName); err == nil && cookie.Value != "" {
-		if session, err := a.DB.GetSession(r.Context(), hashToken(cookie.Value)); err == nil {
-			// The stored value is a digest; the console needs a token it can
-			// echo back, so it re-derives one from the session hash.
-			csrf = session.CSRFHash
-		}
+		csrf = a.Admin.csrfToken(cookie.Value)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":     "authenticated",
-		"csrf_token": csrf,
-		"admin_ui":   a.Settings.AdminUIEnabled,
-		"version":    Version,
+		"status":          "ok",
+		"authenticated":   true,
+		"csrf_token":      csrf,
+		"admin_ui":        a.Settings.AdminUIEnabled,
+		"version":         Version,
+		"active_sessions": a.Admin.ActiveSessionCount(r.Context()),
 	})
 }
 
@@ -137,31 +139,82 @@ type settingSchema struct {
 	Key       string
 	Default   any
 	ApplyMode string
-	Validate  func(any) error
+	// Type is the wire type name the console switches on: "bool", "int" or "str".
+	Type            string
+	RestartRequired bool
+	// Min is surfaced in the public schema so the console can bound its input;
+	// Validate below remains the authority.
+	Min      *int
+	Validate func(any) error
 }
 
 var settingSchemas = []settingSchema{
-	{"checkin.enabled", false, "scheduler_reschedule", validateBool},
-	{"checkin.at", "00:10", "scheduler_reschedule", validateClock},
-	{"checkin.timezone", "Asia/Shanghai", "scheduler_reschedule", validateNonEmptyString},
-	{"checkin.catch_up", true, "scheduler_reschedule", validateBool},
-	{"checkin.catch_up_window_hours", 6, "scheduler_reschedule", rangeValidator(0, 72, "checkin catch-up window must be between 0 and 72 hours")},
-	{"checkin.jitter_min_seconds", 3, "scheduler_reschedule", rangeValidator(0, 300, "checkin jitter must be between 0 and 300 seconds")},
-	{"checkin.jitter_max_seconds", 10, "scheduler_reschedule", rangeValidator(0, 300, "checkin jitter must be between 0 and 300 seconds")},
-	{"checkin.retry_limit", 2, "immediate", rangeValidator(0, 10, "checkin retry limit must be between 0 and 10")},
-	{"monitoring.metrics_enabled", true, "immediate", validateBool},
-	{"monitoring.metrics_interval_seconds", 900, "immediate", rangeValidator(30, 86400, "metrics interval must be between 30 and 86400 seconds")},
-	{"usage.rollup_interval_seconds", 60, "immediate", rangeValidator(30, 86400, "rollup interval must be between 30 and 86400 seconds")},
-	{"usage.detail_retention_days", 90, "immediate", rangeValidator(1, 3650, "detail retention must be between 1 and 3650 days")},
-	{"growth.auto_tasks", true, "immediate", validateBool},
-	{"growth.auto_lottery", true, "immediate", validateBool},
-	{"growth.auto_travel", true, "immediate", validateBool},
-	{"growth.auto_redeem", true, "immediate", validateBool},
-	{"growth.redeem_tier", "14d", "immediate", validateRedeemTier},
-	{"growth.auto_buddy_open", false, "immediate", validateBool},
-	{"growth.scheduler_enabled", true, "immediate", validateBool},
-	{"growth.scheduler_interval_seconds", 1800, "immediate", rangeValidator(600, 86400, "growth.scheduler_interval_seconds must be >= 600")},
-	{"growth.auto_active_day", true, "immediate", validateBool},
+	// The worker lifecycle settings exist for console parity with the Python
+	// build. The Go rewrite serves the proxy and the control plane from one
+	// process, so there is no worker to autostart and no start handshake to time
+	// out; the values are stored and reported but have no effect.
+	{Key: "service.worker.autostart", Default: false, ApplyMode: "control_restart_required", Type: "bool", RestartRequired: true, Validate: validateBool},
+	{Key: "service.worker.start_timeout_seconds", Default: 30, ApplyMode: "worker_restart", Type: "int", Validate: rangeValidator(5, 300, "worker start timeout must be between 5 and 300 seconds")},
+
+	{Key: "checkin.enabled", Default: false, ApplyMode: "scheduler_reschedule", Type: "bool", Validate: validateBool},
+	{Key: "checkin.at", Default: "00:10", ApplyMode: "scheduler_reschedule", Type: "str", Validate: validateClock},
+	{Key: "checkin.timezone", Default: "Asia/Shanghai", ApplyMode: "scheduler_reschedule", Type: "str", Validate: validateNonEmptyString},
+	{Key: "checkin.catch_up", Default: true, ApplyMode: "scheduler_reschedule", Type: "bool", Validate: validateBool},
+	{Key: "checkin.catch_up_window_hours", Default: 6, ApplyMode: "scheduler_reschedule", Type: "int", Validate: rangeValidator(0, 72, "checkin catch-up window must be between 0 and 72 hours")},
+	{Key: "checkin.jitter_min_seconds", Default: 3, ApplyMode: "scheduler_reschedule", Type: "int", Validate: rangeValidator(0, 300, "checkin jitter must be between 0 and 300 seconds")},
+	{Key: "checkin.jitter_max_seconds", Default: 10, ApplyMode: "scheduler_reschedule", Type: "int", Validate: rangeValidator(0, 300, "checkin jitter must be between 0 and 300 seconds")},
+	{Key: "checkin.retry_limit", Default: 2, ApplyMode: "immediate", Type: "int", Validate: rangeValidator(0, 10, "checkin retry limit must be between 0 and 10")},
+
+	{Key: "monitoring.metrics_enabled", Default: true, ApplyMode: "immediate", Type: "bool", Validate: validateBool},
+	{Key: "monitoring.metrics_interval_seconds", Default: 900, ApplyMode: "immediate", Type: "int", Validate: rangeValidator(30, 86400, "metrics interval must be between 30 and 86400 seconds")},
+
+	{Key: "usage.rollup_interval_seconds", Default: 60, ApplyMode: "immediate", Type: "int", Validate: rangeValidator(10, 3600, "rollup interval must be between 10 and 3600 seconds")},
+	{Key: "usage.detail_retention_days", Default: 90, ApplyMode: "immediate", Type: "int", Validate: rangeValidator(1, 3650, "detail retention must be between 1 and 3650 days")},
+
+	{Key: "growth.auto_tasks", Default: true, ApplyMode: "immediate", Type: "bool", Validate: validateBool},
+	{Key: "growth.auto_lottery", Default: true, ApplyMode: "immediate", Type: "bool", Validate: validateBool},
+	{Key: "growth.auto_travel", Default: true, ApplyMode: "immediate", Type: "bool", Validate: validateBool},
+	{Key: "growth.auto_redeem", Default: true, ApplyMode: "immediate", Type: "bool", Validate: validateBool},
+	{Key: "growth.redeem_tier", Default: "28d", ApplyMode: "immediate", Type: "str", Validate: validateRedeemTier},
+	{Key: "growth.auto_buddy_open", Default: false, ApplyMode: "immediate", Type: "bool", Validate: validateBool},
+	{Key: "growth.scheduler_enabled", Default: true, ApplyMode: "immediate", Type: "bool", Validate: validateBool},
+	{Key: "growth.scheduler_interval_seconds", Default: 1800, ApplyMode: "immediate", Type: "int", Min: intPointer(600), Validate: rangeValidator(600, 86400, "growth.scheduler_interval_seconds must be >= 600")},
+	{Key: "growth.auto_active_day", Default: true, ApplyMode: "immediate", Type: "bool", Validate: validateBool},
+}
+
+// settingSchemaByKey indexes the schema table once.
+func settingSchemaByKey() map[string]settingSchema {
+	out := make(map[string]settingSchema, len(settingSchemas))
+	for _, schema := range settingSchemas {
+		out[schema.Key] = schema
+	}
+	return out
+}
+
+// publicSchema renders the schema block the console reads to decide which
+// control to draw for each setting.
+//
+// The type name is a string ("bool"/"int"/"str") and it is load-bearing: the
+// console's schemaType() falls back to JavaScript's typeof when the key is
+// missing, which yields "boolean" instead of "bool" and silently renders no
+// control at all.
+func publicSchema() map[string]map[string]any {
+	out := make(map[string]map[string]any, len(settingSchemas))
+	for _, schema := range settingSchemas {
+		entry := map[string]any{
+			"default":    schema.Default,
+			"apply_mode": schema.ApplyMode,
+			"type":       schema.Type,
+		}
+		if schema.RestartRequired {
+			entry["restart_required"] = true
+		}
+		if schema.Min != nil {
+			entry["min"] = *schema.Min
+		}
+		out[schema.Key] = entry
+	}
+	return out
 }
 
 func (a *API) handleGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -176,13 +229,16 @@ func (a *API) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	settings := make([]map[string]any, 0, len(settingSchemas))
 	for _, schema := range settingSchemas {
+		// Defaults render as an effective stored value so the console has
+		// something to bind its inputs to before anything is ever saved.
 		entry := map[string]any{
-			"key":           schema.Key,
-			"value":         schema.Default,
-			"value_version": 0,
-			"source":        "default",
-			"apply_mode":    schema.ApplyMode,
-			"apply_status":  "applied",
+			"key":              schema.Key,
+			"value":            schema.Default,
+			"value_version":    0,
+			"source":           "default",
+			"apply_mode":       schema.ApplyMode,
+			"apply_status":     "effective",
+			"restart_required": schema.RestartRequired,
 		}
 		if setting, ok := byKey[schema.Key]; ok {
 			entry["value"] = setting.Value
@@ -194,52 +250,110 @@ func (a *API) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		settings = append(settings, entry)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"settings": settings})
+	writeJSON(w, http.StatusOK, map[string]any{"settings": settings, "schema": publicSchema()})
 }
 
+// handlePatchSettings applies one setting.
+//
+// The console saves settings one at a time and sends a bare object
+// ({key, value, value_version}), not a wrapper, so the body is read as a single
+// setting. A version mismatch is reported as a conflict rather than silently
+// overwriting a newer value written by another administrator.
 func (a *API) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Settings []struct {
-			Key          string `json:"key"`
-			Value        any    `json:"value"`
-			ValueVersion *int   `json:"value_version"`
-		} `json:"settings"`
+		Key          string `json:"key"`
+		Value        any    `json:"value"`
+		ValueVersion *int   `json:"value_version"`
 	}
 	if err := decodeBody(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	schemaByKey := map[string]settingSchema{}
-	for _, schema := range settingSchemas {
-		schemaByKey[schema.Key] = schema
+	schema, ok := settingSchemaByKey()[body.Key]
+	if !ok {
+		writeError(w, http.StatusBadRequest, "unknown_setting")
+		return
 	}
-	updated := make([]map[string]any, 0, len(body.Settings))
-	for _, submitted := range body.Settings {
-		schema, ok := schemaByKey[submitted.Key]
-		if !ok {
-			writeError(w, http.StatusBadRequest, "unknown setting: "+submitted.Key)
-			return
-		}
-		if err := schema.Validate(submitted.Value); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		status := "effective"
-		if schema.ApplyMode == "control_restart_required" {
-			status = "pending_restart"
-		}
-		version, err := a.DB.PutRuntimeSetting(r.Context(), submitted.Key, submitted.Value, schema.ApplyMode, status, "admin")
+	if !matchesSchemaType(schema.Type, body.Value) {
+		writeError(w, http.StatusBadRequest, "invalid_setting_type")
+		return
+	}
+	if err := schema.Validate(body.Value); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// A stale version means the operator is editing a snapshot someone else has
+	// already replaced; refusing is the only outcome that cannot lose data.
+	//
+	// Version 0 is the console's marker for "never saved, showing the default",
+	// so it is accepted for a key with no stored row. Any other mismatch — a
+	// newer stored version, or a save racing a first write — conflicts.
+	if body.ValueVersion != nil {
+		stored, err := a.DB.ListRuntimeSettings(r.Context())
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		updated = append(updated, map[string]any{
-			"key": submitted.Key, "value": submitted.Value,
-			"value_version": version, "apply_mode": schema.ApplyMode, "apply_status": status,
-		})
+		current := 0
+		for _, setting := range stored {
+			if setting.Key == body.Key {
+				current = setting.Version
+			}
+		}
+		if current != *body.ValueVersion {
+			writeError(w, http.StatusConflict, "setting_version_conflict")
+			return
+		}
 	}
-	a.audit(r, "settings.update", "settings", "", map[string]any{"keys": len(updated)})
-	writeJSON(w, http.StatusOK, map[string]any{"status": "applied", "settings": updated})
+	status := "effective"
+	if schema.ApplyMode == "control_restart_required" {
+		status = "pending_restart"
+	}
+	version, err := a.DB.PutRuntimeSetting(r.Context(), body.Key, body.Value, schema.ApplyMode, status, "admin")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.audit(r, "settings.update", "setting", body.Key, map[string]any{"apply_status": status})
+	a.applySetting(body.Key)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"key":              body.Key,
+		"value":            body.Value,
+		"value_version":    version,
+		"apply_mode":       schema.ApplyMode,
+		"apply_status":     status,
+		"restart_required": schema.RestartRequired,
+	})
+}
+
+// matchesSchemaType enforces the declared type, rejecting a string where a
+// number belongs before anything is persisted.
+func matchesSchemaType(kind string, value any) bool {
+	switch kind {
+	case "bool":
+		_, ok := value.(bool)
+		return ok
+	case "int":
+		number, ok := value.(float64)
+		return ok && number == float64(int(number))
+	case "str":
+		_, ok := value.(string)
+		return ok
+	}
+	return false
+}
+
+// applySetting re-reads a setting into the live schedulers.
+//
+// The schedulers read runtime settings on each tick, so a schedule change only
+// needs the check-in scheduler to recompute its timer.
+func (a *API) applySetting(key string) {
+	if a.CheckinScheduler == nil {
+		return
+	}
+	if strings.HasPrefix(key, "checkin.") {
+		a.CheckinScheduler.Reconfigure()
+	}
 }
 
 // ---- audit ----

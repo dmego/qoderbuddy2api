@@ -20,6 +20,8 @@ type Rollup = { bucket_start: string; bucket_kind: string; request_count: number
 type UsageEvent = { event_id: string; request_id: string; provider: string; account_id: string | null; model_id: string; protocol: string; status: string; http_status: number | null; input_tokens: number | null; output_tokens: number | null; latency_ms: number | null; first_token_ms?: number | null; stream_committed: boolean | null; started_at: string; finished_at?: string | null; error_code?: string | null; reasoning_effort?: string | null };
 type EventPage = { events: UsageEvent[]; next_cursor?: string | null; total?: number };
 type RollupResponse = { status: Record<string, unknown> };
+type ModelOption = { model_id: string; display_name?: string };
+type AccountOption = { provider: string; account_id: string; label?: string };
 
 const range = ref("minute");
 const provider = ref("");
@@ -41,6 +43,34 @@ const filterQuery = computed(() => {
   return params.toString();
 });
 watch(filterQuery, () => { reset(); selectedEventId.value = ""; });
+
+// 模型与账号筛选用下拉框而不是手输 ID：手输要求使用者先知道内部 ID，
+// 而这两个 ID 都不是人记得住的串。两个来源都只取展示所需字段。
+const modelOptions = useQuery({
+  queryKey: ["usage-model-options"],
+  queryFn: async (): Promise<ModelOption[]> => {
+    const page = await apiRequest<{ models: ModelOption[] }>("/models?limit=200");
+    return page.models ?? [];
+  },
+  staleTime: 300_000,
+});
+const accountOptions = useQuery({
+  queryKey: ["usage-account-options"],
+  queryFn: async (): Promise<AccountOption[]> => {
+    const page = await apiRequest<{ accounts: AccountOption[] }>("/accounts?limit=200");
+    return page.accounts ?? [];
+  },
+  staleTime: 300_000,
+});
+// 选定服务提供方后只列出该提供方的账号，避免在一长串里找。
+const visibleAccounts = computed(() =>
+  (accountOptions.data.value ?? []).filter((item) => !provider.value || item.provider === provider.value));
+// 切换提供方后，原先选中的账号可能已不在列表里，这时清掉筛选而不是留一个查不到结果的 ID。
+watch(provider, () => {
+  if (accountId.value && !visibleAccounts.value.some((item) => item.account_id === accountId.value)) accountId.value = "";
+});
+function accountLabel(item: AccountOption): string { return `${item.label || item.account_id} · ${item.account_id}`; }
+function modelLabel(item: ModelOption): string { return item.display_name ? `${item.display_name} · ${item.model_id}` : item.model_id; }
 
 const summary = useQuery({ queryKey: ["usage-summary", filterQuery], queryFn: () => apiRequest<{ summary: Summary }>(withFilters("/usage/summary")), refetchInterval: 10000, staleTime: 15_000 });
 const timeseries = useQuery({ queryKey: ["usage-timeseries", range, filterQuery], queryFn: () => apiRequest<{ rollups: Rollup[] }>(withFilters(`/usage/timeseries?bucket_kind=${range.value}&limit=60`)), staleTime: 30_000 });
@@ -84,7 +114,7 @@ async function exportCsv(): Promise<void> {
   <section class="page-content">
     <header class="page-header"><div><h1>用量监控</h1><p>让摘要、趋势、事件明细和导出共享同一组筛选边界。</p></div><div class="header-actions"><select v-model="range" aria-label="聚合粒度"><option value="minute">分钟</option><option value="day">天</option><option value="month">月</option></select><a class="secondary-button" :href="exportHref" download="usage-events.csv" :aria-disabled="exporter.isPending.value" @click.prevent="exporter.mutate()"><Download :size="16" />{{ exporter.isPending.value ? "正在导出" : "导出 CSV" }}</a><button class="secondary-button" type="button" :disabled="summary.isFetching.value" @click="refreshData"><RefreshCcw :class="{ spin: summary.isFetching.value }" :size="16" />刷新</button><button type="button" :disabled="refresh.isPending.value" @click="refresh.mutate()"><BarChart3 :size="16" />重算聚合</button></div></header>
 
-    <section class="data-panel usage-filters"><PanelHeader title="筛选请求" description="所有条件同时作用于摘要、趋势、事件详情和 CSV 导出。"><button class="secondary-button compact-button" type="button" @click="resetFilters"><X :size="14" />清除</button></PanelHeader><div class="usage-filter-grid"><label>服务提供方<select v-model="provider" aria-label="服务提供方"><option value="">全部服务提供方</option><option value="codebuddy">WorkBuddy</option><option value="workbuddy_intl">WorkBuddy 国际版</option></select></label><label>账号 ID<input v-model.trim="accountId" aria-label="账号 ID" placeholder="例如 qd-1" /></label><label>模型 ID<input v-model.trim="modelId" aria-label="模型 ID" placeholder="例如 model-a" /></label><label>状态<select v-model="statusFilter" aria-label="请求状态"><option value="">全部</option><option value="succeeded">成功</option><option value="failed">失败</option></select></label><label>开始时间<input v-model="startedAfter" aria-label="开始时间" type="datetime-local" /></label><label>结束时间<input v-model="startedBefore" aria-label="结束时间" type="datetime-local" /></label></div></section>
+    <section class="data-panel usage-filters"><PanelHeader title="筛选请求" description="所有条件同时作用于摘要、趋势、事件详情和 CSV 导出。"><button class="secondary-button compact-button" type="button" @click="resetFilters"><X :size="14" />清除</button></PanelHeader><div class="usage-filter-grid"><label>服务提供方<select v-model="provider" aria-label="服务提供方"><option value="">全部服务提供方</option><option value="codebuddy">WorkBuddy</option><option value="workbuddy_intl">WorkBuddy 国际版</option></select></label><label>账号<select v-model="accountId" aria-label="账号"><option value="">全部账号</option><option v-for="item in visibleAccounts" :key="`${item.provider}:${item.account_id}`" :value="item.account_id">{{ accountLabel(item) }}</option></select></label><label>模型<select v-model="modelId" aria-label="模型"><option value="">全部模型</option><option v-for="item in modelOptions.data.value ?? []" :key="item.model_id" :value="item.model_id">{{ modelLabel(item) }}</option></select></label><label>状态<select v-model="statusFilter" aria-label="请求状态"><option value="">全部</option><option value="succeeded">成功</option><option value="failed">失败</option></select></label><label>开始时间<input v-model="startedAfter" aria-label="开始时间" type="datetime-local" /></label><label>结束时间<input v-model="startedBefore" aria-label="结束时间" type="datetime-local" /></label></div></section>
 
     <div v-if="partialUnavailable" class="data-state data-state--warning" role="status">部分遥测数据暂不可用；页面会保留可读取的摘要、趋势或事件，避免整页空白。</div>
     <div class="summary-grid summary-grid--six" :aria-busy="summary.isPending.value"><article class="summary-tile"><Activity :size="18" /><span>请求总数</span><strong>{{ number(summary.data.value?.summary.request_count) }}</strong><small>成功 {{ number(summary.data.value?.summary.success_count) }}</small></article><article class="summary-tile"><BarChart3 :size="18" /><span>输入 Token</span><strong>{{ summary.data.value?.summary.token_event_count ? formatTokens(summary.data.value.summary.input_tokens) : "不可用" }}</strong><small>实际用量事件</small></article><article class="summary-tile"><BarChart3 :size="18" /><span>输出 Token</span><strong>{{ summary.data.value?.summary.token_event_count ? formatTokens(summary.data.value.summary.output_tokens) : "不可用" }}</strong><small>缺失 {{ number(summary.data.value?.summary.missing_token_count) }} 个事件</small></article><article class="summary-tile"><CalendarClock :size="18" /><span>首字耗时</span><strong>{{ formatDuration(summary.data.value?.summary.ttft_p95_ms) }}</strong><small>P95 · 平均 {{ formatDuration(summary.data.value?.summary.ttft_avg_ms) }}</small></article><article class="summary-tile"><CalendarClock :size="18" /><span>请求耗时</span><strong>{{ formatDuration(summary.data.value?.summary.latency_p95_ms) }}</strong><small>P95 · 平均 {{ formatDuration(summary.data.value?.summary.latency_avg_ms) }}</small></article><article class="summary-tile"><CalendarClock :size="18" /><span>错误率</span><strong>{{ summary.data.value ? `${Math.round(summary.data.value.summary.error_count / Math.max(summary.data.value.summary.request_count, 1) * 100)}%` : "--" }}</strong><small><StatePill :value="summary.data.value?.summary.status ?? (summary.isStale.value ? 'stale' : 'fresh')" /></small></article></div>

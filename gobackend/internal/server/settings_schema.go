@@ -126,6 +126,8 @@ func boolValue(value any, fallback bool) bool {
 }
 
 // stringValue coerces a JSON string, defaulting when absent.
+func intPointer(value int) *int { return &value }
+
 func stringValue(value any, fallback string) string {
 	if text, ok := value.(string); ok {
 		return text

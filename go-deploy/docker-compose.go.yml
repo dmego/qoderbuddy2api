@@ -1,7 +1,12 @@
 # qoderbuddy2api — Go rewrite, runs ALONGSIDE the Python deployment.
 #
 # Deliberately separate from docker-compose.yml so both stacks can run at once:
-#   * distinct container name, distinct host port (9998 vs 9999)
+#   * distinct container name, distinct host port (9997 vs 9999)
+#
+# Port note: 9998 was the first choice but is already bound on this host by an
+# unrelated service (homework/rca-resarch-net/tools/net_sync.py, listening on
+# 0.0.0.0:9998), which shadowed the container because a specific-address bind
+# wins over a wildcard bind for the same port. 9997 was verified free.
 #   * its own data copy, so the Go build's schema additions and history
 #     compaction cannot affect the running Python instance
 #   * same credential vault key, so the copied database's encrypted credentials
@@ -30,16 +35,16 @@ services:
       # The Go build serves the proxy and the console from one process, so every
       # listener is reachable from the host on the single mapped port.
       QB2API_HOST: 0.0.0.0
-      QB2API_PORT: "9998"
+      QB2API_PORT: "9997"
       QB2API_CONTROL_HOST: 0.0.0.0
-      QB2API_CONTROL_PORT: "9998"
+      QB2API_CONTROL_PORT: "9997"
       # Container-internal paths (the .env uses relative host paths).
       QB2API_DATA_DIR: /data
       QB2API_LOG_DIR: /logs
       QB2API_MODEL_CONFIG: /config/models.json
       QB2API_WEB_DIR: /app/web/dist
     ports:
-      - "9998:9998"
+      - "9997:9997"
     volumes:
       - ./go-data:/data
       - ./go-logs:/logs

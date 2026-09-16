@@ -4,10 +4,19 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/dmego/qoderbuddy2api/gobackend/internal/checkin"
 	"github.com/dmego/qoderbuddy2api/gobackend/internal/store"
 )
+
+// lowerOutcome renders a stored outcome the way the console compares it.
+func lowerOutcome(value *string) any {
+	if value == nil {
+		return nil
+	}
+	return strings.ToLower(*value)
+}
 
 // registerCheckin installs the sign-in routes.
 //
@@ -22,7 +31,10 @@ func (a *API) registerCheckin(mux *http.ServeMux, guard func(http.HandlerFunc) h
 
 func (a *API) handleCheckinStatus(w http.ResponseWriter, r *http.Request) {
 	if a.Checkin == nil {
-		writeJSON(w, http.StatusOK, fallbackCheckinStatus())
+		status := fallbackCheckinStatus()
+		status["scheduler"] = a.checkinSchedulerStatus()
+		status["metrics"] = a.metricsSchedulerStatus()
+		writeJSON(w, http.StatusOK, status)
 		return
 	}
 	nextRunAt := ""
@@ -131,7 +143,13 @@ func (a *API) handleCheckinRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	query := r.URL.Query()
 	status := query.Get("status")
+	// The console labels the scheduler trigger "scheduled"; the database stores
+	// it as "scheduler". Passing the label straight through silently matches
+	// nothing and shows an empty history.
 	trigger := query.Get("trigger")
+	if trigger == "scheduled" {
+		trigger = "scheduler"
+	}
 	runs, err := a.DB.ListCheckinRuns(r.Context(), status, trigger, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -150,6 +168,7 @@ func (a *API) handleCheckinRuns(w http.ResponseWriter, r *http.Request) {
 		"runs":        views,
 		"next_cursor": nextCursor(offset, limit, len(views)),
 		"total":       total,
+		"limit":       limit,
 	})
 }
 
@@ -176,6 +195,10 @@ func (a *API) handleCheckinRunDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 // checkinRunView adds the per-run aggregate counters the history table shows.
+//
+// successful_count counts SKIPPED as well as the two claim outcomes: an account
+// that was already terminal today is a successful batch outcome, and excluding
+// it made a healthy catch-up run display as "0 successful".
 func (a *API) checkinRunView(r *http.Request, run store.CheckinRun) map[string]any {
 	view := map[string]any{
 		"run_id":           run.RunID,
@@ -184,6 +207,7 @@ func (a *API) checkinRunView(r *http.Request, run store.CheckinRun) map[string]a
 		"status":           run.Status,
 		"trigger":          run.Trigger,
 		"local_date":       run.LocalDate,
+		"timezone":         run.Timezone,
 		"attempt_count":    0,
 		"successful_count": 0,
 	}
@@ -196,7 +220,8 @@ func (a *API) checkinRunView(r *http.Request, run store.CheckinRun) map[string]a
 		if attempt.Outcome == nil {
 			continue
 		}
-		if *attempt.Outcome == checkin.OutcomeClaimed || *attempt.Outcome == checkin.OutcomeAlreadyCheckedIn {
+		switch *attempt.Outcome {
+		case checkin.OutcomeClaimed, checkin.OutcomeAlreadyCheckedIn, checkin.OutcomeSkipped:
 			successes++
 		}
 	}
@@ -205,24 +230,46 @@ func (a *API) checkinRunView(r *http.Request, run store.CheckinRun) map[string]a
 	return view
 }
 
-// checkinAttemptView renders one attempt, including the quota delta the console
-// expands.
+// checkinAttemptView renders one attempt for the console.
+//
+// The outcome is lower-cased because the console compares it against lowercase
+// literals ("claimed", "already_checked_in", "needs_reauth"); the uppercase
+// value is what the database stores, not what the API returns. Mismatching this
+// silently makes every successful check-in render as a failure.
+//
+// Reward and quota fields are only populated for the two claim outcomes: a
+// failed or skipped attempt has no reward, and echoing the previous run's
+// numbers would look like a fresh credit.
 func checkinAttemptView(attempt store.CheckinAttempt) map[string]any {
-	view := map[string]any{
-		"provider":            attempt.Provider,
-		"account_id":          attempt.AccountID,
-		"outcome":             attempt.Outcome,
-		"http_status":         attempt.HTTPStatus,
-		"attempts":            attempt.Attempts,
-		"finished_at":         attempt.FinishedAt,
-		"error_code":          attempt.RedactedError,
-		"reward_credits":      attempt.RewardCredits,
-		"reward_expires_at":   attempt.RewardExpiresAt,
-		"quota_change_status": attempt.QuotaChangeStatus,
-		"request_id":          attempt.RequestID,
+	outcome := ""
+	if attempt.Outcome != nil {
+		outcome = strings.ToLower(*attempt.Outcome)
 	}
-	if attempt.BusinessCode != nil {
-		view["business_code"] = *attempt.BusinessCode
+	rewardVisible := outcome == "claimed" || outcome == "already_checked_in"
+	view := map[string]any{
+		"provider":    attempt.Provider,
+		"account_id":  attempt.AccountID,
+		"outcome":     outcome,
+		"http_status": attempt.HTTPStatus,
+		"attempts":    attempt.Attempts,
+		"finished_at": attempt.FinishedAt,
+		"error_code":  checkinErrorCode(attempt),
+	}
+	for _, key := range []string{
+		"reward_credits", "reward_expires_at", "quota_before",
+		"quota_after", "quota_delta", "quota_observed_at", "quota_change_status",
+	} {
+		view[key] = nil
+	}
+	if !rewardVisible {
+		return view
+	}
+	view["reward_credits"] = attempt.RewardCredits
+	view["reward_expires_at"] = attempt.RewardExpiresAt
+	view["quota_change_status"] = attempt.QuotaChangeStatus
+	view["quota_observed_at"] = attempt.QuotaObservedAt
+	if attempt.QuotaBeforeJSON != nil {
+		view["quota_before"] = decodeJSONField(*attempt.QuotaBeforeJSON)
 	}
 	if attempt.QuotaAfterJSON != nil {
 		view["quota_after"] = decodeJSONField(*attempt.QuotaAfterJSON)
@@ -231,6 +278,18 @@ func checkinAttemptView(attempt store.CheckinAttempt) map[string]any {
 		view["quota_delta"] = decodeJSONField(*attempt.QuotaDeltaJSON)
 	}
 	return view
+}
+
+// checkinErrorCode reports the upstream business code when there is one, and a
+// generic marker when the attempt failed for a reason that has no code.
+func checkinErrorCode(attempt store.CheckinAttempt) any {
+	if attempt.BusinessCode != nil {
+		return *attempt.BusinessCode
+	}
+	if attempt.RedactedError != nil && *attempt.RedactedError != "" {
+		return "checkin_failed"
+	}
+	return nil
 }
 
 func decodeJSONField(raw string) any {

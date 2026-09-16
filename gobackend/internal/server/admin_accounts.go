@@ -653,11 +653,15 @@ func (a *API) handleListModels(w http.ResponseWriter, r *http.Request) {
 		view := map[string]any{
 			"model_id":     entry.ID,
 			"display_name": entry.Name,
-			"capabilities": entry.Capabilities,
-			"max_context":  entry.MaxContext,
-			"max_output":   entry.MaxOutput,
-			"enabled":      true,
-			"routes":       routes,
+			// Capability NAMES, not the capability flags: the console iterates
+			// this list to render one tag per capability, so an object would be
+			// iterated over its boolean values and display "true/false".
+			"capabilities":     capabilitiesList(entry.Capabilities),
+			"capability_flags": entry.Capabilities,
+			"max_context":      entry.MaxContext,
+			"max_output":       entry.MaxOutput,
+			"enabled":          true,
+			"routes":           routes,
 		}
 		if capability != "" && !hasCapability(entry.Capabilities, capability) {
 			continue

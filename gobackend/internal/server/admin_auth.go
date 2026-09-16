@@ -2,10 +2,10 @@ package server
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"net"
 	"net/http"
@@ -29,11 +29,50 @@ type AdminAuth struct {
 	settings config.Settings
 	db       *store.DB
 	limiter  *loginLimiter
+
+	// csrfSecret derives a session's CSRF token from its id. Deriving rather
+	// than storing a random token lets any tab (or a fresh page load) obtain a
+	// usable token without invalidating the tabs already open.
+	//
+	// The secret is derived from the admin key, which is stable across restarts.
+	// A per-process random secret would mean every restart leaves the persisted
+	// sessions holding CSRF digests that can never be reproduced again: the
+	// cookie still authenticates, but every save fails with a silent 403 until
+	// the operator happens to log in again.
+	csrfSecret []byte
 }
 
 // NewAdminAuth builds the auth helper.
 func NewAdminAuth(settings config.Settings, db *store.DB) *AdminAuth {
-	return &AdminAuth{settings: settings, db: db, limiter: newLoginLimiter(5, 5*time.Minute, 15*time.Minute)}
+	secret := sha256.Sum256([]byte("qb2api-admin-csrf-secret:" + settings.AdminKey))
+	return &AdminAuth{
+		settings:   settings,
+		db:         db,
+		limiter:    newLoginLimiter(5, 5*time.Minute, 15*time.Minute),
+		csrfSecret: secret[:],
+	}
+}
+
+// csrfToken derives the CSRF token for a session id.
+func (a *AdminAuth) csrfToken(sessionID string) string {
+	mac := hmac.New(sha256.New, a.csrfSecret)
+	mac.Write([]byte("qb2api-admin-csrf:" + sessionID))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// ActiveSessionCount reports how many sessions are live, for the console footer.
+func (a *AdminAuth) ActiveSessionCount(ctx context.Context) int {
+	rows, err := a.db.QueryContext(ctx,
+		"SELECT COUNT(*) FROM admin_sessions WHERE revoked_at IS NULL AND expires_at > ?", store.NowISO())
+	if err != nil {
+		return 0
+	}
+	defer rows.Close()
+	count := 0
+	if rows.Next() {
+		_ = rows.Scan(&count)
+	}
+	return count
 }
 
 // ErrCookiePolicy reports a request context the Secure policy rejects.
@@ -71,7 +110,7 @@ func (a *AdminAuth) VerifyRequest(r *http.Request) error {
 	}
 	if isMutating(r.Method) {
 		presented := r.Header.Get(CSRFHeaderName)
-		if presented == "" || hashToken(presented) != session.CSRFHash {
+		if presented == "" || !constantTimeEqual(hashToken(presented), session.CSRFHash) {
 			return errCSRF
 		}
 	}
@@ -104,7 +143,7 @@ func (a *AdminAuth) Login(ctx context.Context, r *http.Request, presented string
 	a.limiter.recordSuccess(ip)
 
 	sessionToken = randomToken(32)
-	csrfToken = randomToken(32)
+	csrfToken = a.csrfToken(sessionToken)
 	now := time.Now().UTC()
 	ttl := time.Duration(maxInt(a.settings.AdminSessionTTL, 1)) * time.Hour
 	session := store.Session{
@@ -342,5 +381,3 @@ func maxInt(value, fallback int) int {
 
 // hashTokenForCSRF is the CSRF hash helper used by the session route.
 func hashTokenForCSRF(token string) string { return hashToken(token) }
-
-var _ = hex.EncodeToString
