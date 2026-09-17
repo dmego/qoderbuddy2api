@@ -123,9 +123,9 @@ func Load() Settings {
 		AdminSessionIdle:  envInt("QB2API_ADMIN_SESSION_IDLE_MINUTES", 60),
 
 		CodeBuddyEndpoint:         env("CODEBUDDY_ENDPOINT", "https://copilot.tencent.com"),
-		CodeBuddyDefaultReasoning: strings.ToLower(strings.TrimSpace(env("QB2API_CODEBUDDY_DEFAULT_REASONING_EFFORT", "max"))),
+		CodeBuddyDefaultReasoning: strings.ToLower(strings.TrimSpace(env("QB2API_CODEBUDDY_DEFAULT_REASONING_EFFORT", "high"))),
 		WorkBuddyIntlEndpoint:     env("WORKBUDDY_INTL_ENDPOINT", "https://www.workbuddy.ai"),
-		WorkBuddyIntlReasoning:    strings.ToLower(strings.TrimSpace(env("QB2API_INTL_DEFAULT_REASONING_EFFORT", "low"))),
+		WorkBuddyIntlReasoning:    strings.ToLower(strings.TrimSpace(env("QB2API_INTL_DEFAULT_REASONING_EFFORT", "high"))),
 		WorkBuddyIntlCreditsPath:  env("WORKBUDDY_INTL_CREDITS_PATH", "/billing/meter/get-user-resource"),
 		// Bounds the wait for upstream response headers (never the body). The
 		// Python build used httpx.Timeout(300, connect=10); this restores that
