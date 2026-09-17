@@ -391,25 +391,41 @@ func toolValues(request *chatwire.ChatRequest) map[string]any {
 }
 
 // claudeSystemSentinels are the Claude/Anthropic identity phrases the upstream
-// content filter rejects.
-var claudeSystemSentinels = []string{
-	"You are Claude Code",
-	"You are a Claude agent",
-	"Anthropic's official CLI for Claude",
-	"Claude Agent SDK",
+// content filter rejects, paired with the neutral text that replaces them.
+//
+// The replacement is applied *in place*. An earlier version answered any hit by
+// returning the whole system message as a bare neutral sentence, which threw
+// away the client's own operating rules. Those rules are what keep a coding
+// agent from re-describing the same plan forever, so dropping them made the
+// model degenerate into repetitive reasoning that burned the entire token
+// budget without ever emitting content — measured at ~20x the reasoning volume
+// of an intact prompt, on both providers.
+//
+// Order matters: the full identity line must be tried before its fragments,
+// otherwise the fragments rewrite it into something the filter still rejects.
+var claudeSystemSentinels = []struct{ sentinel, replacement string }{
+	{"You are Claude Code, Anthropic's official CLI for Claude", neutralSystemPrompt},
+	{"You are Claude Code", "You are an interactive coding agent"},
+	{"You are a Claude agent", "You are an interactive coding agent"},
+	{"Anthropic's official CLI for Claude", "an interactive CLI coding agent"},
+	{"Claude Agent SDK", "the agent SDK"},
 }
 
 const neutralSystemPrompt = "You are a helpful assistant."
 
-// scrubText replaces a Claude/Anthropic system prompt with a neutral one.
+// blockedIdentityLine is the one phrase the gateway rejects wherever it appears
+// in a request — in a system prompt, and just as hard inside assistant turns
+// replayed from history.
+const blockedIdentityLine = "You are Claude Code, Anthropic's official CLI for Claude"
+
+// scrubText neutralizes the Claude/Anthropic identity phrases the upstream
+// rejects, leaving the rest of the client's system prompt untouched.
 func scrubText(text string) string {
 	if text == "" {
 		return text
 	}
-	for _, sentinel := range claudeSystemSentinels {
-		if strings.Contains(text, sentinel) {
-			return neutralSystemPrompt
-		}
+	for _, pair := range claudeSystemSentinels {
+		text = strings.ReplaceAll(text, pair.sentinel, pair.replacement)
 	}
 	return text
 }
@@ -456,9 +472,63 @@ func scrubContent(content any) any {
 	return content
 }
 
-// outboundMessage folds OpenAI's developer role into system and scrubs system
-// content. CodeBuddy answers any request carrying a developer message with 400
-// code 11128, while the identical text on the system role passes.
+// scrubHistoryText neutralizes the identity line in content that is replayed
+// from history (user, assistant and tool turns). Only the full line is
+// replaced: its fragments are ordinary text there — tool output, quoted
+// documents, other agents' names — and rewriting them would corrupt what the
+// client sent for no benefit.
+func scrubHistoryText(text string) string {
+	if text == "" {
+		return text
+	}
+	return strings.ReplaceAll(text, blockedIdentityLine, neutralSystemPrompt)
+}
+
+// scrubHistoryContent applies scrubHistoryText to string or multimodal text
+// blocks, mirroring scrubContent.
+func scrubHistoryContent(content any) any {
+	switch typed := content.(type) {
+	case string:
+		return scrubHistoryText(typed)
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, block := range typed {
+			mapping, ok := block.(map[string]any)
+			if !ok || mapping["type"] != "text" {
+				out = append(out, block)
+				continue
+			}
+			copied := map[string]any{}
+			for key, value := range mapping {
+				copied[key] = value
+			}
+			copied["text"] = scrubHistoryText(stringOrText(mapping["text"]))
+			out = append(out, copied)
+		}
+		return out
+	default:
+		return content
+	}
+}
+
+func stringOrText(value any) string {
+	if text, ok := value.(string); ok {
+		return text
+	}
+	return ""
+}
+
+// outboundMessage folds OpenAI's developer role into system, scrubs system
+// content, and neutralizes the Claude Code identity line in every turn.
+//
+// CodeBuddy answers any request carrying a developer message with 400 code
+// 11128, while the identical text on the system role passes.
+//
+// The identity line is scrubbed from *every* role, not just system, because the
+// gateway rejects it wherever it appears in the request — including inside
+// assistant turns replayed from history. A single reply quoting the line is
+// enough to poison the session: every later request in that conversation then
+// fails with 11128 until the history ages out.
 func outboundMessage(message chatwire.Message) map[string]any {
 	out := map[string]any{}
 	if message.Extra != nil {
@@ -488,9 +558,16 @@ func outboundMessage(message chatwire.Message) map[string]any {
 	if message.ToolCallID != "" {
 		out["tool_call_id"] = message.ToolCallID
 	}
-	if out["role"] == "system" {
-		if content, ok := out["content"]; ok {
+	if content, ok := out["content"]; ok {
+		if out["role"] == "system" {
+			// System turns carry the client's operating rules, so only the
+			// rejected phrases may be touched.
 			out["content"] = scrubContent(content)
+		} else {
+			// Replayed history only needs the one phrase the filter rejects;
+			// rewriting anything else would silently corrupt tool output and
+			// quoted documents.
+			out["content"] = scrubHistoryContent(content)
 		}
 	}
 	return out
