@@ -108,6 +108,22 @@ internal/server       HTTP surface, admin auth, schedulers wiring
 **显式 case**：只把它列进 `passthroughKeys` 会走 `ExtraValue` 分支而永远取不到值，
 结果是客户端档位被静默丢弃、全部请求回落成 provider 默认值。
 
+## 身份串清洗（system 与历史消息）
+
+上游内容过滤拒绝 Claude Code 身份行（`You are Claude Code, Anthropic's official CLI for Claude`），
+返回 400 code=11128。清洗规则有两条硬约束，由两组实测决定：
+
+1. **只替换命中的短语，绝不丢弃整条 system 消息。** 早期版本一命中就把整条 system 换成
+   `You are a helpful assistant.`，连带丢掉客户端自己的操作规则（"推理要短、不要复述计划"）。
+   实测：规则丢失后推理体积从 ~1.1k 涨到 ~21-35k 字符、单行重复 15→252-440 次，并在两个
+   provider 上同时出现 `length` 结尾、零内容 —— 就是用户看到的"思考链死循环"。
+2. **历史消息（user/assistant/tool）也要清洗同一行。** 过滤器对 assistant 回合里的这行字
+   一视同仁：一次引用它的回复会让该会话后续所有请求都 11128，直到历史过期。因此
+   `outboundMessage` 对非 system 回合用 `scrubHistoryContent` 只做这一条替换，其余内容
+   （工具输出、引用文档）一字不动 —— 避免无意义地改写客户端发来的内容。
+
+行尾有无句号都要能命中：替换按"无句号"字面量进行，句号留在替换文本之后。
+
 ## 请求结局（三分支）
 
 `request_events.status` 有三个取值，用量页的成功/已取消/失败都按它统计：
