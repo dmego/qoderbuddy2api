@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -433,20 +434,24 @@ func TestProxyKeyRevokeAndRotateRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list keys: %v", err)
 	}
+	// Deletion must remove the row outright: a soft-revoked key would linger in
+	// the list as 已撤销 and read like the delete never happened.
 	for _, item := range keys {
-		if item.KeyID == key.KeyID && item.RevokedAt == nil {
-			t.Fatal("revoke did not mark the key revoked")
+		if item.KeyID == key.KeyID {
+			t.Fatalf("the deleted key must be gone from the list, got %#v", item)
 		}
 	}
 
-	// Rotating a revoked key must fail rather than mint a live key from a dead one.
+	// Rotating a key that no longer exists must fail rather than mint a live key
+	// from a dead one.
 	rotated := adminRequest(t, api, http.MethodPost,
 		"/api/admin/proxy-keys/"+key.KeyID+"/rotate", nil)
 	if rotated.Code != http.StatusNotFound {
-		t.Fatalf("rotating a revoked key returned %d, want 404: %s", rotated.Code, rotated.Body.String())
+		t.Fatalf("rotating a deleted key returned %d, want 404: %s", rotated.Code, rotated.Body.String())
 	}
 
-	// A live key rotates into a new revealed secret.
+	// A live key rotates: the old row is deleted and a revealed replacement
+	// takes its place.
 	fresh := adminRequest(t, api, http.MethodPost, "/api/admin/proxy-keys",
 		map[string]any{"name": "rotatable", "scopes": []string{"proxy"}})
 	var freshKey struct {
@@ -473,6 +478,55 @@ func TestProxyKeyRevokeAndRotateRoutes(t *testing.T) {
 	}
 	if replacement.ReplacedKeyID != freshKey.KeyID {
 		t.Fatalf("replaced_key_id = %q, want %q", replacement.ReplacedKeyID, freshKey.KeyID)
+	}
+	keys, err = db.ListProxyKeys(ctx)
+	if err != nil {
+		t.Fatalf("list keys: %v", err)
+	}
+	for _, item := range keys {
+		if item.KeyID == freshKey.KeyID {
+			t.Fatalf("the rotated-away key must be deleted, got %#v", item)
+		}
+		if item.KeyID == replacement.KeyID && item.Name != "rotatable" {
+			t.Fatalf("the replacement must inherit the name: %#v", item)
+		}
+	}
+}
+
+// Legacy rows that were soft-revoked by earlier versions must still be
+// deletable, so residue can be cleaned up from the console.
+func TestProxyKeyRevokeCleansUpLegacyRevokedRow(t *testing.T) {
+	api, db := newTestAPI(t)
+	ctx := context.Background()
+
+	legacy := store.ProxyKey{
+		KeyID: "pk_legacy", Name: "legacy", KeyHash: hashToken("legacy-raw"),
+		Scopes: []string{"proxy"}, Enabled: true, CreatedAt: store.NowISO(),
+	}
+	if err := db.CreateProxyKey(ctx, legacy); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	revokedAt := store.NowISO()
+	if err := db.Write(ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec("UPDATE proxy_api_keys SET revoked_at=? WHERE key_id=?", revokedAt, legacy.KeyID)
+		return err
+	}); err != nil {
+		t.Fatalf("soft revoke: %v", err)
+	}
+
+	recorder := adminRequest(t, api, http.MethodDelete,
+		"/api/admin/proxy-keys/"+legacy.KeyID, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("delete status = %d, body %s", recorder.Code, recorder.Body.String())
+	}
+	keys, err := db.ListProxyKeys(ctx)
+	if err != nil {
+		t.Fatalf("list keys: %v", err)
+	}
+	for _, item := range keys {
+		if item.KeyID == legacy.KeyID {
+			t.Fatalf("the legacy revoked row must be deletable, got %#v", item)
+		}
 	}
 }
 

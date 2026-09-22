@@ -147,16 +147,11 @@ func (d *DB) ActiveProxyKeyHashes(ctx context.Context, now time.Time) ([]string,
 	return out, rows.Err()
 }
 
-// RevokeProxyKey marks one key revoked.
-func (d *DB) RevokeProxyKey(ctx context.Context, keyID string) error {
-	return d.Write(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx,
-			"UPDATE proxy_api_keys SET revoked_at=? WHERE key_id=? AND revoked_at IS NULL", NowISO(), keyID)
-		return err
-	})
-}
-
-// DeleteProxyKey removes a key row.
+// DeleteProxyKey removes a key row outright.
+//
+// Deletion is the console's remove action: a soft "revoked" flag would leave
+// the key listed forever as 已撤销, which reads like the deletion never
+// happened. The audit trail lives in audit_events and survives the delete.
 func (d *DB) DeleteProxyKey(ctx context.Context, keyID string) error {
 	return d.Write(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, "DELETE FROM proxy_api_keys WHERE key_id=?", keyID)

@@ -1281,11 +1281,14 @@ func (a *API) handleCreateProxyKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, a.proxyKeyReveal(r, key, raw, ""))
 }
 
-// handleRotateProxyKey replaces a key in place: the old id is revoked and a new
-// key with the same name and expiry is issued.
+// handleRotateProxyKey replaces a key in place: the old row is deleted and a
+// new key with the same name and expiry is issued.
 //
 // The console reveals the replacement, so the response must carry the raw value
 // — a rotate that only answered "ok" would leave the operator locked out.
+// The old row is removed, not soft-revoked: the list shows live keys, and a
+// retired key lingering as "已撤销" is exactly the residue deletion is meant to
+// remove.
 func (a *API) handleRotateProxyKey(w http.ResponseWriter, r *http.Request) {
 	keyID := r.PathValue("keyID")
 	current, err := a.findProxyKey(r, keyID)
@@ -1307,7 +1310,7 @@ func (a *API) handleRotateProxyKey(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: store.NowISO(),
 		ExpiresAt: current.ExpiresAt,
 	}
-	if err := a.DB.RevokeProxyKey(r.Context(), keyID); err != nil {
+	if err := a.DB.DeleteProxyKey(r.Context(), keyID); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1319,22 +1322,23 @@ func (a *API) handleRotateProxyKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, a.proxyKeyReveal(r, replacement, raw, keyID))
 }
 
+// handleRevokeProxyKey deletes a proxy key outright.
+//
+// The console's remove button must actually remove the row: answering with a
+// soft "revoked" flag leaves the key listed forever as 已撤销, which reads like
+// the deletion never happened. Already-revoked rows (from earlier versions) are
+// deleted too, so legacy residue can be cleaned up from the console.
 func (a *API) handleRevokeProxyKey(w http.ResponseWriter, r *http.Request) {
 	keyID := r.PathValue("keyID")
-	current, err := a.findProxyKey(r, keyID)
-	if err != nil {
+	if _, err := a.findProxyKey(r, keyID); err != nil {
 		writeError(w, http.StatusNotFound, "proxy_key_not_found")
 		return
 	}
-	if !current.Enabled || current.RevokedAt != nil {
-		writeError(w, http.StatusNotFound, "proxy_key_not_found")
-		return
-	}
-	if err := a.DB.RevokeProxyKey(r.Context(), keyID); err != nil {
+	if err := a.DB.DeleteProxyKey(r.Context(), keyID); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	a.audit(r, "proxy_key.revoke", "proxy_key", keyID, nil)
+	a.audit(r, "proxy_key.delete", "proxy_key", keyID, nil)
 	writeJSON(w, http.StatusOK, a.proxyKeyRevocation(r, keyID))
 }
 

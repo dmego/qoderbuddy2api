@@ -98,7 +98,7 @@ describe("ProxyKeysPage", () => {
 
     await flushPromises();
     await wrapper.get("[data-test='revoke-pk-live']").trigger("click");
-    expect(wrapper.text()).toContain("确认撤销代理密钥");
+    expect(wrapper.text()).toContain("确认删除代理密钥");
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     await wrapper.get("[data-test='confirm-destructive']").trigger("click");

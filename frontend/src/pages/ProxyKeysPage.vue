@@ -59,7 +59,6 @@ const keyQuery = useQuery({
 const rows = computed(() => keyQuery.data.value?.keys ?? []);
 const activeCount = computed(() => rows.value.filter((item) => keyStatus(item) === "active").length);
 const expiringCount = computed(() => rows.value.filter(isExpiringSoon).length);
-const revokedCount = computed(() => rows.value.filter((item) => keyStatus(item) === "revoked").length);
 
 async function createKey(): Promise<void> {
   busy.value = "create";
@@ -97,7 +96,7 @@ async function confirmAction(): Promise<void> {
     );
     if (action.kind === "rotate") revealKey(result as RevealedKey);
     if (action.kind === "revoke" && result.runtime_apply?.status === "failed") {
-      error.value = "数据库已撤销该密钥，但代理进程尚未应用。旧密钥可能仍有效，请立即在服务页重试重载。";
+      error.value = "密钥已从数据库删除，但代理进程尚未同步。旧密钥可能仍有效，请立即在服务页重试重载。";
     }
     confirmation.value = null;
     await keyQuery.refetch();
@@ -177,10 +176,9 @@ function errorMessage(cause: unknown): string {
     </div>
 
     <div class="summary-grid proxy-key-summary" aria-label="代理密钥摘要">
-      <article class="summary-tile"><KeyRound :size="20" /><span>全部密钥</span><strong>{{ rows.length }}</strong><small>包含历史撤销记录</small></article>
+      <article class="summary-tile"><KeyRound :size="20" /><span>全部密钥</span><strong>{{ rows.length }}</strong><small>已删除的密钥不在此列</small></article>
       <article class="summary-tile"><ShieldCheck :size="20" /><span>当前有效</span><strong>{{ activeCount }}</strong><small>代理进程可立即验证</small></article>
       <article class="summary-tile"><ShieldAlert :size="20" /><span>7 天内过期</span><strong>{{ expiringCount }}</strong><small>建议提前轮换</small></article>
-      <article class="summary-tile"><Trash2 :size="20" /><span>已撤销</span><strong>{{ revokedCount }}</strong><small>不可重新启用</small></article>
     </div>
 
     <section v-if="revealed" class="secret-reveal" aria-live="assertive">
@@ -248,7 +246,7 @@ function errorMessage(cause: unknown): string {
               <td>
                 <div class="row-actions">
                   <button class="icon-button" type="button" title="轮换" :disabled="keyStatus(item) !== 'active' || !!busy" @click="confirmation = { kind: 'rotate', key: item }"><RotateCw :size="15" /></button>
-                  <button :data-test="`revoke-${item.key_id}`" class="icon-button danger-icon" type="button" title="撤销" :disabled="keyStatus(item) !== 'active' || !!busy" @click="confirmation = { kind: 'revoke', key: item }"><Trash2 :size="15" /></button>
+                  <button :data-test="`revoke-${item.key_id}`" class="icon-button danger-icon" type="button" title="删除" :disabled="!!busy" @click="confirmation = { kind: 'revoke', key: item }"><Trash2 :size="15" /></button>
                 </div>
               </td>
             </tr>
@@ -261,16 +259,16 @@ function errorMessage(cause: unknown): string {
       <section class="confirm-card" role="alertdialog" aria-modal="true" aria-labelledby="proxy-key-confirm-title">
         <ShieldAlert :size="24" aria-hidden="true" />
         <div>
-          <h2 id="proxy-key-confirm-title">{{ confirmation.kind === "revoke" ? "确认撤销代理密钥" : "确认轮换代理密钥" }}</h2>
+          <h2 id="proxy-key-confirm-title">{{ confirmation.kind === "revoke" ? "确认删除代理密钥" : "确认轮换代理密钥" }}</h2>
           <p>
             <strong>{{ confirmation.key.name }}</strong> 当前正在使用的明文将立即失效。
-            {{ confirmation.kind === "rotate" ? "新密钥只会显示一次。" : "该操作无法撤销。" }}
+            {{ confirmation.kind === "rotate" ? "新密钥只会显示一次。" : "该密钥记录将被删除，操作无法撤销。" }}
           </p>
         </div>
         <div class="confirm-actions">
           <button class="secondary-button" type="button" @click="confirmation = null">取消</button>
           <button data-test="confirm-destructive" class="danger-button" type="button" :disabled="!!busy" @click="confirmAction">
-            {{ confirmation.kind === "revoke" ? "撤销并使其失效" : "轮换并显示新密钥" }}
+            {{ confirmation.kind === "revoke" ? "删除密钥" : "轮换并显示新密钥" }}
           </button>
         </div>
       </section>
