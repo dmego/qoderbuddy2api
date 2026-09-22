@@ -112,7 +112,7 @@ func (a *API) handleImportPoll(w http.ResponseWriter, r *http.Request) {
 		// The domestic deployment has a sign-in centre; the international one is
 		// chat-only, so no sign-in purpose is implied there.
 		if flow.Provider == models.ProviderWorkBuddy {
-			response["checkin_verified"] = false
+			response["checkin_verified"] = flow.CheckinVerified
 		}
 		a.audit(r, "import.complete", "account", flow.Provider+"/"+flow.AccountID, nil)
 		a.refreshPlane(r)
@@ -161,7 +161,8 @@ func (a *API) handleImportManual(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, importResult{
-		Account: &accountReference{Provider: provider, AccountID: flow.AccountID, Label: flow.Label},
+		Account:         &accountReference{Provider: provider, AccountID: flow.AccountID, Label: flow.Label},
+		CheckinVerified: flow.CheckinVerified,
 	})
 }
 
@@ -210,8 +211,26 @@ func (a *API) handleImportCheckin(w http.ResponseWriter, r *http.Request) {
 	if mode == "" {
 		mode = "bearer"
 	}
+	if mode != "bearer" && mode != "cookie" && mode != "bearer_cookie" {
+		writeError(w, http.StatusBadRequest, "invalid_checkin_auth_mode")
+		return
+	}
+	if mode != "cookie" && token == "" {
+		writeError(w, http.StatusBadRequest, "access_token_required")
+		return
+	}
+	if mode != "bearer" && body.Cookie == "" {
+		writeError(w, http.StatusBadRequest, "cookie_required")
+		return
+	}
 	flow, err := a.Imports.ManualCheckin(r.Context(), provider, body.AccountID, mode, payload, body.ExpiresAt)
 	if err != nil {
+		// The console matches on this code to explain that the token and cookie
+		// must come from the same WorkBuddy account.
+		if errors.Is(err, oauthflow.ErrCheckinRejected) {
+			writeError(w, http.StatusBadRequest, "checkin_credential_rejected")
+			return
+		}
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

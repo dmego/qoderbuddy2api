@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dmego/qoderbuddy2api/internal/checkin"
 	"github.com/dmego/qoderbuddy2api/internal/store"
 	"github.com/dmego/qoderbuddy2api/internal/vault"
 )
@@ -168,6 +169,9 @@ func TestManualCheckinStoresEncryptedCredential(t *testing.T) {
 		Store:    NewStore(15 * time.Minute),
 		Imports:  &recordingWriter{},
 	})
+	// The import is gated on a successful upstream sign-in, so the test must
+	// supply the verifier the server wires in production.
+	service.SetCheckinVerifier(func(context.Context, string, checkin.Credential) error { return nil })
 	ctx := context.Background()
 	if _, err := db.UpsertAccount(ctx, store.Account{
 		Provider: "codebuddy", AccountID: "cb-1", Label: "main", Source: "manual", Enabled: true,

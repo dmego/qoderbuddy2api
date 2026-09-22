@@ -106,8 +106,46 @@ func (w *Writer) UpsertImportedAccount(
 	if err := w.db.UpsertPurpose(ctx, purpose); err != nil {
 		return "", err
 	}
+	if err := w.ensureCheckinPurpose(ctx, provider, account.AccountID, write.ExpiresAt); err != nil {
+		return "", err
+	}
 	slog.Info("imported account", "provider", provider, "account", account.AccountID, "source", "oauth")
 	return account.AccountID, nil
+}
+
+// ensureCheckinPurpose creates the disabled check-in row the domestic import
+// flow expects.
+//
+// The console draws the sign-in control from the presence of this row, and the
+// manual check-in import only updates an existing row — it refuses to create
+// one. An account imported without it can therefore never start signing in.
+// The international deployment has no sign-in centre, so it gets no row at all.
+//
+// An existing row is left untouched: re-logging in must not reset a credential
+// the operator already verified.
+func (w *Writer) ensureCheckinPurpose(ctx context.Context, provider, accountID string, expiresAt *string) error {
+	if provider != models.ProviderWorkBuddy {
+		return nil
+	}
+	purposes, err := w.db.ListPurposes(ctx, provider, accountID)
+	if err != nil {
+		return err
+	}
+	for _, purpose := range purposes {
+		if purpose.Purpose == "checkin" {
+			return nil
+		}
+	}
+	return w.db.UpsertPurpose(ctx, store.Purpose{
+		Provider:           provider,
+		AccountID:          accountID,
+		Purpose:            "checkin",
+		Enabled:            false,
+		Status:             "unconfigured",
+		VerificationStatus: "unverified",
+		Capabilities:       []string{"checkin.workbuddy"},
+		ExpiresAt:          expiresAt,
+	})
 }
 
 // InvalidateCredential drops a cached credential. The Go build resolves

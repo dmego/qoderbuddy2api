@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dmego/qoderbuddy2api/internal/checkin"
 	"github.com/dmego/qoderbuddy2api/internal/models"
 	"github.com/dmego/qoderbuddy2api/internal/providers"
 	"github.com/dmego/qoderbuddy2api/internal/store"
@@ -248,14 +249,19 @@ func (a *API) handlePatchAccount(w http.ResponseWriter, r *http.Request) {
 	provider := r.PathValue("provider")
 	accountID := r.PathValue("accountID")
 	var body struct {
-		Enabled *bool   `json:"enabled"`
-		Label   *string `json:"label"`
+		Enabled  *bool                   `json:"enabled"`
+		Label    *string                 `json:"label"`
+		Purposes map[string]purposePatch `json:"purposes"`
 	}
 	if err := decodeBody(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if err := a.DB.UpdateAccountFields(r.Context(), provider, accountID, body.Enabled, body.Label); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := a.applyPurposePatches(r, provider, accountID, body.Purposes); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -270,6 +276,54 @@ func (a *API) handlePatchAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "updated", "account": account})
+}
+
+// purposePatch is one entry of the console's purposes block.
+type purposePatch struct {
+	Enabled *bool   `json:"enabled"`
+	Status  *string `json:"status"`
+}
+
+// applyPurposePatches writes the per-purpose enablement the console sends with
+// an account update.
+//
+// The console submits `purposes: {chat: {enabled}, checkin: {enabled}}`; a
+// handler that ignores the block answers 200 while nothing changes, which looks
+// exactly like a lost save. Enablement is owned here; a status may accompany it
+// (the console sends the row's current status back), but verification and
+// expiry stay under the sign-in and rotation subsystems.
+func (a *API) applyPurposePatches(r *http.Request, provider, accountID string, patches map[string]purposePatch) error {
+	if len(patches) == 0 {
+		return nil
+	}
+	purposes, err := a.DB.ListPurposes(r.Context(), provider, accountID)
+	if err != nil {
+		return err
+	}
+	for _, purpose := range purposes {
+		patch, ok := patches[purpose.Purpose]
+		if !ok || patch.Enabled == nil {
+			continue
+		}
+		updated := purpose
+		updated.Enabled = *patch.Enabled
+		if patch.Status != nil && *patch.Status != "" {
+			updated.Status = *patch.Status
+		}
+		if err := a.DB.UpsertPurpose(r.Context(), updated); err != nil {
+			return err
+		}
+	}
+	a.rebuildRegistry(r)
+	return nil
+}
+
+// rebuildRegistry makes a purpose change visible to the scheduler and the
+// proxy plane before the next request reads storage.
+func (a *API) rebuildRegistry(r *http.Request) {
+	if a.Plane != nil {
+		_ = a.Plane.Reload(r.Context(), a.DB)
+	}
 }
 
 func (a *API) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
@@ -350,22 +404,62 @@ func (a *API) handlePromoteAccount(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleVerifyCheckin re-runs the check-in status preflight for one account.
+// handleVerifyCheckin runs a real sign-in for one account.
+//
+// The console offers this button to turn an unverified credential into a
+// verified one, so it must exercise the upstream: a handler that only re-reads
+// the stored daily state answers "verified: false" forever and the operator can
+// never activate sign-in for that account.
 func (a *API) handleVerifyCheckin(w http.ResponseWriter, r *http.Request) {
 	provider := r.PathValue("provider")
 	accountID := r.PathValue("accountID")
-	state, err := a.DB.GetCheckinDailyState(r.Context(), provider, accountID, a.localDate(), a.Settings.CheckinTimezone)
+	if a.Checkin == nil {
+		writeError(w, http.StatusServiceUnavailable, "checkin unavailable")
+		return
+	}
+	summary, err := a.Checkin.RunBatch(r.Context(), "verify",
+		[]checkin.AccountRef{{Provider: provider, AccountID: accountID}}, false)
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status": "unverified", "verified": false, "terminal_outcome": nil,
-		})
+		if errors.Is(err, checkin.ErrRunInProgress) {
+			writeError(w, http.StatusConflict, "checkin_run_in_progress")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.audit(r, "account.verify_checkin", "account", provider+"/"+accountID, nil)
+	results := make([]map[string]any, 0, len(summary.Results))
+	verified := false
+	for _, result := range summary.Results {
+		results = append(results, redactCheckinResult(result))
+		if result.OK() {
+			verified = true
+		}
+	}
+	if err := a.refreshPlane(r); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "provider_pool_refresh_failed")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":           "verified",
-		"verified":         state.TerminalOutcome != nil,
-		"terminal_outcome": state.TerminalOutcome,
+		"status":   "ok",
+		"run_id":   summary.RunID,
+		"verified": verified,
+		"results":  list(results),
 	})
+}
+
+// redactCheckinResult renders one attempt the way the console reads it. The
+// outcome is lowercased because the console compares it against "claimed".
+func redactCheckinResult(result checkin.Result) map[string]any {
+	return map[string]any{
+		"provider":      result.Provider,
+		"account_id":    result.AccountID,
+		"outcome":       strings.ToLower(result.Outcome),
+		"http_status":   result.HTTPStatus,
+		"business_code": result.BusinessCode,
+		"request_id":    result.RequestID,
+		"message":       result.Message,
+	}
 }
 
 // handleRederiveCheckin recomputes the daily state from the latest batch rows.
@@ -1115,23 +1209,50 @@ func (a *API) handleListProxyKeys(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// runtime_apply_status mirrors the Python list query: it is the result of the
+	// newest audit row for the key, which is how the console learns that a
+	// stored change never reached the running proxy.
+	applyStatus := a.proxyKeyApplyStatus(r)
 	views := make([]map[string]any, 0, len(keys))
 	for _, key := range keys {
-		views = append(views, map[string]any{
+		view := map[string]any{
 			"key_id": key.KeyID, "name": key.Name, "scopes": key.Scopes,
 			"enabled": key.Enabled, "created_at": key.CreatedAt,
 			"last_used_at": key.LastUsedAt, "expires_at": key.ExpiresAt,
 			"revoked_at": key.RevokedAt,
-		})
+		}
+		if status, ok := applyStatus[key.KeyID]; ok {
+			view["runtime_apply_status"] = status
+		}
+		views = append(views, view)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"keys": list(views)})
+}
+
+// proxyKeyApplyStatus maps a key id to the newest recorded runtime apply result.
+func (a *API) proxyKeyApplyStatus(r *http.Request) map[string]string {
+	out := map[string]string{}
+	events, err := a.DB.ListAuditEvents(r.Context(), store.AuditFilter{ResourceType: "proxy_key"}, 200, 0)
+	if err != nil {
+		return out
+	}
+	for _, event := range events {
+		if event.ResourceID == nil || event.Result == "" {
+			continue
+		}
+		if _, seen := out[*event.ResourceID]; seen {
+			continue
+		}
+		out[*event.ResourceID] = event.Result
+	}
+	return out
 }
 
 func (a *API) handleCreateProxyKey(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name      string   `json:"name"`
 		Scopes    []string `json:"scopes"`
-		ExpiresAt string   `json:"expires_at"`
+		ExpiresAt *string  `json:"expires_at"`
 	}
 	_ = decodeBody(r, &body)
 	name := body.Name
@@ -1147,8 +1268,8 @@ func (a *API) handleCreateProxyKey(w http.ResponseWriter, r *http.Request) {
 		Enabled:   true,
 		CreatedAt: store.NowISO(),
 	}
-	if body.ExpiresAt != "" {
-		expires := body.ExpiresAt
+	if body.ExpiresAt != nil && *body.ExpiresAt != "" {
+		expires := *body.ExpiresAt
 		key.ExpiresAt = &expires
 	}
 	if err := a.DB.CreateProxyKey(r.Context(), key); err != nil {
@@ -1156,29 +1277,121 @@ func (a *API) handleCreateProxyKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.audit(r, "proxy_key.create", "proxy_key", key.KeyID, nil)
-	if err := a.refreshPlane(r); err != nil {
-		writeError(w, http.StatusServiceUnavailable, "provider_pool_refresh_failed")
+	// The raw key is returned exactly once; only its digest is stored.
+	writeJSON(w, http.StatusCreated, a.proxyKeyReveal(r, key, raw, ""))
+}
+
+// handleRotateProxyKey replaces a key in place: the old id is revoked and a new
+// key with the same name and expiry is issued.
+//
+// The console reveals the replacement, so the response must carry the raw value
+// — a rotate that only answered "ok" would leave the operator locked out.
+func (a *API) handleRotateProxyKey(w http.ResponseWriter, r *http.Request) {
+	keyID := r.PathValue("keyID")
+	current, err := a.findProxyKey(r, keyID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "proxy_key_not_found")
 		return
 	}
-	// The raw key is returned exactly once; only its digest is stored.
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status": "created", "key_id": key.KeyID, "name": key.Name,
-		"key": raw, "created_at": key.CreatedAt, "expires_at": key.ExpiresAt,
-	})
+	if !current.Enabled || current.RevokedAt != nil {
+		writeError(w, http.StatusNotFound, "proxy_key_not_found")
+		return
+	}
+	raw := "qb2api_" + randomToken(24)
+	replacement := store.ProxyKey{
+		KeyID:     "pk_" + randomToken(8),
+		Name:      current.Name,
+		KeyHash:   hashToken(raw),
+		Scopes:    current.Scopes,
+		Enabled:   true,
+		CreatedAt: store.NowISO(),
+		ExpiresAt: current.ExpiresAt,
+	}
+	if err := a.DB.RevokeProxyKey(r.Context(), keyID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := a.DB.CreateProxyKey(r.Context(), replacement); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.audit(r, "proxy_key.rotate", "proxy_key", replacement.KeyID, nil)
+	writeJSON(w, http.StatusCreated, a.proxyKeyReveal(r, replacement, raw, keyID))
 }
 
 func (a *API) handleRevokeProxyKey(w http.ResponseWriter, r *http.Request) {
 	keyID := r.PathValue("keyID")
+	current, err := a.findProxyKey(r, keyID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "proxy_key_not_found")
+		return
+	}
+	if !current.Enabled || current.RevokedAt != nil {
+		writeError(w, http.StatusNotFound, "proxy_key_not_found")
+		return
+	}
 	if err := a.DB.RevokeProxyKey(r.Context(), keyID); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	a.audit(r, "proxy_key.revoke", "proxy_key", keyID, nil)
-	if err := a.refreshPlane(r); err != nil {
-		writeError(w, http.StatusServiceUnavailable, "provider_pool_refresh_failed")
-		return
+	writeJSON(w, http.StatusOK, a.proxyKeyRevocation(r, keyID))
+}
+
+// findProxyKey loads one key row or reports ErrNotFound.
+func (a *API) findProxyKey(r *http.Request, keyID string) (store.ProxyKey, error) {
+	keys, err := a.DB.ListProxyKeys(r.Context())
+	if err != nil {
+		return store.ProxyKey{}, err
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "revoked", "key_id": keyID})
+	for _, key := range keys {
+		if key.KeyID == keyID {
+			return key, nil
+		}
+	}
+	return store.ProxyKey{}, store.ErrNotFound
+}
+
+// proxyKeyReveal renders a create/rotate response.
+//
+// runtime_apply reports whether the change reached the running proxy. It is
+// never silently omitted: the console shows "代理进程未同步" when it failed, and
+// a key the proxy has not picked up is otherwise indistinguishable from a
+// working one.
+func (a *API) proxyKeyReveal(r *http.Request, key store.ProxyKey, raw, replacedKeyID string) map[string]any {
+	out := map[string]any{
+		"key_id":        key.KeyID,
+		"key":           raw,
+		"name":          key.Name,
+		"expires_at":    key.ExpiresAt,
+		"runtime_apply": a.applyProxyKeys(r),
+	}
+	if replacedKeyID != "" {
+		out["replaced_key_id"] = replacedKeyID
+	}
+	return out
+}
+
+// proxyKeyRevocation renders a revoke response.
+func (a *API) proxyKeyRevocation(r *http.Request, keyID string) map[string]any {
+	apply := a.applyProxyKeys(r)
+	status := "succeeded"
+	if apply["status"] != "succeeded" {
+		status = "runtime_pending"
+	}
+	return map[string]any{
+		"status":        status,
+		"key_id":        keyID,
+		"runtime_apply": apply,
+	}
+}
+
+// applyProxyKeys pushes the key set into the running plane.
+func (a *API) applyProxyKeys(r *http.Request) map[string]any {
+	if err := a.refreshPlane(r); err != nil {
+		return map[string]any{"status": "failed", "error_code": "runtime_reload_failed"}
+	}
+	return map[string]any{"status": "succeeded"}
 }
 
 // refreshPlane rebuilds the credential slots, catalog and router after a

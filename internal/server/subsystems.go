@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -40,13 +41,17 @@ func StartSubsystems(api *API, settings config.Settings, db *store.DB, credVault
 	registry := newAccountRegistry(db, settings)
 
 	// OAuth import flows are request-driven, so they only need construction.
-	api.Imports = oauthflow.NewService(oauthflow.ServiceOptions{
+	// The verifier is wired after the check-in client exists (below); until then
+	// a manual sign-in import reports that verification is unavailable rather
+	// than storing an unproven credential.
+	importFlows := oauthflow.NewService(oauthflow.ServiceOptions{
 		DB:       db,
 		Vault:    credVault,
 		Settings: settings,
 		Store:    oauthflow.NewStore(15 * time.Minute),
 		Imports:  importer.New(db, credVault),
 	})
+	api.Imports = importFlows
 
 	metricsCollector := metrics.NewCollector(metrics.CollectorOptions{
 		DB:       db,
@@ -75,6 +80,31 @@ func StartSubsystems(api *API, settings config.Settings, db *store.DB, credVault
 		ClaimMethod:  settings.CodeBuddyCheckinClaimMethod,
 		Timeout:      time.Duration(settings.CheckinTimeout) * time.Second,
 	})
+	// The manual sign-in import must prove the credential against the provider
+	// before it stores anything. The console gets explicit operator confirmation
+	// first ("may claim today's credits"), so a full sign-in is the right gate:
+	// a probe-only check cannot verify a token that has not signed in yet.
+	if settings.CheckinEnabled {
+		importFlows.SetCheckinVerifier(func(ctx context.Context, accountID string, credential checkin.Credential) error {
+			result, err := checkinClient.Run(ctx, accountID, credential)
+			if err != nil {
+				return err
+			}
+			if !result.OK() {
+				return fmt.Errorf("%w: %s", oauthflow.ErrCheckinRejected, result.Outcome)
+			}
+			return nil
+		})
+	}
+	// A chat import may also enable sign-in on its own, but only through the
+	// read-only probe: an import must never claim the day as a side effect.
+	// Without a configured status method the probe cannot decide, so the
+	// purpose stays unverified and the console asks for the sign-in credential.
+	if settings.CheckinEnabled && settings.CodeBuddyCheckinStatusMethod != "" {
+		importFlows.SetAutoCheckinVerifier(func(ctx context.Context, accountID string, credential checkin.Credential) bool {
+			return checkinClient.Status(ctx, accountID, credential).OK()
+		})
+	}
 	checkinService := checkin.NewService(checkin.ServiceOptions{
 		DB:       db,
 		Vault:    credVault,

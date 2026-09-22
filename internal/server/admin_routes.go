@@ -44,6 +44,8 @@ func (a *API) registerAdmin(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /api/admin/proxy-keys", guard(a.handleListProxyKeys))
 	mux.HandleFunc("POST /api/admin/proxy-keys", guard(a.handleCreateProxyKey))
+	mux.HandleFunc("POST /api/admin/proxy-keys/{keyID}/rotate", guard(a.handleRotateProxyKey))
+	mux.HandleFunc("POST /api/admin/proxy-keys/{keyID}/revoke", guard(a.handleRevokeProxyKey))
 	mux.HandleFunc("DELETE /api/admin/proxy-keys/{keyID}", guard(a.handleRevokeProxyKey))
 
 	mux.HandleFunc("GET /api/admin/settings", guard(a.handleGetSettings))

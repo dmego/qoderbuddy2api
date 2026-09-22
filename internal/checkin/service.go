@@ -283,6 +283,15 @@ func (s *Service) alreadyTerminal(ctx context.Context, target AccountRef) bool {
 	return outcome == OutcomeClaimed || outcome == OutcomeAlreadyCheckedIn
 }
 
+// RunCredential performs one sign-in with an explicitly supplied credential.
+//
+// It backs import-time verification, where the credential being tested has not
+// been stored yet, so it cannot be resolved from the database. The attempt is
+// not recorded: it is a probe, not a scheduled run.
+func (s *Service) RunCredential(ctx context.Context, accountID string, credential Credential) (Result, error) {
+	return s.options.Client.Run(ctx, accountID, credential)
+}
+
 // credentialFor resolves the sign-in credential, falling back to the chat
 // credential material because a sign-in session is often the same bearer.
 func (s *Service) credentialFor(ctx context.Context, target AccountRef) (Credential, error) {
@@ -392,6 +401,11 @@ func (s *Service) updatePurpose(ctx context.Context, target AccountRef, result R
 	now := store.NowISO()
 	switch {
 	case result.OK():
+		// A successful sign-in proves the credential, which is exactly the state
+		// that should activate the purpose. The Python build wrote enabled=True on
+		// success for the same reason: without it an account whose credential
+		// works still reads as disabled and never joins the scheduled batch.
+		updated.Enabled = true
 		updated.Status = "active"
 		updated.VerificationStatus = "verified"
 		updated.VerifiedAt = &now

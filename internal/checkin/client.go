@@ -119,6 +119,33 @@ func (c *Client) Run(ctx context.Context, accountID string, cred Credential) (Re
 	return c.claim(ctx, accountID, headers), nil
 }
 
+// Status runs the read-only status probe and never claims the day.
+//
+// It exists for import-time verification, where the operator is proving a
+// credential rather than signing in: falling through to the claim endpoint
+// would claim the day as a side effect of pasting a token. A probe that cannot
+// decide is reported as FAILED, because an unproven credential must not be
+// advertised as verified.
+func (c *Client) Status(ctx context.Context, accountID string, cred Credential) Result {
+	headers, err := buildHeaders(cred)
+	if err != nil {
+		return Result{Outcome: OutcomeAuthFailed, Provider: "codebuddy", AccountID: accountID, Message: err.Error()}
+	}
+	if c.options.StatusMethod == "" {
+		return Result{
+			Outcome: OutcomeFailed, Provider: "codebuddy", AccountID: accountID,
+			Message: "status probe unavailable",
+		}
+	}
+	if result := c.status(ctx, accountID, headers); result != nil {
+		return *result
+	}
+	return Result{
+		Outcome: OutcomeFailed, Provider: "codebuddy", AccountID: accountID,
+		Message: "status probe did not verify credential",
+	}
+}
+
 // status runs the optional preflight. A nil result means "not already checked
 // in, or the probe could not decide" and the caller falls through to the claim.
 func (c *Client) status(ctx context.Context, accountID string, headers map[string]string) *Result {

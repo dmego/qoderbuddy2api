@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dmego/qoderbuddy2api/internal/checkin"
 	"github.com/dmego/qoderbuddy2api/internal/config"
 	"github.com/dmego/qoderbuddy2api/internal/models"
 	"github.com/dmego/qoderbuddy2api/internal/store"
@@ -30,6 +31,10 @@ var ErrNotFound = errors.New("flow not found")
 
 // ErrUnsupportedProvider reports a provider without a login flow.
 var ErrUnsupportedProvider = errors.New("unsupported provider")
+
+// ErrCheckinRejected reports that the provider refused a sign-in credential.
+// The admin handler maps it to the code the console explains to the operator.
+var ErrCheckinRejected = errors.New("checkin_credential_rejected")
 
 // Flow is one login attempt, as the console sees it.
 type Flow struct {
@@ -43,6 +48,11 @@ type Flow struct {
 	AccountID string `json:"account_id,omitempty"`
 	AuthURL   string `json:"auth_url,omitempty"`
 	Message   string `json:"message,omitempty"`
+
+	// CheckinVerified reports whether the import also proved the sign-in
+	// credential. The console uses it to decide between "sign-in enabled" and
+	// "import the sign-in credential below".
+	CheckinVerified bool `json:"checkin_verified"`
 
 	// upstreamState is the value the provider issued; it is kept out of the JSON
 	// because the console addresses the flow by FlowID only.
@@ -126,6 +136,18 @@ type ImportWriter interface {
 	) (string, error)
 }
 
+// CheckinVerifier proves a sign-in credential works before it is stored.
+// It returns an error when the provider rejected the credential.
+type CheckinVerifier func(ctx context.Context, accountID string, credential checkin.Credential) error
+
+// AutoCheckinVerifier probes an already-imported chat credential to decide
+// whether the sign-in purpose can be activated.
+//
+// It is deliberately read-only: it runs during a chat import, where claiming
+// the day would be a side effect of pasting a token. It reports false whenever
+// the provider offers no reliable status endpoint.
+type AutoCheckinVerifier func(ctx context.Context, accountID string, credential checkin.Credential) bool
+
 // ServiceOptions configures the flow service.
 type ServiceOptions struct {
 	DB       *store.DB
@@ -133,16 +155,21 @@ type ServiceOptions struct {
 	Settings config.Settings
 	Store    *Store
 	Imports  ImportWriter
+	// VerifyCheckin gates the manual sign-in import: nothing is written until the
+	// upstream accepts the credential.
+	VerifyCheckin CheckinVerifier
 }
 
 // Service starts, polls and completes login flows.
 type Service struct {
-	db       *store.DB
-	vault    *vault.Vault
-	settings config.Settings
-	store    *Store
-	imports  ImportWriter
-	client   *client
+	db            *store.DB
+	vault         *vault.Vault
+	settings      config.Settings
+	store         *Store
+	imports       ImportWriter
+	client        *client
+	verifyCheckin CheckinVerifier
+	autoVerify    AutoCheckinVerifier
 }
 
 // NewService builds the flow service.
@@ -152,14 +179,23 @@ func NewService(opts ServiceOptions) *Service {
 		flowStore = NewStore(15 * time.Minute)
 	}
 	return &Service{
-		db:       opts.DB,
-		vault:    opts.Vault,
-		settings: opts.Settings,
-		store:    flowStore,
-		imports:  opts.Imports,
-		client:   newClient(),
+		db:            opts.DB,
+		vault:         opts.Vault,
+		settings:      opts.Settings,
+		store:         flowStore,
+		imports:       opts.Imports,
+		client:        newClient(),
+		verifyCheckin: opts.VerifyCheckin,
 	}
 }
+
+// SetCheckinVerifier installs the gate the manual sign-in import uses.
+func (s *Service) SetCheckinVerifier(verifier CheckinVerifier) { s.verifyCheckin = verifier }
+
+// SetAutoCheckinVerifier installs the read-only probe a chat import uses to turn
+// on sign-in without operator input. Left unset when the provider exposes no
+// status endpoint.
+func (s *Service) SetAutoCheckinVerifier(verifier AutoCheckinVerifier) { s.autoVerify = verifier }
 
 // endpointFor resolves the origin that serves one provider's plugin auth.
 func (s *Service) endpointFor(provider string) (string, error) {
@@ -279,6 +315,8 @@ func (s *Service) Poll(ctx context.Context, provider, flowID string) (Flow, erro
 	_ = s.store.Complete(flowID, "success", accountID, "")
 	flow.Status = "success"
 	flow.AccountID = accountID
+	flow.CheckinVerified = s.autoVerifyCheckin(ctx, flow.Provider, accountID,
+		map[string]any{"access_token": result.AccessToken})
 	return flow, nil
 }
 
@@ -301,20 +339,63 @@ func (s *Service) Manual(ctx context.Context, provider, label string, payload ma
 	if err != nil {
 		return Flow{}, err
 	}
-	now := time.Now().UTC()
-	return Flow{
+	flow := Flow{
 		FlowID:    randomToken(16),
 		Provider:  provider,
 		Label:     label,
-		CreatedAt: store.FormatISO(now),
-		ExpiresAt: store.FormatISO(now.Add(15 * time.Minute)),
+		CreatedAt: store.FormatISO(time.Now().UTC()),
+		ExpiresAt: store.FormatISO(time.Now().UTC().Add(15 * time.Minute)),
 		Status:    "success",
 		AccountID: accountID,
-	}, nil
+	}
+	flow.CheckinVerified = s.autoVerifyCheckin(ctx, provider, accountID, payload)
+	return flow, nil
 }
 
-// ManualCheckin imports a sign-in credential for the check-in purpose. Only the
-// domestic deployment has a sign-in centre.
+// autoVerifyCheckin probes the freshly imported chat credential and, when the
+// provider accepts it, activates the sign-in purpose so the operator does not
+// have to paste a second credential by hand.
+//
+// A probe that cannot decide leaves the purpose untouched: the console then
+// offers the manual sign-in import instead of silently claiming the account can
+// sign in.
+func (s *Service) autoVerifyCheckin(ctx context.Context, provider, accountID string, payload map[string]any) bool {
+	if provider != models.ProviderWorkBuddy || s.autoVerify == nil || accountID == "" {
+		return false
+	}
+	accessToken, _ := payload["access_token"].(string)
+	if accessToken == "" {
+		return false
+	}
+	if !s.autoVerify(ctx, accountID, checkinCredential("bearer", accessToken, "")) {
+		return false
+	}
+	now := store.NowISO()
+	purpose := store.Purpose{
+		Provider:           provider,
+		AccountID:          accountID,
+		Purpose:            "checkin",
+		Enabled:            true,
+		Status:             "active",
+		VerificationStatus: "verified",
+		Capabilities:       []string{"checkin.workbuddy"},
+		VerifiedAt:         &now,
+		LastSuccessAt:      &now,
+	}
+	if err := s.db.UpsertPurpose(ctx, purpose); err != nil {
+		slog.Warn("checkin auto-verification could not be stored",
+			"provider", provider, "account", accountID, "error", err)
+		return false
+	}
+	return true
+}
+
+// ManualCheckin imports and verifies a sign-in credential for the check-in
+// purpose. Only the domestic deployment has a sign-in centre.
+//
+// The upstream call happens before anything is written, so a rejected token
+// never lands in the database and the purpose is only ever enabled for a
+// credential the provider accepted.
 func (s *Service) ManualCheckin(ctx context.Context, provider, accountID, mode string, payload map[string]any, expiresAt string) (Flow, error) {
 	if provider != models.ProviderWorkBuddy {
 		return Flow{}, ErrUnsupportedProvider
@@ -327,6 +408,13 @@ func (s *Service) ManualCheckin(ctx context.Context, provider, accountID, mode s
 	if accessToken == "" && cookie == "" {
 		return Flow{}, errors.New("access_token or cookie is required")
 	}
+	if s.verifyCheckin == nil {
+		return Flow{}, errors.New("check-in verification is unavailable")
+	}
+	resolvedMode := orDefault(mode, "bearer")
+	if err := s.verifyCheckin(ctx, accountID, checkinCredential(resolvedMode, accessToken, cookie)); err != nil {
+		return Flow{}, err
+	}
 	encrypted, err := s.vault.Encrypt(payload)
 	if err != nil {
 		return Flow{}, err
@@ -335,7 +423,7 @@ func (s *Service) ManualCheckin(ctx context.Context, provider, accountID, mode s
 		Provider:         provider,
 		AccountID:        accountID,
 		Purpose:          "checkin",
-		Mode:             orDefault(mode, "bearer"),
+		Mode:             resolvedMode,
 		EncryptedPayload: encrypted,
 		HasRefreshToken:  payload["refresh_token"] != nil,
 	}
@@ -354,9 +442,12 @@ func (s *Service) ManualCheckin(ctx context.Context, provider, accountID, mode s
 		Enabled:            true,
 		Status:             "active",
 		VerificationStatus: "verified",
-		Capabilities:       []string{"checkin"},
+		Capabilities:       []string{"checkin.workbuddy"},
 		VerifiedAt:         &now,
 		LastSuccessAt:      &now,
+	}
+	if cookie != "" {
+		purpose.Capabilities = append(purpose.Capabilities, "credential.cookie")
 	}
 	if err := s.db.UpsertPurpose(ctx, purpose); err != nil {
 		return Flow{}, err
@@ -409,6 +500,11 @@ func defaultLabel(provider string) string {
 		return "WorkBuddy 国际版 OAuth"
 	}
 	return "WorkBuddy OAuth"
+}
+
+// checkinCredential renders the auth material for one sign-in probe.
+func checkinCredential(mode, accessToken, cookie string) checkin.Credential {
+	return checkin.Credential{Mode: mode, AccessToken: accessToken, Cookie: cookie}
 }
 
 func orDefault(value, fallback string) string {
