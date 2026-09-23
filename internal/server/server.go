@@ -112,7 +112,7 @@ func (a *API) handleVersion(w http.ResponseWriter, r *http.Request) {
 }
 
 // Version is the build version reported by /version and the admin service view.
-const Version = "1.3.2"
+const Version = "1.3.3"
 
 func (a *API) planeState() string {
 	if a.Plane == nil {
