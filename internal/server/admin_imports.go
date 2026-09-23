@@ -63,7 +63,7 @@ func (a *API) handleImportStart(w http.ResponseWriter, r *http.Request) {
 		AccountID string `json:"account_id"`
 	}
 	_ = decodeBody(r, &body)
-	flow, err := a.Imports.Start(r.Context(), provider, body.Label)
+	flow, err := a.Imports.Start(r.Context(), provider, body.Label, body.AccountID)
 	if err != nil {
 		// The upstream state endpoint may be unreachable from a restricted
 		// network; the manual import path exists for exactly that case, so the
@@ -104,11 +104,12 @@ func (a *API) handleImportPoll(w http.ResponseWriter, r *http.Request) {
 		"flow_id":    flow.FlowID,
 	}
 	if flow.Status == "success" && flow.AccountID != "" {
-		response["account"] = accountReference{
-			Provider:  flow.Provider,
-			AccountID: flow.AccountID,
-			Label:     flow.Label,
-		}
+		// The console reads the label back from this reply, so it must be the
+		// label the account actually carries. The flow holds the name the
+		// operator typed (and the console's default when they typed nothing),
+		// while the importer may have replaced a placeholder with the identity
+		// the token named.
+		response["account"] = a.importAccountReference(r, flow.Provider, flow.AccountID, flow.Label)
 		// The domestic deployment has a sign-in centre; the international one is
 		// chat-only, so no sign-in purpose is implied there.
 		if flow.Provider == models.ProviderWorkBuddy {
@@ -150,7 +151,7 @@ func (a *API) handleImportManual(w http.ResponseWriter, r *http.Request) {
 	if body.RefreshToken != "" {
 		payload["refresh_token"] = body.RefreshToken
 	}
-	flow, err := a.Imports.Manual(r.Context(), provider, body.Label, payload, body.ExpiresAt)
+	flow, err := a.Imports.Manual(r.Context(), provider, body.AccountID, body.Label, payload, body.ExpiresAt)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -160,8 +161,9 @@ func (a *API) handleImportManual(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "provider_pool_refresh_failed")
 		return
 	}
+	reference := a.importAccountReference(r, provider, flow.AccountID, flow.Label)
 	writeJSON(w, http.StatusOK, importResult{
-		Account:         &accountReference{Provider: provider, AccountID: flow.AccountID, Label: flow.Label},
+		Account:         &reference,
 		CheckinVerified: flow.CheckinVerified,
 	})
 }
@@ -252,4 +254,23 @@ func firstNonEmptyString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// importAccountReference renders the account a completed import produced.
+//
+// The label comes from storage, not from the flow: the importer replaces the
+// console's placeholder name with the identity the credential named, and the
+// console shows this label back to the operator. A lookup failure is not worth
+// failing the import for, so the flow's own label is the fallback.
+func (a *API) importAccountReference(r *http.Request, provider, accountID, fallbackLabel string) accountReference {
+	reference := accountReference{Provider: provider, AccountID: accountID, Label: fallbackLabel}
+	if a.DB == nil {
+		return reference
+	}
+	account, err := a.DB.GetAccount(r.Context(), provider, accountID)
+	if err != nil {
+		return reference
+	}
+	reference.Label = account.Label
+	return reference
 }

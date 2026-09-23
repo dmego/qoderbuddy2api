@@ -10,10 +10,11 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"log/slog"
+	"strconv"
+	"time"
 
 	"github.com/dmego/qoderbuddy2api/internal/models"
 	"github.com/dmego/qoderbuddy2api/internal/store"
@@ -43,15 +44,24 @@ func (w *Writer) UpsertImportedAccount(
 	if payload == nil {
 		return "", errors.New("import payload is empty")
 	}
-	if accountID == "" {
-		accountID = deriveAccountID(provider, payload, identityHash)
-	}
-	// Reuse the existing row for this identity so a repeat login updates the
-	// credential instead of accumulating a duplicate account with its own quota
-	// state and its own entry in every routing decision.
-	if identityHash != nil {
-		if existing, err := w.db.FindAccountByIdentityHash(ctx, provider, *identityHash); err == nil {
-			accountID = existing.AccountID
+	// The operator's chosen account wins over identity de-duplication: the
+	// re-authorization entry point sends the account id, and a credential that
+	// names a different upstream account must not silently redirect the write.
+	// This is the precedence the pre-rewrite build used (durable_id = account_id
+	// or slug), and it is what keeps "re-authorize this account" honest.
+	if accountID != "" {
+		if existing, err := w.db.GetAccount(ctx, provider, accountID); err == nil && identityHash == nil {
+			identityHash = existing.IdentityHash
+		}
+	} else {
+		accountID = deriveAccountID(provider)
+		// Reuse the existing row for this identity so a repeat login updates the
+		// credential instead of accumulating a duplicate account with its own
+		// quota state and its own entry in every routing decision.
+		if identityHash != nil {
+			if existing, err := w.db.FindAccountByIdentityHash(ctx, provider, *identityHash); err == nil {
+				accountID = existing.AccountID
+			}
 		}
 	}
 	account, err := w.db.UpsertAccount(ctx, store.Account{
@@ -154,8 +164,14 @@ func (w *Writer) InvalidateCredential(provider, accountID, purpose string) {
 	slog.Debug("credential invalidated", "provider", provider, "account", accountID, "purpose", purpose)
 }
 
-// deriveAccountID builds a stable id for a newly imported account.
-func deriveAccountID(provider string, payload map[string]any, identityHash *string) string {
+// deriveAccountID mints the durable id for a newly imported account.
+//
+// The id is random, matching the pre-rewrite build (uuid4().hex[:12]) and the
+// import is de-duplicated through the identity hash instead. A derived id is
+// what made two unlabelled logins collide: both computed the same id from the
+// same default label, so the second login could only ever update the first
+// account.
+func deriveAccountID(provider string) string {
 	prefix := "acc-"
 	switch provider {
 	case models.ProviderWorkBuddy:
@@ -163,25 +179,18 @@ func deriveAccountID(provider string, payload map[string]any, identityHash *stri
 	case models.ProviderWorkBuddyIntl:
 		prefix = "wbintl-"
 	}
-	seed := ""
-	if identityHash != nil {
-		seed = *identityHash
+	return prefix + randomHex(12)
+}
+
+// randomHex renders n random hex characters (or a timestamp when the system
+// entropy source is unavailable, which keeps the id unique in practice).
+func randomHex(n int) string {
+	raw := make([]byte, (n+1)/2)
+	if _, err := rand.Read(raw); err != nil {
+		digest := sha256.Sum256([]byte(strconv.FormatInt(time.Now().UnixNano(), 10)))
+		return hex.EncodeToString(digest[:])[:n]
 	}
-	if seed == "" {
-		if token, ok := payload["access_token"].(string); ok {
-			digest := sha256.Sum256([]byte(token))
-			seed = hex.EncodeToString(digest[:])
-		}
-	}
-	if len(seed) > 12 {
-		seed = seed[:12]
-	}
-	if seed == "" {
-		raw := make([]byte, 6)
-		_, _ = rand.Read(raw)
-		seed = base64.RawURLEncoding.EncodeToString(raw)
-	}
-	return prefix + seed
+	return hex.EncodeToString(raw)[:n]
 }
 
 // maskIdentity renders a non-secret display form of an identity.

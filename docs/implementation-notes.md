@@ -144,6 +144,26 @@ internal/server       HTTP surface, admin auth, schedulers wiring
 `deadline_exceeded`、`unknown_error`。之前存的是 `%T`（`*fmt.wrapError`），
 把所有失败压成同一个无信息的值。新增成员只增不改名，控制台和 CSV 按它分组。
 
+## 导入账号的身份与去重
+
+浏览器登录与手动导入都经过 `internal/oauthflow` + `internal/importer`，两条不变量：
+
+1. **去重身份来自凭据本身，不是显示名。** 两个部署都走各自的 Keycloak realm
+   （`…/auth/realms/copilot`），token 的 `sub` 是跨登录稳定的唯一值，因此
+   `identity_hash` = `vault.Fingerprint(sub)`。**绝不能拿 label 当身份**：label 是
+   运营者可见文本，未命名登录时是常量默认值，用它哈希会让第二次登录解析到第一次
+   创建的账号 —— 表现为「登录成功但用户数不涨」，并且第二次登录静默覆盖了第一个
+   账号的凭据。国内版的 plugin token 不携带 `sub`（`sub` 缺失时 `identity_hash`
+   为 NULL），此时新账号按随机 id 建行，重复登录靠下面的 account_id 复用。
+2. **account_id 优先于身份去重。** 重新授权入口（账号详情页「重新授权」）会带上
+   `account_id`，`UpsertImportedAccount` 必须先认它；国内版 token 无 `sub`，只靠
+   身份哈希无法识别重复登录，这条路径是唯一能保证「重新授权落回原账号」的机制。
+
+label 只做展示：当它是控制台自己的默认名（`WorkBuddy OAuth` / `WorkBuddy 国际版 OAuth`）
+时，用 token 里的 email / preferred_username / name 替换，使账号可辨认；运营者显式
+填写的名字一律保留。`/poll` 与 `/manual` 返回的 `account.label` 取自**数据库**，
+不是 flow 上的原始请求值 —— 否则控制台会显示一个并不存在的名字。
+
 ## 环境变量
 
 变量名与 Python 版完全一致。Go 新增：

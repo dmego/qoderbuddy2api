@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -57,6 +58,11 @@ type Flow struct {
 	// upstreamState is the value the provider issued; it is kept out of the JSON
 	// because the console addresses the flow by FlowID only.
 	upstreamState string
+
+	// requestedAccountID is the account the operator chose to re-authorize.
+	// The re-auth entry point (the account detail page) passes it so the new
+	// credential lands on that account instead of creating another slot.
+	requestedAccountID string
 }
 
 // Store holds live flows in memory with a fixed TTL.
@@ -217,7 +223,13 @@ func authDomain(provider string) string {
 }
 
 // Start mints a login flow and returns the URL the console should open.
-func (s *Service) Start(ctx context.Context, provider, label string) (Flow, error) {
+//
+// accountID is the account the operator chose to re-authorize, empty for a new
+// import. The console sends it from the account detail page, and it is the only
+// way to keep a re-login on the existing account when the provider issues a
+// token that names no account (the domestic deployment's plugin token carries
+// no user id, so identity de-duplication cannot see it).
+func (s *Service) Start(ctx context.Context, provider, label, accountID string) (Flow, error) {
 	endpoint, err := s.endpointFor(provider)
 	if err != nil {
 		return Flow{}, err
@@ -228,15 +240,16 @@ func (s *Service) Start(ctx context.Context, provider, label string) (Flow, erro
 	}
 	now := time.Now().UTC()
 	flow := Flow{
-		StateHash:     hashToken(start.State),
-		FlowID:        randomToken(16),
-		Provider:      provider,
-		Label:         label,
-		CreatedAt:     store.FormatISO(now),
-		ExpiresAt:     store.FormatISO(now.Add(15 * time.Minute)),
-		Status:        "pending",
-		AuthURL:       start.AuthURL,
-		upstreamState: start.State,
+		StateHash:          hashToken(start.State),
+		FlowID:             randomToken(16),
+		Provider:           provider,
+		Label:              label,
+		CreatedAt:          store.FormatISO(now),
+		ExpiresAt:          store.FormatISO(now.Add(15 * time.Minute)),
+		Status:             "pending",
+		AuthURL:            start.AuthURL,
+		upstreamState:      start.State,
+		requestedAccountID: accountID,
 	}
 	s.store.mu.Lock()
 	s.store.prune(now)
@@ -304,7 +317,7 @@ func (s *Service) Poll(ctx context.Context, provider, flowID string) (Flow, erro
 		flow.Message = message
 		return flow, nil
 	}
-	accountID, importErr := s.importCredential(ctx, flow.Provider, flow.Label, result)
+	accountID, importErr := s.importCredential(ctx, flow.Provider, flow.requestedAccountID, flow.Label, result)
 	if importErr != nil {
 		slog.Warn("oauth import failed", "provider", flow.Provider, "error", importErr)
 		_ = s.store.Complete(flowID, "failed", "", "import_failed")
@@ -324,7 +337,12 @@ func (s *Service) Poll(ctx context.Context, provider, flowID string) (Flow, erro
 //
 // This is the fallback path and must work even when the provider's state/token
 // endpoints are unreachable, which is why it does not touch the network.
-func (s *Service) Manual(ctx context.Context, provider, label string, payload map[string]any, expiresAt string) (Flow, error) {
+//
+// accountID is the account the operator chose to re-authorize, empty for a new
+// import; the pre-rewrite build passed the console's account_id through the same
+// way, so re-pasting a token for an existing account refreshed it instead of
+// adding a slot.
+func (s *Service) Manual(ctx context.Context, provider, accountID, label string, payload map[string]any, expiresAt string) (Flow, error) {
 	if _, err := s.endpointFor(provider); err != nil {
 		return Flow{}, err
 	}
@@ -335,7 +353,7 @@ func (s *Service) Manual(ctx context.Context, provider, label string, payload ma
 	if token == "" {
 		return Flow{}, errors.New("access_token is required")
 	}
-	accountID, err := s.persist(ctx, provider, "", label, payload, expiresAt)
+	imported, err := s.persist(ctx, provider, accountID, label, payload, expiresAt)
 	if err != nil {
 		return Flow{}, err
 	}
@@ -346,9 +364,9 @@ func (s *Service) Manual(ctx context.Context, provider, label string, payload ma
 		CreatedAt: store.FormatISO(time.Now().UTC()),
 		ExpiresAt: store.FormatISO(time.Now().UTC().Add(15 * time.Minute)),
 		Status:    "success",
-		AccountID: accountID,
+		AccountID: imported,
 	}
-	flow.CheckinVerified = s.autoVerifyCheckin(ctx, provider, accountID, payload)
+	flow.CheckinVerified = s.autoVerifyCheckin(ctx, provider, imported, payload)
 	return flow, nil
 }
 
@@ -464,7 +482,7 @@ func (s *Service) ManualCheckin(ctx context.Context, provider, accountID, mode s
 }
 
 // importCredential stores an account produced by a completed upstream login.
-func (s *Service) importCredential(ctx context.Context, provider, label string, result pollResult) (string, error) {
+func (s *Service) importCredential(ctx context.Context, provider, accountID, label string, result pollResult) (string, error) {
 	payload := map[string]any{"access_token": result.AccessToken}
 	if result.RefreshToken != "" {
 		payload["refresh_token"] = result.RefreshToken
@@ -473,26 +491,48 @@ func (s *Service) importCredential(ctx context.Context, provider, label string, 
 	if result.ExpiresIn > 0 {
 		expiresAt = store.FormatISO(time.Now().UTC().Add(time.Duration(result.ExpiresIn) * time.Second))
 	}
-	return s.persist(ctx, provider, "", label, payload, expiresAt)
+	return s.persist(ctx, provider, accountID, label, payload, expiresAt)
 }
 
 // persist delegates storage to the import writer.
+//
+// The de-duplication identity is the account the provider signed in, read from
+// the credential itself — never the display label the console collected. The
+// label is operator-facing text that falls back to a constant for unlabelled
+// logins, so hashing it made every later login resolve to the first account it
+// created: the second WorkBuddy login imported no new account and overwrote the
+// first one's credential. The upstream identity is hashed so the raw value
+// never reaches storage.
 func (s *Service) persist(ctx context.Context, provider, accountID, label string, payload map[string]any, expiresAt string) (string, error) {
 	if s.imports == nil {
 		return "", errors.New("no import writer configured")
 	}
-	if label == "" {
-		label = defaultLabel(provider)
+	identity, display := credentialIdentity(payload)
+	if isPlaceholderLabel(label) {
+		// The console sends a default name when the operator does not pick one;
+		// an unnamed import takes the identity the token carries (an email for
+		// the international deployment) so accounts stay recognizable.
+		label = firstNonEmpty(display, label, defaultLabel(provider))
 	}
-	// The identity used for de-duplication is the label the console collected
-	// (an email for the international deployment), hashed so the raw value never
-	// reaches storage.
 	var identityHash *string
-	if label != "" && s.vault != nil {
-		digest := s.vault.Fingerprint(label)
+	if identity != "" && s.vault != nil {
+		digest := s.vault.Fingerprint(identity)
 		identityHash = &digest
 	}
 	return s.imports.UpsertImportedAccount(ctx, provider, accountID, label, identityHash, payload, expiresAt)
+}
+
+// placeholderLabels are the names meaning "the operator did not pick a label".
+// They are the console's own defaults for both deployments.
+var placeholderLabels = map[string]bool{
+	"":                    true,
+	"WorkBuddy OAuth":     true,
+	"WorkBuddy 国际版 OAuth": true,
+}
+
+// isPlaceholderLabel reports whether a label carries no operator intent.
+func isPlaceholderLabel(label string) bool {
+	return placeholderLabels[strings.TrimSpace(label)]
 }
 
 func defaultLabel(provider string) string {
