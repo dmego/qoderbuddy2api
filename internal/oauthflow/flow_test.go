@@ -193,71 +193,103 @@ func TestImportIdentityComesFromTheTokenNotTheLabel(t *testing.T) {
 	}
 }
 
-// Two browser logins that name no upstream account must land as two accounts.
+// Issue #2: a second browser login must add a second account.
 //
-// The de-duplication identity used to be the display label the console
-// collected. An unlabelled login posts the same default label every time, so
-// both logins hashed to the same identity: the second one overwrote the first
-// account's credential and the console never showed a new user.
-func TestUnlabelledLoginsImportSeparateAccounts(t *testing.T) {
-	dir := t.TempDir()
-	db, err := store.Open(filepath.Join(dir, "qb2api.sqlite3"))
-	if err != nil {
-		t.Fatalf("Open db: %v", err)
-	}
-	defer db.Close()
-	credVault, err := vault.New(testVaultKey)
-	if err != nil {
-		t.Fatalf("vault: %v", err)
-	}
-	service := NewService(ServiceOptions{
-		DB:       db,
-		Vault:    credVault,
-		Settings: testSettings(),
-		Store:    NewStore(15 * time.Minute),
-		Imports:  importer.New(db, credVault),
-	})
-	ctx := context.Background()
+// The console posts its own default display name when the operator leaves the
+// field empty, and that default is a per-provider constant. Hashing it as the
+// de-duplication identity made every later login resolve to the first account
+// and overwrite its credential, so a second account could never be added — for
+// the domestic deployment, where the field is normally left empty, always.
+//
+// The test drives both providers with the exact labels the console sends
+// (AccountImportPanel.vue oauthDefaultLabel), because the bug only appeared for
+// those strings.
+func TestSecondBrowserLoginAddsAnAccount(t *testing.T) {
+	for _, provider := range []struct {
+		id           string
+		defaultLabel string
+		secondSub    string
+	}{
+		{id: "codebuddy", defaultLabel: "WorkBuddy OAuth", secondSub: "0040c1cd-42b4-48e1-a385-85e2d7067206"},
+		{id: "workbuddy_intl", defaultLabel: "WorkBuddy 国际版 OAuth", secondSub: "81889796-8ea4-4f7e-b052-07b3e4f68a84"},
+	} {
+		t.Run(provider.id, func(t *testing.T) {
+			dir := t.TempDir()
+			db, err := store.Open(filepath.Join(dir, "qb2api.sqlite3"))
+			if err != nil {
+				t.Fatalf("Open db: %v", err)
+			}
+			defer db.Close()
+			credVault, err := vault.New(testVaultKey)
+			if err != nil {
+				t.Fatalf("vault: %v", err)
+			}
+			service := NewService(ServiceOptions{
+				DB:       db,
+				Vault:    credVault,
+				Settings: testSettings(),
+				Store:    NewStore(15 * time.Minute),
+				Imports:  importer.New(db, credVault),
+			})
+			ctx := context.Background()
+			// Real tokens carry a display identity too: the domestic realm puts
+			// the account handle in preferred_username, the international one an
+			// email. That is what replaces the console's placeholder name.
+			firstToken := testToken(map[string]any{
+				"sub": "f75ce9c9-da0c-45c7-afb0-12fbc2baa497", "preferred_username": "13126806311",
+			})
+			secondToken := testToken(map[string]any{
+				"sub": provider.secondSub, "preferred_username": "13260432937",
+			})
 
-	firstToken := testToken(map[string]any{"sub": "f75ce9c9-da0c-45c7-afb0-12fbc2baa497"})
-	secondToken := testToken(map[string]any{"sub": "0040c1cd-42b4-48e1-a385-85e2d7067206"})
-
-	first, err := service.Manual(ctx, "codebuddy", "", "", map[string]any{"access_token": firstToken}, "")
-	if err != nil {
-		t.Fatalf("first login: %v", err)
-	}
-	second, err := service.Manual(ctx, "codebuddy", "", "", map[string]any{"access_token": secondToken}, "")
-	if err != nil {
-		t.Fatalf("second login: %v", err)
-	}
-	if first.AccountID == second.AccountID {
-		t.Fatalf("both logins imported into %q: a new login must add an account", first.AccountID)
-	}
-	accounts, err := db.ListAccounts(ctx, models.KnownProviders)
-	if err != nil {
-		t.Fatalf("list accounts: %v", err)
-	}
-	if len(accounts) != 2 {
-		t.Fatalf("expected 2 imported accounts, got %d", len(accounts))
-	}
-	// The first login's credential must be untouched by the second.
-	firstCredential, err := db.GetCredential(ctx, "codebuddy", first.AccountID, "chat")
-	if err != nil {
-		t.Fatalf("first credential: %v", err)
-	}
-	if firstCredential.CredentialVersion != 1 {
-		t.Fatalf("the first account's credential was rewritten (version %d)", firstCredential.CredentialVersion)
-	}
-	// A repeat login of the first account refreshes it instead of adding a slot.
-	again, err := service.Manual(ctx, "codebuddy", "", "", map[string]any{"access_token": firstToken}, "")
-	if err != nil {
-		t.Fatalf("repeat login: %v", err)
-	}
-	if again.AccountID != first.AccountID {
-		t.Fatalf("a re-login created %q instead of refreshing %q", again.AccountID, first.AccountID)
-	}
-	if len(listAccountsOrFail(t, db)) != 2 {
-		t.Fatal("a re-login must not add an account")
+			first, err := service.Manual(ctx, provider.id, "", provider.defaultLabel,
+				map[string]any{"access_token": firstToken}, "")
+			if err != nil {
+				t.Fatalf("first login: %v", err)
+			}
+			second, err := service.Manual(ctx, provider.id, "", provider.defaultLabel,
+				map[string]any{"access_token": secondToken}, "")
+			if err != nil {
+				t.Fatalf("second login: %v", err)
+			}
+			if first.AccountID == second.AccountID {
+				t.Fatalf("both logins imported into %q: a second account can never be added", first.AccountID)
+			}
+			accounts, err := db.ListAccounts(ctx, models.KnownProviders)
+			if err != nil {
+				t.Fatalf("list accounts: %v", err)
+			}
+			if len(accounts) != 2 {
+				t.Fatalf("expected 2 accounts after two logins, got %d", len(accounts))
+			}
+			// The second login must not have rewritten the first credential.
+			firstCredential, err := db.GetCredential(ctx, provider.id, first.AccountID, "chat")
+			if err != nil {
+				t.Fatalf("first credential: %v", err)
+			}
+			if firstCredential.CredentialVersion != 1 {
+				t.Fatalf("the first account's credential was overwritten (version %d)", firstCredential.CredentialVersion)
+			}
+			// The console's default name must not survive as the stored label:
+			// two accounts carrying it are indistinguishable to the operator.
+			for _, account := range accounts {
+				if account.Label == provider.defaultLabel {
+					t.Fatalf("account %s kept the console default label %q", account.AccountID, account.Label)
+				}
+			}
+			// A repeat login of the first account refreshes it instead of adding a slot.
+			again, err := service.Manual(ctx, provider.id, "", provider.defaultLabel,
+				map[string]any{"access_token": firstToken}, "")
+			if err != nil {
+				t.Fatalf("repeat login: %v", err)
+			}
+			if again.AccountID != first.AccountID {
+				t.Fatalf("a re-login created %q instead of refreshing %q", again.AccountID, first.AccountID)
+			}
+			if len(listAccountsOrFail(t, db)) != 2 {
+				t.Fatal("a re-login must not add an account")
+			}
+		})
 	}
 }
 
