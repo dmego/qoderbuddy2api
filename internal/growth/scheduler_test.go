@@ -83,7 +83,7 @@ func TestSchedulerIntervalFloor(t *testing.T) {
 		{
 			name:     "runtime override wins over the environment default",
 			settings: config.Settings{GrowthSchedulerInterval: 3600},
-			runtime:  &fakeRuntime{tier: "14d"},
+			runtime:  &fakeRuntime{},
 			want:     1800,
 		},
 	}
@@ -130,7 +130,7 @@ func TestSchedulerStartDisabled(t *testing.T) {
 func TestAutomationSettingFallbacks(t *testing.T) {
 	settings := config.Settings{
 		GrowthAutoTasks: true, GrowthAutoLottery: false, GrowthAutoTravel: true,
-		GrowthAutoRedeem: false, GrowthRedeemTier: "28d", GrowthAutoBuddyOpen: true,
+		GrowthAutoRedeem: false, GrowthAutoBuddyOpen: true,
 		GrowthAutoActiveDay: false, GrowthActiveDayAttempts: 5,
 	}
 	fromSettings := NewAutomation(AutomationOptions{Settings: settings})
@@ -140,13 +140,13 @@ func TestAutomationSettingFallbacks(t *testing.T) {
 	if fromSettings.autoRedeem() || !fromSettings.autoBuddyOpen() || fromSettings.autoActiveDay() {
 		t.Fatal("nil runtime must use the environment defaults")
 	}
-	if fromSettings.redeemTier() != "28d" || fromSettings.activeDayAttempts() != 5 {
-		t.Fatalf("tier = %q, attempts = %d", fromSettings.redeemTier(), fromSettings.activeDayAttempts())
+	if fromSettings.activeDayAttempts() != 5 {
+		t.Fatalf("attempts = %d, want 5", fromSettings.activeDayAttempts())
 	}
 
 	overridden := NewAutomation(AutomationOptions{
 		Settings: settings,
-		Runtime:  &fakeRuntime{tier: "7d", attempts: 1, autoFlags: true},
+		Runtime:  &fakeRuntime{attempts: 1, autoFlags: true},
 	})
 	if !overridden.autoLottery() || !overridden.autoTasks() {
 		t.Fatal("runtime overrides must win over the environment defaults")
@@ -154,18 +154,13 @@ func TestAutomationSettingFallbacks(t *testing.T) {
 	if !overridden.autoRedeem() || !overridden.autoBuddyOpen() || !overridden.autoActiveDay() {
 		t.Fatal("runtime overrides must win over the environment defaults")
 	}
-	if overridden.redeemTier() != "7d" || overridden.activeDayAttempts() != 1 {
-		t.Fatalf("tier = %q, attempts = %d", overridden.redeemTier(), overridden.activeDayAttempts())
+	if overridden.activeDayAttempts() != 1 {
+		t.Fatalf("attempts = %d, want 1", overridden.activeDayAttempts())
 	}
 
-	// A blank tier must not reach the upstream as an unknown tier.
-	blank := NewAutomation(AutomationOptions{Settings: config.Settings{}})
-	if blank.redeemTier() != "14d" {
-		t.Fatalf("blank tier = %q, want the 14d default", blank.redeemTier())
-	}
 	// An attempt budget below one would make the first confirmation conclude
 	// the day, so it is clamped.
-	zero := NewAutomation(AutomationOptions{Settings: config.Settings{}, Runtime: &fakeRuntime{tier: "14d"}})
+	zero := NewAutomation(AutomationOptions{Settings: config.Settings{}})
 	if zero.activeDayAttempts() != 1 {
 		t.Fatalf("attempts = %d, want 1", zero.activeDayAttempts())
 	}

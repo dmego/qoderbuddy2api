@@ -89,7 +89,6 @@ type Settings struct {
 	GrowthAutoLottery       bool
 	GrowthAutoTravel        bool
 	GrowthAutoRedeem        bool
-	GrowthRedeemTier        string
 	GrowthAutoBuddyOpen     bool
 	GrowthAutoActiveDay     bool
 	GrowthActiveDayAttempts int
@@ -175,7 +174,6 @@ func Load() Settings {
 		GrowthAutoLottery:       envBool("GROWTH_AUTO_LOTTERY", true),
 		GrowthAutoTravel:        envBool("GROWTH_AUTO_TRAVEL", true),
 		GrowthAutoRedeem:        envBool("GROWTH_AUTO_REDEEM", true),
-		GrowthRedeemTier:        env("GROWTH_REDEEM_TIER", "14d"),
 		GrowthAutoBuddyOpen:     envBool("GROWTH_AUTO_BUDDY_OPEN", false),
 		GrowthAutoActiveDay:     envBool("GROWTH_AUTO_ACTIVE_DAY", true),
 		GrowthActiveDayAttempts: envInt("GROWTH_ACTIVE_DAY_CONFIRM_ATTEMPTS", 3),

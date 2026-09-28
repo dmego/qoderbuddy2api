@@ -152,10 +152,6 @@ func (r *RuntimeSettings) GrowthAutoRedeem() bool {
 	return r.bool("growth.auto_redeem", r.settings.GrowthAutoRedeem)
 }
 
-func (r *RuntimeSettings) GrowthRedeemTier() string {
-	return r.stringValue("growth.redeem_tier", r.settings.GrowthRedeemTier)
-}
-
 func (r *RuntimeSettings) GrowthAutoBuddyOpen() bool {
 	return r.bool("growth.auto_buddy_open", r.settings.GrowthAutoBuddyOpen)
 }

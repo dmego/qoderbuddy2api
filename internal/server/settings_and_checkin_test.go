@@ -92,7 +92,7 @@ func TestSettingsResponseCarriesSchema(t *testing.T) {
 	if len(response.Schema) == 0 {
 		t.Fatal("schema block missing: the console cannot render any control without it")
 	}
-	for _, key := range []string{"checkin.enabled", "checkin.at", "growth.redeem_tier", "growth.scheduler_interval_seconds"} {
+	for _, key := range []string{"checkin.enabled", "checkin.at", "growth.auto_redeem", "growth.scheduler_interval_seconds"} {
 		entry, ok := response.Schema[key]
 		if !ok {
 			t.Fatalf("schema entry missing for %s", key)
@@ -155,7 +155,6 @@ func TestPatchSettingRejectsBadInput(t *testing.T) {
 		{"wrong type", map[string]any{"key": "checkin.enabled", "value": "yes"}, http.StatusBadRequest},
 		{"out of range", map[string]any{"key": "checkin.retry_limit", "value": 99}, http.StatusBadRequest},
 		{"bad clock", map[string]any{"key": "checkin.at", "value": "99:99"}, http.StatusBadRequest},
-		{"bad tier", map[string]any{"key": "growth.redeem_tier", "value": "3d"}, http.StatusBadRequest},
 	}
 	for _, testCase := range cases {
 		recorder := adminRequest(t, api, http.MethodPatch, "/api/admin/settings", testCase.body)

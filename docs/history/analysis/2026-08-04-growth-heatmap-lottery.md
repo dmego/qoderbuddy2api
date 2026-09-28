@@ -301,8 +301,7 @@ runtime_settings:
   growth_auto_tasks      = true    # 任务 accept/claim
   growth_auto_lottery    = true    # 抽奖（实物不领）
   growth_auto_travel     = true    # 旅行 depart/claim
-  growth_auto_redeem     = true    # 兑换（受 redeem_tier 控制）
-  growth_redeem_tier     = "28d"   # 档位：7d / 14d / 28d / off
+  growth_auto_redeem     = true    # 兑换全部已达标档位（历史设计曾用 redeem_tier 单选，已废弃）
   growth_auto_buddy_open = false   # Buddy 抽卡（默认关）
 ```
 

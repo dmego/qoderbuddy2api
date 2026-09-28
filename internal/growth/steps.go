@@ -63,7 +63,7 @@ func (a *Automation) claimCompleted(ctx context.Context, token string, tasks []T
 }
 
 // stepLottery draws the available chances, capped so one run cannot spend an
-// unbounded number of draws.
+// unbounded number of draws, and reports each prize it won.
 func (a *Automation) stepLottery(ctx context.Context, token string, overview Overview) StepResult {
 	chances := 0
 	if overview.Lottery.AvailableChances != nil {
@@ -76,6 +76,7 @@ func (a *Automation) stepLottery(ctx context.Context, token string, overview Ove
 	}
 	drawn := 0
 	credits := 0
+	prizes := make([]map[string]any, 0, min(chances, 10))
 	for range min(chances, 10) {
 		result, err := a.opts.GrowthClient.LotteryDraw(ctx, token)
 		if err != nil {
@@ -84,16 +85,53 @@ func (a *Automation) stepLottery(ctx context.Context, token string, overview Ove
 		}
 		drawn++
 		credits += extractCredits(result, 0)
+		prizes = append(prizes, drawPrizeView(result))
 	}
 	detail := fmt.Sprintf("抽奖 %d/%d 次", drawn, chances)
-	if credits > 0 {
+	if names := prizeNames(prizes); len(names) > 0 {
+		detail += "，获得 " + strings.Join(names, "、")
+	} else if credits > 0 {
 		detail += fmt.Sprintf("，获得 %d 积分", credits)
 	}
 	return StepResult{Status: "completed", Detail: detail}.WithExtra(map[string]any{
 		"drawn":          drawn,
 		"available":      chances,
 		"reward_credits": credits,
+		"prizes":         prizes,
 	})
+}
+
+// drawPrizeView renders one draw response for the log and the console. The
+// upstream payload names the prize (积分_1 / 10 积分 / physical) and carries
+// the credit value; idempotent_hit marks a replay of an earlier draw.
+func drawPrizeView(result map[string]any) map[string]any {
+	credit, _ := integerField(result["credit_amount"])
+	if credit == 0 {
+		credit = extractCredits(result, 0)
+	}
+	return map[string]any{
+		"prize_code":     stringField(result["prize_code"]),
+		"prize_name":     stringField(result["prize_name"]),
+		"prize_type":     stringField(result["prize_type"]),
+		"credit":         credit,
+		"idempotent_hit": boolField(result["idempotent_hit"]),
+	}
+}
+
+// prizeNames lists the distinct prize names in draw order, so one run's detail
+// reads "获得 10 积分、杯子" instead of repeating a duplicate.
+func prizeNames(prizes []map[string]any) []string {
+	names := make([]string, 0, len(prizes))
+	seen := make(map[string]bool, len(prizes))
+	for _, prize := range prizes {
+		name := stringField(prize["prize_name"])
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	return names
 }
 
 // stepTravel runs one buddy trip: claim a finished trip, otherwise depart when
@@ -157,39 +195,93 @@ func (a *Automation) departTravel(ctx context.Context, token string) StepResult 
 	return StepResult{Status: "completed", Detail: "Buddy 已出发前往 " + name}
 }
 
-// stepRedeem redeems the configured consecutive-day tier once it is unlocked.
+// stepRedeem collects every unlocked rung of the consecutive-day ladder.
+//
+// The three tiers are independent monthly rewards, not a single choice: the
+// month's qualifying days gate all of them at once and redeeming one does not
+// spend the days (live-verified: remaining_days stays at the month total after
+// all three are collected). The step therefore claims each tier whose upstream
+// status is "available" and reports the rest as locked or already claimed.
 func (a *Automation) stepRedeem(ctx context.Context, token string) StepResult {
-	tier := a.redeemTier()
-	if tier == "off" {
-		return StepResult{Status: "skipped", Detail: "兑换已关闭"}
-	}
-	required, known := redeemDays[tier]
-	if !known {
-		return StepResult{Status: "failed", Detail: "unknown_tier:" + tier}
-	}
 	summary, err := a.opts.GrowthClient.RedeemSummary(ctx, token)
 	if err != nil {
 		return StepResult{Status: "failed", Detail: "summary_failed:" + unavailableCode(err)}
 	}
 	remaining, _ := integerField(summary["remaining_days"])
-	if remaining < required {
-		return StepResult{
-			Status: "insufficient",
-			Detail: fmt.Sprintf("连登 %d/%d 天，还差 %d 天", remaining, required, required-remaining),
-		}.WithExtra(map[string]any{
+
+	redeemed := make([]string, 0, len(redeemTiers))
+	claimed := make([]string, 0, len(redeemTiers))
+	locked := make([]string, 0, len(redeemTiers))
+	credits := 0
+	failure := ""
+	for _, spec := range redeemTiers {
+		switch stringField(summary[spec.StatusKey]) {
+		case "available":
+			result, err := a.opts.GrowthClient.Redeem(ctx, token, spec.Tier)
+			if err != nil {
+				failure = spec.Tier + ":" + unavailableCode(err)
+				continue
+			}
+			redeemed = append(redeemed, spec.Tier)
+			credits += extractCredits(result, 0)
+		case "claimed":
+			claimed = append(claimed, spec.Tier)
+		default:
+			locked = append(locked, spec.Tier)
+		}
+	}
+
+	extra := map[string]any{
+		"remaining_days":  remaining,
+		"redeemed":        redeemed,
+		"already_claimed": claimed,
+		"locked":          locked,
+		"reward_credits":  credits,
+	}
+	switch {
+	case failure != "":
+		return StepResult{Status: "failed", Detail: "redeem_failed:" + failure}.WithExtra(extra)
+	case len(redeemed) > 0:
+		detail := fmt.Sprintf("已兑换 %s 档奖励", strings.Join(redeemed, "、"))
+		if credits > 0 {
+			detail += fmt.Sprintf("，获得 %d 积分", credits)
+		}
+		return StepResult{Status: "completed", Detail: detail}.WithExtra(extra)
+	case len(claimed) == len(redeemTiers):
+		return StepResult{Status: "skipped", Detail: "本月三档奖励均已兑换"}.WithExtra(extra)
+	default:
+		// Every remaining tier is short of its day requirement; report the
+		// lowest unreached rung so the detail names the binding constraint.
+		next := redeemTiers[len(redeemTiers)-1]
+		for _, spec := range redeemTiers {
+			if contains(locked, spec.Tier) {
+				next = spec
+				break
+			}
+		}
+		gap := next.Days - remaining
+		if gap < 0 {
+			gap = 0
+		}
+		detail := fmt.Sprintf("连登 %d 天，%s 档还差 %d 天", remaining, next.Tier, gap)
+		if gap == 0 {
+			detail = fmt.Sprintf("连登 %d 天，%s 档状态异常", remaining, next.Tier)
+		}
+		return StepResult{Status: "insufficient", Detail: detail}.WithExtra(map[string]any{
 			"remaining_days": remaining,
-			"required_days":  required,
+			"required_days":  next.Days,
 		})
 	}
-	if stringField(summary[redeemTierStatusKey[tier]]) != "unlocked" {
-		return StepResult{Status: "skipped", Detail: "档位 " + tier + " 尚未解锁"}
+}
+
+// contains reports whether values holds target.
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
 	}
-	if _, err := a.opts.GrowthClient.Redeem(ctx, token, tier); err != nil {
-		return StepResult{Status: "failed", Detail: "redeem_failed:" + unavailableCode(err)}
-	}
-	return StepResult{Status: "completed", Detail: "已兑换 " + tier + " 档奖励"}.WithExtra(map[string]any{
-		"tier": tier,
-	})
+	return false
 }
 
 // stepBuddyOpen spends the affordable energy on buddy draws.
@@ -251,9 +343,14 @@ func rewardAlreadyClaimed(task Task) bool {
 
 // extractCredits reads the credit amount out of a mutation response, falling
 // back to the task's advertised reward. The key order mirrors the upstream
-// payloads the Python build drilled through.
+// payloads: the lottery draw reports credit_amount, the redemption reports
+// credit_granted, the task claim reports credit, and the Python-era keys stay
+// for databases written before this build.
 func extractCredits(result map[string]any, fallback float64) int {
-	for _, key := range []string{"reward_credit", "credits", "credit", "reward_credits", "amount"} {
+	for _, key := range []string{
+		"credit_amount", "credit_granted", "reward_credit", "credits", "credit",
+		"reward_credits", "amount",
+	} {
 		if value, ok := positiveNumber(result[key]); ok {
 			return int(value)
 		}

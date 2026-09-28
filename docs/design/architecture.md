@@ -196,8 +196,9 @@ catch_up / verify 四种触发：manual 与 verify 不触发成长副作用。�
 ### 7.3 成长中心自动化
 
 独立 GrowthScheduler 按固定间隔执行已启用步骤（`growth.auto_tasks/lottery/travel/
-redeem/buddy_open`），每步返回结构化结果并写入 `growth_automation_log`；兑换档位
-（7d/14d/28d）与开关可在管理台设置。
+redeem/buddy_open`），每步返回结构化结果并写入 `growth_automation_log`，各步骤开关
+可在管理台设置。兑换步骤会领取当月所有 `available` 档位：入门/进阶/巅峰三档相互独立，
+达标即可兑换且互不消耗连登天数（`growth.auto_redeem` 是唯一开关）。
 
 ### 7.4 登录自动化（活跃日）
 

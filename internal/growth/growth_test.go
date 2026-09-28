@@ -2,7 +2,10 @@ package growth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -546,55 +549,127 @@ func TestTravelStateDerivation(t *testing.T) {
 	}
 }
 
-// Redeem must refuse an unknown tier, report an unreached streak, and only spend
-// the redemption when the tier is unlocked.
+// Redeem collects every unlocked rung of the ladder in one pass: the tiers are
+// independent monthly rewards, so a month with all three "available" must redeem
+// all three, a "claimed" tier must not be redeemed again, and a "locked" tier
+// must be left alone.
+//
+// The status values are the upstream enum (locked/available/claimed). A build
+// that expects any other spelling silently never redeems, which is exactly the
+// regression this test pins.
 func TestRedeemDerivation(t *testing.T) {
-	cases := []struct {
-		name     string
-		tier     string
-		summary  map[string]any
-		want     string
-		extraKey string
-		extraVal int
-	}{
-		{
-			name: "unknown tier", tier: "30d",
-			want: "failed",
-		},
-		{
-			name: "streak too short", tier: "7d",
-			summary: map[string]any{"remaining_days": 3.0},
-			want:    "insufficient", extraKey: "required_days", extraVal: 7,
-		},
-		{
-			name: "tier locked", tier: "7d",
-			summary: map[string]any{"remaining_days": 10.0, "starter_status": "locked"},
-			want:    "skipped",
-		},
-		{
-			name: "tier unlocked", tier: "7d",
-			summary: map[string]any{"remaining_days": 10.0, "starter_status": "unlocked"},
-			want:    "completed",
-		},
-	}
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			server := newFakeGrowthServer(t, map[string]map[string]any{
-				"/activity/growth/redeem/summary": testCase.summary,
-				"/activity/growth/redeem":         map[string]any{},
-			})
-			automation, _ := newTestAutomation(t, nil)
-			automation.opts.GrowthClient = NewClient(server.URL, 0)
-			automation.opts.Runtime = &fakeRuntime{tier: testCase.tier}
-			result := automation.stepRedeem(context.Background(), "token")
-			if result.Status != testCase.want {
-				t.Fatalf("status = %q, want %q (detail %q)", result.Status, testCase.want, result.Detail)
-			}
-			if testCase.extraKey != "" && numericInt(result.Extra[testCase.extraKey]) != testCase.extraVal {
-				t.Fatalf("%s = %v, want %d", testCase.extraKey, result.Extra[testCase.extraKey], testCase.extraVal)
-			}
+	t.Run("all three tiers available", func(t *testing.T) {
+		server := newFakeGrowthServer(t, map[string]map[string]any{
+			"/activity/growth/redeem/summary": map[string]any{
+				"remaining_days": 28.0,
+				"starter_status": "available", "advanced_status": "available", "legendary_status": "available",
+			},
+			"/activity/growth/redeem": map[string]any{"credit_granted": 150.0},
 		})
-	}
+		automation, _ := newTestAutomation(t, nil)
+		automation.opts.GrowthClient = NewClient(server.URL, 0)
+		result := automation.stepRedeem(context.Background(), "token")
+		if result.Status != "completed" {
+			t.Fatalf("status = %q, want completed (detail %q)", result.Status, result.Detail)
+		}
+		redeemed, _ := result.Extra["redeemed"].([]string)
+		if len(redeemed) != 3 {
+			t.Fatalf("redeemed = %v, want all three tiers", redeemed)
+		}
+		if credits := result.Credits(); credits != 450 {
+			t.Fatalf("reward_credits = %d, want 450 (3 draws x 150)", credits)
+		}
+	})
+
+	t.Run("already claimed tiers are not redeemed again", func(t *testing.T) {
+		server := newFakeGrowthServer(t, map[string]map[string]any{
+			"/activity/growth/redeem/summary": map[string]any{
+				"remaining_days": 28.0,
+				"starter_status": "claimed", "advanced_status": "claimed", "legendary_status": "claimed",
+			},
+			"/activity/growth/redeem": map[string]any{"credit_granted": 150.0},
+		})
+		automation, _ := newTestAutomation(t, nil)
+		automation.opts.GrowthClient = NewClient(server.URL, 0)
+		result := automation.stepRedeem(context.Background(), "token")
+		if result.Status != "skipped" {
+			t.Fatalf("status = %q, want skipped (detail %q)", result.Status, result.Detail)
+		}
+		if redeemed, _ := result.Extra["redeemed"].([]string); len(redeemed) != 0 {
+			t.Fatalf("redeemed = %v, want none", redeemed)
+		}
+	})
+
+	t.Run("mixed state redeems only the available tier", func(t *testing.T) {
+		server := newFakeGrowthServer(t, map[string]map[string]any{
+			"/activity/growth/redeem/summary": map[string]any{
+				"remaining_days": 20.0,
+				"starter_status": "claimed", "advanced_status": "available", "legendary_status": "locked",
+			},
+			"/activity/growth/redeem": map[string]any{"credit_granted": 50.0},
+		})
+		automation, _ := newTestAutomation(t, nil)
+		automation.opts.GrowthClient = NewClient(server.URL, 0)
+		result := automation.stepRedeem(context.Background(), "token")
+		if result.Status != "completed" {
+			t.Fatalf("status = %q, want completed (detail %q)", result.Status, result.Detail)
+		}
+		redeemed, _ := result.Extra["redeemed"].([]string)
+		if len(redeemed) != 1 || redeemed[0] != "14d" {
+			t.Fatalf("redeemed = %v, want [14d]", redeemed)
+		}
+	})
+
+	t.Run("all tiers locked reports the shortfall", func(t *testing.T) {
+		server := newFakeGrowthServer(t, map[string]map[string]any{
+			"/activity/growth/redeem/summary": map[string]any{
+				"remaining_days": 3.0,
+				"starter_status": "locked", "advanced_status": "locked", "legendary_status": "locked",
+			},
+		})
+		automation, _ := newTestAutomation(t, nil)
+		automation.opts.GrowthClient = NewClient(server.URL, 0)
+		result := automation.stepRedeem(context.Background(), "token")
+		if result.Status != "insufficient" {
+			t.Fatalf("status = %q, want insufficient (detail %q)", result.Status, result.Detail)
+		}
+		if required := numericInt(result.Extra["required_days"]); required != 7 {
+			t.Fatalf("required_days = %d, want the lowest locked rung (7)", required)
+		}
+	})
+
+	t.Run("a rejected redemption is reported", func(t *testing.T) {
+		// The summary says a tier is available but the redemption endpoint
+		// answers an upstream error; the step must fail loudly instead of
+		// claiming success.
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Path == "/activity/growth/redeem/summary" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{
+					"remaining_days": 28.0,
+					"starter_status": "available", "advanced_status": "locked", "legendary_status": "locked",
+				}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 40001, "msg": "already redeemed"})
+		}))
+		t.Cleanup(server.Close)
+		automation, _ := newTestAutomation(t, nil)
+		automation.opts.GrowthClient = NewClient(server.URL, 0)
+		result := automation.stepRedeem(context.Background(), "token")
+		if result.Status != "failed" || !strings.HasPrefix(result.Detail, "redeem_failed:") {
+			t.Fatalf("result = %+v, want a failed redemption", result)
+		}
+	})
+
+	t.Run("summary failure is reported", func(t *testing.T) {
+		automation, _ := newTestAutomation(t, nil)
+		automation.opts.GrowthClient = NewClient("http://127.0.0.1:1", 0)
+		result := automation.stepRedeem(context.Background(), "token")
+		if result.Status != "failed" || !strings.HasPrefix(result.Detail, "summary_failed:") {
+			t.Fatalf("result = %+v, want failed summary", result)
+		}
+	})
 }
 
 // buddy_open reports the affordable count in its detail, not the clamped request.
@@ -614,10 +689,15 @@ func TestBuddyOpenReportsAffordable(t *testing.T) {
 	}
 }
 
-// Lottery with no chances is a skip, and the draw count is capped.
+// Lottery with no chances is a skip, the draw count is capped, and every draw's
+// prize is reported — the console renders the prize names and credit values, so
+// a build that only sums credits shows "抽奖 N 次" with no indication of what was
+// won.
 func TestLotteryDerivation(t *testing.T) {
 	server := newFakeGrowthServer(t, map[string]map[string]any{
-		"/activity/growth/lottery/draw": map[string]any{"reward_credit": 2.0},
+		"/activity/growth/lottery/draw": map[string]any{
+			"prize_code": "积分_1", "prize_name": "10 积分", "prize_type": "credit", "credit_amount": 10.0,
+		},
 	})
 	automation, _ := newTestAutomation(t, nil)
 	automation.opts.GrowthClient = NewClient(server.URL, 0)
@@ -640,8 +720,21 @@ func TestLotteryDerivation(t *testing.T) {
 	if numericInt(drawn.Extra["drawn"]) != 10 {
 		t.Fatalf("drawn = %v, want the cap of 10", drawn.Extra["drawn"])
 	}
-	if numericInt(drawn.Extra["reward_credits"]) != 20 {
-		t.Fatalf("reward_credits = %v, want 20", drawn.Extra["reward_credits"])
+	if numericInt(drawn.Extra["reward_credits"]) != 100 {
+		t.Fatalf("reward_credits = %v, want 100", drawn.Extra["reward_credits"])
+	}
+	prizes, _ := drawn.Extra["prizes"].([]map[string]any)
+	if len(prizes) != 10 {
+		t.Fatalf("prizes = %d, want one entry per draw", len(prizes))
+	}
+	if prizes[0]["prize_name"] != "10 积分" || prizes[0]["prize_type"] != "credit" {
+		t.Fatalf("prize = %+v, want the upstream prize name and type", prizes[0])
+	}
+	if numericInt(prizes[0]["credit"]) != 10 {
+		t.Fatalf("prize credit = %v, want 10", prizes[0]["credit"])
+	}
+	if !strings.Contains(drawn.Detail, "10 积分") {
+		t.Fatalf("detail = %q, want it to name the prize", drawn.Detail)
 	}
 }
 
@@ -701,7 +794,6 @@ func TestFetchFailurePropagatesToSteps(t *testing.T) {
 // every auto_* accessor reports, so a test can assert an override wins over a
 // contradicting environment default.
 type fakeRuntime struct {
-	tier      string
 	attempts  int
 	autoFlags bool
 }
@@ -714,5 +806,4 @@ func (f *fakeRuntime) GrowthAutoTravel() bool              { return f.autoFlags 
 func (f *fakeRuntime) GrowthAutoRedeem() bool              { return f.autoFlags }
 func (f *fakeRuntime) GrowthAutoBuddyOpen() bool           { return f.autoFlags }
 func (f *fakeRuntime) GrowthAutoActiveDay() bool           { return f.autoFlags }
-func (f *fakeRuntime) GrowthRedeemTier() string            { return f.tier }
 func (f *fakeRuntime) GrowthActiveDayConfirmAttempts() int { return f.attempts }

@@ -278,12 +278,93 @@ type Streak struct {
 	MakeupMax     *int
 	RemainingDays *int
 	Timezone      string
+	Tiers         []RedeemTierStatus
+}
+
+// redeemTierSpec is one rung of the consecutive-day redemption ladder. Each
+// tier is gated by the month's qualifying days and is redeemed independently:
+// collecting one does not spend the days, so every unlocked tier is claimable
+// in the same month.
+type redeemTierSpec struct {
+	Tier      string
+	Label     string
+	Days      int
+	StatusKey string
+	CountKey  string
+	StreakKey string
+}
+
+// redeemTiers is the ladder in console order. StatusKey names the field in
+// /activity/growth/redeem/summary; StreakKey is the alias the /streak payload
+// uses for the same tier.
+var redeemTiers = []redeemTierSpec{
+	{Tier: "7d", Label: "入门档", Days: 7, StatusKey: "starter_status", CountKey: "starter_count", StreakKey: "tier_7d_status"},
+	{Tier: "14d", Label: "进阶档", Days: 14, StatusKey: "advanced_status", CountKey: "advanced_count", StreakKey: "tier_14d_status"},
+	{Tier: "28d", Label: "巅峰档", Days: 28, StatusKey: "legendary_status", CountKey: "legendary_count", StreakKey: "tier_28d_status"},
+}
+
+// RedeemTierStatus is one tier's state for the current month. Status is the
+// upstream enum: locked (days not reached), available (redeemable now) or
+// claimed (already collected this month, the count is the number of claims).
+type RedeemTierStatus struct {
+	Tier   string
+	Label  string
+	Days   int
+	Status string
+	Count  int
+}
+
+// normaliseRedeemTiers reads the ladder out of either payload family:
+// /activity/growth/redeem/summary (starter_status) or /streak
+// (redemption_status, tier_7d_status).
+func normaliseRedeemTiers(data map[string]any) []RedeemTierStatus {
+	tiers := make([]RedeemTierStatus, 0, len(redeemTiers))
+	for _, spec := range redeemTiers {
+		status := stringField(data[spec.StatusKey])
+		if status == "" {
+			status = stringField(data[spec.StreakKey])
+		}
+		count, _ := integerField(data[spec.CountKey])
+		tiers = append(tiers, RedeemTierStatus{
+			Tier:   spec.Tier,
+			Label:  spec.Label,
+			Days:   spec.Days,
+			Status: status,
+			Count:  count,
+		})
+	}
+	return tiers
+}
+
+// redeemTierJSON renders the ladder for the console.
+func redeemTierJSON(tiers []RedeemTierStatus) []map[string]any {
+	view := make([]map[string]any, 0, len(tiers))
+	for _, tier := range tiers {
+		view = append(view, map[string]any{
+			"tier":   tier.Tier,
+			"label":  tier.Label,
+			"days":   tier.Days,
+			"status": tier.Status,
+			"count":  tier.Count,
+		})
+	}
+	return view
+}
+
+// LotteryDraw is one recorded draw from /activity/growth/lottery/draws.
+type LotteryDraw struct {
+	UUID      string
+	PrizeName string
+	PrizeType string
+	Credit    int
+	DrawnAt   string
 }
 
 // Lottery is the read-only lottery summary.
 type Lottery struct {
 	AvailableChances *int
 	TotalDraws       *int
+	Recent           []LotteryDraw
 }
 
 // Fetch performs the five read-only growth GETs. Any failure aborts the whole
@@ -310,12 +391,18 @@ func (c *Client) Fetch(ctx context.Context, token string) (Overview, error) {
 	if err != nil {
 		return Overview{}, err
 	}
+	// The draw history is a separate page. It is read-only and best effort: a
+	// failure must not blank the whole overview, so the summary still renders
+	// without the recent-prize list.
+	drawHistory, _ := c.LotteryDraws(ctx, token, 1, 10)
+	summary := normaliseLottery(lottery)
+	summary.Recent = normaliseLotteryDraws(drawHistory)
 	return Overview{
 		Profile: normaliseProfile(profile),
 		Tasks:   normaliseTasks(tasks),
 		Heatmap: normaliseHeatmap(heatmap),
 		Streak:  normaliseStreak(streak),
-		Lottery: normaliseLottery(lottery),
+		Lottery: summary,
 	}, nil
 }
 
@@ -396,14 +483,26 @@ func (s Streak) JSON() map[string]any {
 		"makeup_max":          s.MakeupMax,
 		"remaining_days":      s.RemainingDays,
 		"timezone":            s.Timezone,
+		"redeem_tiers":        redeemTierJSON(s.Tiers),
 	}
 }
 
 // JSON renders the lottery summary in the console's key shape.
 func (l Lottery) JSON() map[string]any {
+	draws := make([]map[string]any, 0, len(l.Recent))
+	for _, draw := range l.Recent {
+		draws = append(draws, map[string]any{
+			"draw_uuid":  draw.UUID,
+			"prize_name": draw.PrizeName,
+			"prize_type": draw.PrizeType,
+			"credit":     draw.Credit,
+			"draw_at":    draw.DrawnAt,
+		})
+	}
 	return map[string]any{
 		"available_chances": l.AvailableChances,
 		"total_draws":       l.TotalDraws,
+		"recent_draws":      draws,
 	}
 }
 
@@ -424,6 +523,11 @@ func (c *Client) ClaimTask(ctx context.Context, token, code string) (map[string]
 func (c *Client) LotteryDraw(ctx context.Context, token string) (map[string]any, error) {
 	return c.post(ctx, "/activity/growth/lottery/draw", c.headers(token),
 		map[string]any{"client_token": "draw-" + uuid4()})
+}
+
+// LotteryDraws reads the draw history page, newest first.
+func (c *Client) LotteryDraws(ctx context.Context, token string, page, pageSize int) (map[string]any, error) {
+	return c.get(ctx, fmt.Sprintf("/activity/growth/lottery/draws?page=%d&page_size=%d", page, pageSize), c.headers(token))
 }
 
 // TravelStatus reads the current buddy travel state.
@@ -645,6 +749,7 @@ func normaliseStreak(data map[string]any) Streak {
 	}
 	if redemption != nil {
 		summary.RemainingDays = intPtr(redemption["remaining_days"])
+		summary.Tiers = normaliseRedeemTiers(redemption)
 	}
 	return summary
 }
@@ -657,6 +762,31 @@ func normaliseLottery(data map[string]any) Lottery {
 		summary.AvailableChances = intPtr(data["chances"])
 	}
 	return summary
+}
+
+// normaliseLotteryDraws reads the draw history page. credit_amount is the
+// prize's credit value and is 0 for a physical prize.
+func normaliseLotteryDraws(data map[string]any) []LotteryDraw {
+	raw, ok := data["items"].([]any)
+	if !ok {
+		return []LotteryDraw{}
+	}
+	draws := make([]LotteryDraw, 0, len(raw))
+	for _, item := range raw {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		credit, _ := integerField(entry["credit_amount"])
+		draws = append(draws, LotteryDraw{
+			UUID:      stringField(entry["draw_uuid"]),
+			PrizeName: stringField(entry["prize_name"]),
+			PrizeType: stringField(entry["prize_type"]),
+			Credit:    credit,
+			DrawnAt:   stringField(entry["draw_at"]),
+		})
+	}
+	return draws
 }
 
 // ---- small map helpers ----

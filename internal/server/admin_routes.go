@@ -177,7 +177,6 @@ var settingSchemas = []settingSchema{
 	{Key: "growth.auto_lottery", Default: true, ApplyMode: "immediate", Type: "bool", Validate: validateBool},
 	{Key: "growth.auto_travel", Default: true, ApplyMode: "immediate", Type: "bool", Validate: validateBool},
 	{Key: "growth.auto_redeem", Default: true, ApplyMode: "immediate", Type: "bool", Validate: validateBool},
-	{Key: "growth.redeem_tier", Default: "28d", ApplyMode: "immediate", Type: "str", Validate: validateRedeemTier},
 	{Key: "growth.auto_buddy_open", Default: false, ApplyMode: "immediate", Type: "bool", Validate: validateBool},
 	{Key: "growth.scheduler_enabled", Default: true, ApplyMode: "immediate", Type: "bool", Validate: validateBool},
 	{Key: "growth.scheduler_interval_seconds", Default: 1800, ApplyMode: "immediate", Type: "int", Min: intPointer(600), Validate: rangeValidator(600, 86400, "growth.scheduler_interval_seconds must be >= 600")},

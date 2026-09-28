@@ -74,18 +74,6 @@ func validateClock(value any) error {
 	return nil
 }
 
-func validateRedeemTier(value any) error {
-	text, ok := value.(string)
-	if !ok {
-		return errors.New("growth.redeem_tier must be 7d, 14d, 28d, or off")
-	}
-	switch text {
-	case "7d", "14d", "28d", "off":
-		return nil
-	}
-	return errors.New("growth.redeem_tier must be 7d, 14d, 28d, or off")
-}
-
 // rangeValidator builds an integer range check with the Python message text.
 func rangeValidator(low, high int, message string) func(any) error {
 	return func(value any) error {

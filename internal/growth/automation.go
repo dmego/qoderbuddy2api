@@ -19,15 +19,6 @@ const Provider = "codebuddy"
 // prompt; the attempt number selects the entry.
 var acpPrompts = []string{"你好", "你是什么模型", "今天几号", "hello", "帮我讲个笑话"}
 
-// redeemDays maps a redeem tier to the consecutive days it requires.
-var redeemDays = map[string]int{"7d": 7, "14d": 14, "28d": 28}
-
-// redeemTierStatusKey maps a tier to the summary field that reports whether the
-// tier is unlocked.
-var redeemTierStatusKey = map[string]string{
-	"7d": "starter_status", "14d": "advanced_status", "28d": "legendary_status",
-}
-
 // AccountRef identifies one account eligible for a purpose.
 type AccountRef struct {
 	Provider           string
@@ -61,7 +52,6 @@ type RuntimeSettings interface {
 	GrowthAutoLottery() bool
 	GrowthAutoTravel() bool
 	GrowthAutoRedeem() bool
-	GrowthRedeemTier() string
 	GrowthAutoBuddyOpen() bool
 	GrowthAutoActiveDay() bool
 	GrowthActiveDayConfirmAttempts() int
@@ -165,17 +155,6 @@ func (a *Automation) autoActiveDay() bool {
 		return a.opts.Runtime.GrowthAutoActiveDay()
 	}
 	return a.settings.GrowthAutoActiveDay
-}
-
-func (a *Automation) redeemTier() string {
-	tier := a.settings.GrowthRedeemTier
-	if a.opts.Runtime != nil {
-		tier = a.opts.Runtime.GrowthRedeemTier()
-	}
-	if strings.TrimSpace(tier) == "" {
-		return "14d"
-	}
-	return tier
 }
 
 // activeDayAttempts is the confirmation attempt budget, never below one so the

@@ -20,7 +20,9 @@ type GrowthProfile = { level?: number | null; completed?: number | null; total?:
 type GrowthTask = { task_code?: string; title?: string; task_desc?: string; task_type?: string; tag?: string; accept_status?: string; progress_current?: number | null; progress_target?: number | null; reward_credit?: number | null; reward_energy?: number | null; has_reward?: boolean | null; reward_claimed?: boolean | null; claimed?: boolean | null; is_claimed?: boolean | null; receive_status?: string; locked?: boolean | null; is_new?: boolean | null; icon_url?: string | null };
 type HeatmapCell = { date?: string; score?: number | null; has_new_buddy?: boolean | null };
 type ActiveDayLocal = { local_date?: string | null; status?: string | null; error_code?: string | null; confirmed?: string | null; confirm_attempts?: number | null; finished_at?: string | null };
-type GrowthOverview = { profile: GrowthProfile; tasks: GrowthTask[]; heatmap: { cells: HeatmapCell[]; today?: { date?: string; score?: number | null; is_active?: boolean | null; status_text?: string } | null; range_start?: string | null; range_end?: string | null; updated_at?: string | null }; streak: { days?: number | null; next_tier?: string | null; next_tier_remaining?: number | null; makeup_balance?: number | null; makeup_max?: number | null; remaining_days?: number | null; timezone?: string | null }; lottery: { available_chances?: number | null; total_draws?: number | null }; active_day_local?: ActiveDayLocal | null };
+type GrowthOverview = { profile: GrowthProfile; tasks: GrowthTask[]; heatmap: { cells: HeatmapCell[]; today?: { date?: string; score?: number | null; is_active?: boolean | null; status_text?: string } | null; range_start?: string | null; range_end?: string | null; updated_at?: string | null }; streak: { days?: number | null; next_tier?: string | null; next_tier_remaining?: number | null; makeup_balance?: number | null; makeup_max?: number | null; remaining_days?: number | null; timezone?: string | null; redeem_tiers?: RedeemTier[] | null }; lottery: { available_chances?: number | null; total_draws?: number | null; recent_draws?: LotteryDraw[] | null }; active_day_local?: ActiveDayLocal | null };
+type RedeemTier = { tier?: string; label?: string; days?: number | null; status?: string | null; count?: number | null };
+type LotteryDraw = { draw_uuid?: string; prize_name?: string; prize_type?: string; credit?: number | null; draw_at?: string | null };
 type StepKey = "tasks" | "lottery" | "travel" | "redeem" | "buddy_open" | "active_day";
 type StepResult = { status: string; detail: string; [key: string]: unknown };
 type HistoryEntry = { id: number; created_at: string; triggered_by: string; results: Partial<Record<StepKey, StepResult>> };
@@ -104,7 +106,7 @@ const stepConfigs = computed(() => [
   { key: "tasks" as StepKey, label: "任务自动化", icon: Sparkles, enabled: Boolean(settingValue("growth.auto_tasks")) },
   { key: "lottery" as StepKey, label: "抽奖自动化", icon: Dice5, enabled: Boolean(settingValue("growth.auto_lottery")) },
   { key: "travel" as StepKey, label: "旅行自动化", icon: MapPin, enabled: Boolean(settingValue("growth.auto_travel")) },
-  { key: "redeem" as StepKey, label: "兑换自动化", icon: Gift, enabled: Boolean(settingValue("growth.auto_redeem")), hasTier: true },
+  { key: "redeem" as StepKey, label: "兑换自动化", icon: Gift, enabled: Boolean(settingValue("growth.auto_redeem")) },
   { key: "buddy_open" as StepKey, label: "Buddy 自动化", icon: PawPrint, enabled: Boolean(settingValue("growth.auto_buddy_open")) },
 ]);
 
@@ -226,6 +228,28 @@ const toggleSetting = useMutation({
 
 function stepLabel(key: StepKey): string {
   return { active_day: "登录", tasks: "任务", lottery: "抽奖", travel: "旅行", redeem: "兑换", buddy_open: "Buddy" }[key];
+}
+
+function tierStatusLabel(status?: string | null): string {
+  if (status === "claimed") return "已兑换";
+  if (status === "available") return "可兑换";
+  if (status === "locked") return "未达标";
+  return status || "未知";
+}
+
+function tierTone(status?: string | null): string {
+  if (status === "claimed") return "ok";
+  if (status === "available") return "run";
+  return "skip";
+}
+
+function prizeSummary(draws: LotteryDraw[]): string {
+  const names = [...new Set(draws.map((draw) => draw.prize_name).filter(Boolean))] as string[];
+  const credits = draws.reduce((total, draw) => total + (draw.credit ?? 0), 0);
+  const parts: string[] = [];
+  if (names.length) parts.push(names.join("、"));
+  if (credits > 0) parts.push(`${credits} 积分`);
+  return parts.join(" · ") || "无奖励记录";
 }
 
 function activeDayStatusLabel(local: ActiveDayLocal): string {
@@ -402,6 +426,17 @@ function navigateToAccount(): void {
             </div>
             <div v-if="(growth.data.value.lottery?.available_chances ?? 0) > 0" class="streak-lottery">🎲 可抽奖 {{ growth.data.value.lottery.available_chances }} 次</div>
           </div>
+
+          <!-- 连登档位：三档独立，达标即可兑换，互不消耗天数 -->
+          <div v-if="growth.data.value.streak?.redeem_tiers?.length" class="redeem-tiers">
+            <div v-for="tier in growth.data.value.streak.redeem_tiers" :key="tier.tier ?? ''" class="redeem-tier" :class="`redeem-tier--${tierTone(tier.status)}`">
+              <div class="redeem-tier-head">
+                <strong>{{ tier.label ?? tier.tier }}</strong>
+                <span class="redeem-tier-days">{{ tier.days ?? "--" }} 天</span>
+              </div>
+              <span class="redeem-tier-status">{{ tierStatusLabel(tier.status) }}<template v-if="(tier.count ?? 0) > 0"> · {{ tier.count }} 次</template></span>
+            </div>
+          </div>
           <div v-if="growth.data.value.heatmap?.today" class="streak-today" :class="{ active: growth.data.value.heatmap.today.is_active }">{{ growth.data.value.heatmap.today.status_text ?? (growth.data.value.heatmap.today.is_active ? '今日已活跃' : '今日未活跃') }}</div>
           <div v-if="heatmapGrid.weeks.length" class="heatmap-grid">
             <div v-for="(week, wi) in heatmapGrid.weeks" :key="wi" class="heatmap-week">
@@ -417,6 +452,24 @@ function navigateToAccount(): void {
             <div class="heatmap-cell heatmap-cell--lvl4"></div>
             <span class="heatmap-legend-label">多</span>
           </div>
+        </section>
+
+        <!-- 抽奖记录：每次抽奖的奖品名称与积分 -->
+        <section class="data-panel">
+          <PanelHeader title="抽奖记录" :description="`累计抽奖 ${growth.data.value.lottery?.total_draws ?? 0} 次 · 最近 ${growth.data.value.lottery?.recent_draws?.length ?? 0} 次`" />
+          <div v-if="!growth.data.value.lottery?.recent_draws?.length" class="compact-empty">暂无抽奖记录。</div>
+          <template v-else>
+            <div class="lottery-summary">{{ prizeSummary(growth.data.value.lottery.recent_draws) }}</div>
+            <div class="lottery-draw-list">
+              <div v-for="draw in growth.data.value.lottery.recent_draws" :key="draw.draw_uuid ?? draw.draw_at ?? ''" class="lottery-draw">
+                <Dice5 :size="14" />
+                <strong>{{ draw.prize_name ?? "未知奖品" }}</strong>
+                <span v-if="draw.prize_type === 'physical'" class="lottery-physical">实物</span>
+                <span v-if="(draw.credit ?? 0) > 0" class="lottery-credit">+{{ draw.credit }} 积分</span>
+                <small>{{ draw.draw_at ? formatBeijing(draw.draw_at) : "--" }}</small>
+              </div>
+            </div>
+          </template>
         </section>
 
         <!-- 自动化执行历史 -->
@@ -505,6 +558,24 @@ function navigateToAccount(): void {
 .streak-stats { color: var(--muted); font-size: 12px; }
 .streak-days { color: var(--accent); font-weight: 600; font-size: 14px; font-variant-numeric: tabular-nums; }
 .streak-lottery { color: var(--ok); font-size: 12px; font-weight: 600; }
+.redeem-tiers { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; margin: 8px 14px 4px; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--line); }
+.redeem-tier { display: flex; flex-direction: column; gap: 3px; padding: 8px 10px; background: var(--surface-muted); }
+.redeem-tier--ok { background: var(--ok-soft); }
+.redeem-tier--run { background: var(--accent-soft); }
+.redeem-tier-head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+.redeem-tier-head strong { color: var(--text); font-size: var(--text-sm); }
+.redeem-tier-days { color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+.redeem-tier-status { color: var(--muted); font-size: 11px; }
+.redeem-tier--ok .redeem-tier-status { color: var(--ok); }
+.redeem-tier--run .redeem-tier-status { color: var(--accent); }
+.lottery-summary { padding: 8px 14px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+.lottery-draw-list { display: grid; }
+.lottery-draw { display: flex; align-items: center; gap: 8px; padding: 7px 14px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+.lottery-draw:last-child { border-bottom: 0; }
+.lottery-draw strong { color: var(--text); font-size: var(--text-sm); font-weight: 600; }
+.lottery-draw small { margin-left: auto; color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+.lottery-credit { color: var(--ok); font-size: 11px; font-weight: 600; }
+.lottery-physical { padding: 1px 5px; border: 1px solid var(--warn-line); border-radius: var(--radius); background: var(--warn-soft); color: var(--warn); font-size: 10px; }
 .streak-today { margin: 8px 14px 4px; padding: 6px 10px; border-radius: var(--radius); background: var(--surface-muted); color: var(--faint); font-size: 11px; }
 .streak-today.active { background: var(--ok-soft); color: var(--ok); border: 1px solid var(--ok-line); }
 .heatmap-grid { display: flex; gap: 3px; padding: 8px 14px 4px; overflow-x: auto; }

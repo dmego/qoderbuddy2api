@@ -164,6 +164,23 @@ label 只做展示：当它是控制台自己的默认名（`WorkBuddy OAuth` / 
 填写的名字一律保留。`/poll` 与 `/manual` 返回的 `account.label` 取自**数据库**，
 不是 flow 上的原始请求值 —— 否则控制台会显示一个并不存在的名字。
 
+## 成长中心：连登档位兑换
+
+派生的上游契约（2026-09-28 实测，四个 codebuddy 账号）：
+
+- `redeem/summary` 的档位状态是 **`locked` / `available` / `claimed`**，不是
+  `unlocked`。按 `unlocked` 判断会永远匹配不上，自动兑换静默跳过。
+- **三档相互独立、每月各一次**：`remaining_days` 是当月达标天数，兑换**不消耗**
+  它（四账号全档兑换后仍为 28）。因此自动兑换的语义是「领取所有 `available`
+  档位」，不是「按配置选一档」；`GROWTH_REDEEM_TIER` / `growth.redeem_tier`
+  随之删除。
+- 兑换会**发放抽奖次数**（`chances_granted`），而 `lottery` 步骤在 `redeem`
+  之前执行，所以新次数在下一轮调度才会被抽掉——这是预期顺序，不是漏抽。
+- 抽奖的奖品在 `lottery/draw` 响应里（`prize_name` / `prize_type` /
+  `credit_amount`），不在 `lottery/summary` 里；`summary` 只有 `{chances}`。
+  步骤结果因此带 `prizes` 数组，控制台与执行历史都渲染奖品名与积分。
+- 实物奖品（`prize_type=physical`）只留记录、不填地址即不发货，自动化只做展示。
+
 ## 环境变量
 
 变量名与 Python 版完全一致。Go 新增：
