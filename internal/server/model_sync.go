@@ -169,7 +169,16 @@ func (a *API) reconcileModels(ctx context.Context, provider string, outcomes []p
 			report.Updated++
 			continue
 		}
-		if found && equalCapabilities(prior.Capabilities, outcome.Capabilities) && prior.Enabled {
+		capabilities := outcome.Capabilities
+		if found {
+			// Discovery never downgrades a capability it previously recorded.
+			// Reasoning detection is stochastic — space-bunny emitted reasoning
+			// on 2 of 3 trivial prompts and glm-5.3-flash on 1 of 4 reasoning
+			// prompts — so a miss is not evidence the capability is gone. Losing
+			// it would need a positive signal, which the probe cannot produce.
+			capabilities = keepDiscoveredCapabilities(prior.Capabilities, capabilities)
+		}
+		if found && equalCapabilities(prior.Capabilities, capabilities) && prior.Enabled {
 			report.Updated++
 			continue
 		}
@@ -177,7 +186,7 @@ func (a *API) reconcileModels(ctx context.Context, provider string, outcomes []p
 			Provider:     provider,
 			ModelID:      outcome.ModelID,
 			DisplayName:  displayNameFor(outcome.ModelID, prior, configured[outcome.ModelID]),
-			Capabilities: outcome.Capabilities,
+			Capabilities: capabilities,
 			Source:       catalogSourceDiscovery,
 			Enabled:      true,
 		}
@@ -195,6 +204,29 @@ func (a *API) reconcileModels(ctx context.Context, provider string, outcomes []p
 		}
 	}
 	return report, nil
+}
+
+// keepDiscoveredCapabilities unions the capabilities a previous discovery
+// recorded into the freshly probed set, so a stochastic probe miss cannot strip
+// a capability the catalog already advertises.
+func keepDiscoveredCapabilities(prior, probed []string) []string {
+	merged := append([]string(nil), probed...)
+	present := map[string]bool{}
+	for _, name := range probed {
+		present[name] = true
+	}
+	for _, name := range prior {
+		if present[name] {
+			continue
+		}
+		switch name {
+		case "reasoning", "reasoning_effort", "tool_calling":
+			// Only additive capabilities are preserved: they are the ones the
+			// probe can under-report.
+			merged = append(merged, name)
+		}
+	}
+	return merged
 }
 
 // syncCandidates lists the ids to probe for one provider: what the config
@@ -247,6 +279,16 @@ func (a *API) probeModels(ctx context.Context, provider string, candidates []str
 	return outcomes
 }
 
+// probePrompt is the question the reasoning probe asks.
+//
+// A trivial prompt ("hi") makes reasoning detection a coin flip: measured
+// 2026-10-06, space-bunny emitted reasoning on 2 of 3 attempts for "hi" but 4 of
+// 4 for this multi-step question. A model that answers "hi" in one greeting
+// token may simply not think, which is indistinguishable from a model that
+// cannot think at all — and the catalog would then advertise the wrong
+// capability.
+const probePrompt = "一个农夫有17只羊，除了9只以外都死了，还剩几只？请一步步推理。"
+
 // probeModel asks upstream whether one model id exists and whether it reasons.
 //
 // A 200 means the id is servable; reasoning is then decided by a two-pass probe.
@@ -259,16 +301,16 @@ func (a *API) probeModels(ctx context.Context, provider string, candidates []str
 // as "does not exist", which is why the caller never removes rows on a miss.
 func (a *API) probeModel(ctx context.Context, provider, modelID string) probeOutcome {
 	outcome := probeOutcome{ModelID: modelID}
-	probeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	probeCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 	base := func() *chatwire.ChatRequest {
 		return &chatwire.ChatRequest{
 			Model:     modelID,
 			Stream:    true,
-			MaxTokens: new(512),
+			MaxTokens: new(1024),
 			Messages: []chatwire.Message{
 				{Role: "system", Content: json.RawMessage(`"You are a helpful assistant."`)},
-				{Role: "user", Content: json.RawMessage(`"hi"`)},
+				{Role: "user", Content: mustMarshalJSON(probePrompt)},
 			},
 		}
 	}
@@ -292,6 +334,16 @@ func (a *API) probeModel(ctx context.Context, provider, modelID string) probeOut
 		outcome.Capabilities = append(outcome.Capabilities, "reasoning", "reasoning_effort")
 	}
 	return outcome
+}
+
+// mustMarshalJSON encodes a string as a JSON literal for a message body. The
+// input is a compile-time constant, so a failure is impossible in practice.
+func mustMarshalJSON(value string) json.RawMessage {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return json.RawMessage(`""`)
+	}
+	return encoded
 }
 
 // streamProbe runs one probe stream against a specific provider's pool and
