@@ -139,6 +139,37 @@ func filterReasoning(frame []byte) []byte {
 	return reframed
 }
 
+// FrameHasReasoning reports whether a frame carries non-empty reasoning
+// content. Discovery uses it to tell a thinking model from a plain one.
+func FrameHasReasoning(frame []byte) bool {
+	line := strings.TrimSpace(string(frame))
+	if !strings.HasPrefix(line, "data: ") || strings.HasPrefix(line, "data: [DONE]") {
+		return false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(line[6:])), &payload); err != nil {
+		return false
+	}
+	choices, ok := payload["choices"].([]any)
+	if !ok {
+		return false
+	}
+	for _, raw := range choices {
+		choice, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		delta, ok := choice["delta"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if text, ok := delta["reasoning_content"].(string); ok && text != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // FrameHasContent reports whether a frame carries user-visible output. The
 // first such frame defines the first-token latency.
 func FrameHasContent(frame []byte) bool {

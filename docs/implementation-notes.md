@@ -164,6 +164,43 @@ label 只做展示：当它是控制台自己的默认名（`WorkBuddy OAuth` / 
 填写的名字一律保留。`/poll` 与 `/manual` 返回的 `account.label` 取自**数据库**，
 不是 flow 上的原始请求值 —— 否则控制台会显示一个并不存在的名字。
 
+## 凭据续期与会话失效
+
+两个部署（`codebuddy` 与 `workbuddy_intl`）**共用同一套 plugin 续期契约**，
+`internal/server/rotation.go` 每 15 分钟扫描一次到期窗口内的凭据：
+
+```
+POST {endpoint}/v2/plugin/auth/token/refresh
+X-Domain: copilot.tencent.com | www.workbuddy.ai
+X-Refresh-Token: <stored refresh_token>
+body: {}
+→ 200 {"code":0,"data":{"accessToken","refreshToken","expiresIn"}}
+```
+
+要点（2026-10-06 实测）：
+
+- **国内 `codebuddy` 以前不做续期是错的**：代码注释曾断言国内没有续期端点，
+  实际它和 intl 走同一契约，只有 origin 与 `X-Domain` 不同。结果是国内账号
+  只能等 access token 自然过期后手工重登。
+- **access token 的 JWT 签名有效 ≠ 会话有效**。上游 Keycloak 的会话被判定缺失后，
+  一个签名正确、`exp` 还在未来的 token 仍会被 401
+  （`User session not found or doesn't have client attached on it`）。判断凭据
+  死活必须打真实上游，不能只解 JWT。
+- **续期失败是瞬时的，不是终态**。同一个 refresh token 会交替返回
+  `12153 refresh token is invalid` 与 `200`；**一次成功的续期会把已被 401 拒绝的
+  access token 救活**。因此 `rotation` 遇到失败只记录并**下一轮重试**，
+  绝不把账号标成失效——否则会把本来能自愈的账号的自动续期永久关掉。
+- **会话失效只由请求路径判定**：每 15 分钟读一次积分的 metrics 探针拿到
+  401/403 时，把该 purpose 标记 `needs_reauth` / `auth_rejected`。5xx 与传输错误
+  **不**触发，避免上游抖动把整池账号踢出去。
+- **成功续期会撤销标记**：标记是可能的误报（探针恰好撞上瞬时拒绝），
+  所以一次落地的续期（凭据可用的硬证据）会把该 purpose 恢复为 `active`，
+  账号自动回到池子。补集关系：探针报死 → 续期证明活 → 自动复活。
+- 日志按凭据去重：轮换每 15 分钟一轮，反复失败只告警一次，成功时清除标记。
+
+⚠️ **误报的代价很高**：`needs_reauth` 会让账号同时退出代理池与签到/成长调度
+（两者都以 `status == active` 为准入门槛）。标记必须有硬证据，且必须有自动恢复路径。
+
 ## 成长中心：连登档位兑换
 
 派生的上游契约（2026-09-28 实测，四个 codebuddy 账号）：
@@ -180,6 +217,40 @@ label 只做展示：当它是控制台自己的默认名（`WorkBuddy OAuth` / 
   `credit_amount`），不在 `lottery/summary` 里；`summary` 只有 `{chances}`。
   步骤结果因此带 `prizes` 数组，控制台与执行历史都渲染奖品名与积分。
 - 实物奖品（`prize_type=physical`）只留记录、不填地址即不发货，自动化只做展示。
+
+## 上游模型同步（从上游同步）
+
+`POST /api/admin/models/sync` 与 `/api/admin/models/sync/{codebuddy,workbuddy_intl}`。
+控制台「从上游同步」按钮调用它。
+
+WorkBuddy 没有模型目录接口，唯一的探测方式就是**直接请求该模型**：
+`/v2/chat/completions` 对真实 id 返回 200，对未知 id 返回 400 `code=11102`。
+所以发现模型是「维护候选清单 + 逐个探测」：
+
+- 候选 = `config/models.json` 里已有的 id ∪ `internal/server/model_sync.go` 的
+  `candidateModelIDs`（并发 5 探测，按 id 排序保证结果稳定）。
+- **id 大小写敏感**：上游只认小写。实测 `Space-Bunny` → 400/11102，
+  `space-bunny` → 200。清单里必须写小写。
+- 探测**两遍**判定是否支持思考，因为两个模型族行为相反：
+  `deepseek-v4.1-flash` 只在带 `reasoning_effort` 时才产 reasoning，
+  `space-bunny` 只在**不带**时才产（带 `effort=low` 时 reasoning 为空）。
+  单遍必然误判其中一族。
+- 判定用的是**非空** `reasoning_content`。只检查字段名存在会误判：上游会在
+  每个 delta 里带 `"reasoning_content":""`，字段存在不等于模型会思考。
+
+写入位置与合并（关键）：
+
+- 同步结果写 **`model_catalog` 表**（`source=discovery`），**不写**
+  `config/models.json`——部署把 `/config` 以 `:ro` 挂载，写不进去。
+- `plane.Reload` 会把 `source=discovery` 的行并入可路由定义，所以新发现的模型
+  会出现在 `/v1/models` 并可真实调用（实测 `space-bunny` 返回 `content: "ok"`）。
+- **只增不删**：探测失败与「模型被下线」无法区分，删错一个可路由模型的代价更大。
+- `source=definition`（配置拥有）的行**不被改写**：探测输出可能被截断，
+  让它覆盖配置里声明的能力会把真实能力抹掉。
+- 被操作员停用的模型**不会被同步复活**。
+- 路由注册用字面量而不是 `/sync/{provider}` 通配：通配会与
+  `/{modelID}/probe` 在 `/models/sync/probe` 上重叠，ServeMux 拒绝注册两者
+  （会 panic）。新增 provider 时同步加一行字面量路由。
 
 ## 环境变量
 

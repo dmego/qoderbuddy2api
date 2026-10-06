@@ -308,6 +308,23 @@ func (p *ProxyPlane) Reload(ctx context.Context, db *store.DB) error {
 
 	// Catalog enablement from the admin model page.
 	defs := models.LoadDefinitions(p.settings.ModelConfigPath)
+	// Models discovered by an upstream sync live in model_catalog rather than
+	// config/models.json, because the deployment mounts /config read-only. Merge
+	// them in before the enablement filter so a discovered model is routable and
+	// a disabled one is still filtered out.
+	if rows, err := db.ListCatalogModels(ctx, models.KnownProviders); err == nil {
+		for _, row := range rows {
+			if row.Source != catalogSourceDiscovery {
+				continue
+			}
+			defs[row.Provider] = appendDefinitionOnce(defs[row.Provider], models.Definition{
+				ID:           row.ModelID,
+				Name:         row.DisplayName,
+				Provider:     row.Provider,
+				Capabilities: capabilityFlags(row.Capabilities),
+			})
+		}
+	}
 	for provider, definitions := range defs {
 		enabled, err := db.EnabledCatalogModels(ctx, provider)
 		if err != nil || len(enabled) == 0 {

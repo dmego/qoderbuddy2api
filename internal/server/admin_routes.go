@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dmego/qoderbuddy2api/internal/models"
 	"github.com/dmego/qoderbuddy2api/internal/store"
 )
 
@@ -35,6 +36,13 @@ func (a *API) registerAdmin(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /api/admin/models", guard(a.handleListModels))
 	mux.HandleFunc("POST /api/admin/models/refresh", guard(a.handleRefreshModels))
+	mux.HandleFunc("POST /api/admin/models/sync", guard(a.handleSyncModels))
+	// The per-provider sync paths are registered as literals rather than a
+	// "/sync/{provider}" wildcard. A wildcard would overlap "/{modelID}/probe"
+	// on "/models/sync/probe", and ServeMux refuses two patterns where neither
+	// dominates. Only the two known providers are syncable anyway.
+	mux.HandleFunc("POST /api/admin/models/sync/codebuddy", guard(a.syncProviderHandler(models.ProviderWorkBuddy)))
+	mux.HandleFunc("POST /api/admin/models/sync/workbuddy_intl", guard(a.syncProviderHandler(models.ProviderWorkBuddyIntl)))
 	mux.HandleFunc("PATCH /api/admin/models/{modelID}", guard(a.handlePatchModel))
 	mux.HandleFunc("POST /api/admin/models/{modelID}/probe", guard(a.handleProbeModel))
 
