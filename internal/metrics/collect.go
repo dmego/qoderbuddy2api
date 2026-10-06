@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -55,7 +56,7 @@ func (c *Collector) collectAccount(ctx context.Context, state *collectState, pro
 			return accountResult{}, err
 		}
 	}
-	credential, credentialErr := c.resolveCredential(ctx, provider, accountID, credentialPurposes(provider)...)
+	credential, credentialPurpose, credentialErr := c.resolveCredential(ctx, provider, accountID, credentialPurposes(provider)...)
 	if !models.ChatOnlyProviders[provider] {
 		// A failed check-in read is already recorded on its own row and must not
 		// stop the credit read of the same account.
@@ -66,7 +67,7 @@ func (c *Collector) collectAccount(ctx context.Context, state *collectState, pro
 	// The credit read is keyed by account rather than by purpose, so it also
 	// runs for an account whose purpose rows are all disabled: a manual refresh
 	// of a revoked account still has to report what happened.
-	points, pointsErr := c.collectPoints(ctx, state, provider, accountID, credential, credentialErr)
+	points, pointsErr := c.collectPoints(ctx, state, provider, accountID, credential, credentialPurpose, credentialErr)
 	return accountResult{Points: points, PointsErr: pointsErr}, nil
 }
 
@@ -113,7 +114,7 @@ func (c *Collector) collectCheckin(ctx context.Context, state *collectState, pro
 
 // collectPoints records the provider's credit aggregate and returns the payload
 // as stored.
-func (c *Collector) collectPoints(ctx context.Context, state *collectState, provider, accountID string, credential Credential, credentialErr error) (map[string]any, error) {
+func (c *Collector) collectPoints(ctx context.Context, state *collectState, provider, accountID string, credential Credential, credentialPurpose string, credentialErr error) (map[string]any, error) {
 	if !hasCreditRead(provider) {
 		return nil, nil
 	}
@@ -126,6 +127,12 @@ func (c *Collector) collectPoints(ctx context.Context, state *collectState, prov
 	}
 	value, err := c.opts.Clients.FetchCredits(ctx, provider, accountID, credential)
 	if err != nil {
+		// A 401 from the billing read means upstream no longer accepts the
+		// credential this read was made with. That is the only periodic probe
+		// touching every account, so it is what turns a silently dead session
+		// into a console-visible state instead of a row that still reads
+		// "active" with a future expiry.
+		c.noteAuthRejection(ctx, provider, accountID, credentialPurpose, err)
 		return nil, c.writeFailure(ctx, state, key, err.Error())
 	}
 	if len(value) == 0 {
@@ -161,13 +168,13 @@ func (c *Collector) enabledPurposes(ctx context.Context, provider, accountID str
 // the fallback the Python resolver called inherit_chat. Providers that report
 // every purpose but only populate one still resolve, which is why the error
 // names the last thing tried rather than the first.
-func (c *Collector) resolveCredential(ctx context.Context, provider, accountID string, purposes ...string) (Credential, error) {
+func (c *Collector) resolveCredential(ctx context.Context, provider, accountID string, purposes ...string) (Credential, string, error) {
 	lastErr := errors.New("access token unavailable")
 	for _, purpose := range purposes {
 		record, err := c.opts.DB.GetCredential(ctx, provider, accountID, purpose)
 		if err != nil {
 			if !errors.Is(err, store.ErrNotFound) {
-				return Credential{}, err
+				return Credential{}, "", err
 			}
 			lastErr = fmt.Errorf("no %s credential for %s", purpose, accountID)
 			continue
@@ -182,9 +189,9 @@ func (c *Collector) resolveCredential(ctx context.Context, provider, accountID s
 			lastErr = errors.New("access token unavailable")
 			continue
 		}
-		return Credential{Mode: record.Mode, AccessToken: token, Cookie: stringValue(payload["cookie"])}, nil
+		return Credential{Mode: record.Mode, AccessToken: token, Cookie: stringValue(payload["cookie"])}, purpose, nil
 	}
-	return Credential{}, lastErr
+	return Credential{}, "", lastErr
 }
 
 // credentialPurposes is the auth-material lookup order for one provider.
@@ -263,6 +270,46 @@ func (c *Collector) write(ctx context.Context, state *collectState, key metricKe
 		c.clearBackoff(key)
 	}
 	return nil
+}
+
+// noteAuthRejection moves a purpose out of "active" when upstream refuses the
+// credential that purpose supplied.
+//
+// Only the purpose the rejected credential belongs to is touched. That matters
+// because the credit read resolves check-in material first where the provider
+// has it: marking "chat" for a rejected sign-in credential would eject an
+// account whose proxy credential is perfectly fine, and vice versa. An empty
+// purpose means the credential could not be resolved at all, so there is
+// nothing to attribute the rejection to.
+//
+// The write is skipped when the row already records a rejection, so the probe
+// does not rewrite the same state every round.
+func (c *Collector) noteAuthRejection(ctx context.Context, provider, accountID, purpose string, err error) {
+	var rejected *AuthRejectedError
+	if !errors.As(err, &rejected) || purpose == "" {
+		return
+	}
+	purposes, listErr := c.opts.DB.ListPurposes(ctx, provider, accountID)
+	if listErr != nil {
+		return
+	}
+	for _, row := range purposes {
+		if row.Purpose != purpose {
+			continue
+		}
+		if row.Status == "needs_reauth" {
+			return
+		}
+		if markErr := c.opts.DB.MarkPurposeRejected(ctx, provider, accountID, purpose, "auth_rejected"); markErr != nil {
+			slog.Warn("auth rejection could not be recorded",
+				"provider", provider, "account", accountID, "error", markErr)
+			return
+		}
+		slog.Warn("upstream rejected the stored credential",
+			"provider", provider, "account", accountID, "purpose", purpose,
+			"http_status", rejected.StatusCode)
+		return
+	}
 }
 
 // writeFailure records a failed read. A metric that already has a value keeps

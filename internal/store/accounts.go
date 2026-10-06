@@ -211,6 +211,48 @@ func (d *DB) SetPurposeExpiry(ctx context.Context, provider, accountID, purpose 
 	})
 }
 
+// MarkPurposeRejected records that a live request was refused by upstream.
+//
+// It exists for the metrics probe: a rejected session is not the same thing as
+// a credential the operator switched off, so enablement is left alone while the
+// status moves to needs_reauth. Without it the account keeps reading "active"
+// with a future expiry, stays in the proxy pool, and fails every request.
+//
+// Only the request path may call this. A failed *refresh* must not: upstream
+// answers the refresh endpoint intermittently, so a retry can succeed where the
+// current attempt did not.
+func (d *DB) MarkPurposeRejected(ctx context.Context, provider, accountID, purpose, reason string) error {
+	return d.Write(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx,
+			`UPDATE account_purposes
+			    SET status='needs_reauth', verification_status='rejected', last_error=?, updated_at=?
+			  WHERE provider=? AND account_id=? AND purpose=?`,
+			reason, NowISO(), provider, accountID, purpose)
+		return err
+	})
+}
+
+// ClearPurposeRejection returns a rejected purpose to active and records the
+// instant it recovered.
+//
+// It pairs with MarkPurposeRejected and exists because that state can be a
+// false alarm in two ways: the metrics probe may have seen a transient refusal,
+// and upstream refuses the refresh endpoint intermittently. Both are repaired by
+// the same evidence — a live call that succeeded — so the ceremony of re-logging
+// in is only ever needed when no call can revive the credential.
+func (d *DB) ClearPurposeRejection(ctx context.Context, provider, accountID, purpose string) error {
+	now := NowISO()
+	return d.Write(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx,
+			`UPDATE account_purposes
+			    SET status='active', verification_status='verified', last_success_at=?,
+			        last_error=NULL, updated_at=?
+			  WHERE provider=? AND account_id=? AND purpose=?`,
+			now, now, provider, accountID, purpose)
+		return err
+	})
+}
+
 // ListPurposes returns the purpose rows for one account.
 func (d *DB) ListPurposes(ctx context.Context, provider, accountID string) ([]Purpose, error) {
 	rows, err := d.QueryContext(ctx, `

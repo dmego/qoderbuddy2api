@@ -229,12 +229,16 @@ func runCredentialRotation(ctx context.Context, db *store.DB, credVault *vault.V
 	lead := time.Duration(maxInt(settings.CredentialRefreshLead, 60)) * time.Second
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	// warned keeps the "no refresh contract" report to one line per credential
+	// for the life of the process. The loop runs every 15 minutes and a provider
+	// without a contract would otherwise re-log the same expiry 96 times a day.
+	warned := map[string]bool{}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			rotateOnce(ctx, db, credVault, lead, plane)
+			rotateOnce(ctx, db, credVault, lead, plane, settings, warned)
 		}
 	}
 }

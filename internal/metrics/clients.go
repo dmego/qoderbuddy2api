@@ -145,11 +145,25 @@ func (c *creditClient) do(ctx context.Context, method, base, path string, cred C
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		// The status alone is the diagnostic; the body can carry identifiers
-		// and is never persisted or logged.
+		// and is never persisted or logged. A 401/403 is typed because it is
+		// the one status that says "the stored session is dead", which the
+		// collector turns into an account state rather than a retry.
+		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+			return nil, &AuthRejectedError{StatusCode: response.StatusCode}
+		}
 		return nil, fmt.Errorf("http:%d", response.StatusCode)
 	}
 	return decodeObject(raw), nil
 }
+
+// AuthRejectedError reports that upstream refused the stored credential. It is
+// a distinct type so a caller can act on "this session is dead" without
+// string-matching a status code out of a formatted error.
+type AuthRejectedError struct {
+	StatusCode int
+}
+
+func (e *AuthRejectedError) Error() string { return fmt.Sprintf("auth_rejected:%d", e.StatusCode) }
 
 // requestHeaders builds the browser-like header set the billing endpoints
 // require, plus the per-account auth material.

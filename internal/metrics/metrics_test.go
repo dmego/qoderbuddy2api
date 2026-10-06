@@ -3,6 +3,8 @@ package metrics
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -450,4 +452,144 @@ func findHistory(t *testing.T, db *store.DB, provider, accountID, kind string) s
 		t.Fatalf("no history row for %s/%s/%s", provider, accountID, kind)
 	}
 	return rows[len(rows)-1]
+}
+
+// TestAuthRejectionMovesChatPurposeOutOfActive is the regression for a silently
+// dead credential: upstream refused the stored session, yet the account kept
+// reading "active" with a future expiry, so it stayed in the proxy pool, failed
+// every request, and nothing in the console said so.
+func TestAuthRejectionMovesChatPurposeOutOfActive(t *testing.T) {
+	clients := &fakeClients{creditsErr: &AuthRejectedError{StatusCode: http.StatusUnauthorized}}
+	accounts := &fakeAccounts{byProvider: map[string][]AccountRef{
+		models.ProviderWorkBuddy: {{Provider: models.ProviderWorkBuddy, AccountID: "cb-test"}},
+	}}
+	collector, db := newTestCollector(t, clients, accounts, map[string]any{"access_token": "dead-token"}, nil)
+
+	if _, err := collector.Collect(context.Background()); err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+
+	purposes, err := db.ListPurposes(context.Background(), models.ProviderWorkBuddy, "cb-test")
+	if err != nil {
+		t.Fatalf("list purposes: %v", err)
+	}
+	if len(purposes) != 1 {
+		t.Fatalf("purposes = %d, want 1", len(purposes))
+	}
+	if purposes[0].Status != "needs_reauth" {
+		t.Fatalf("status = %q, want needs_reauth so the account leaves the pool", purposes[0].Status)
+	}
+	if purposes[0].VerificationStatus != "rejected" {
+		t.Fatalf("verification_status = %q, want rejected", purposes[0].VerificationStatus)
+	}
+	if purposes[0].LastError == nil || *purposes[0].LastError != "auth_rejected" {
+		t.Fatalf("last_error = %v, want auth_rejected", purposes[0].LastError)
+	}
+	if !purposes[0].Enabled {
+		t.Fatal("enablement must be preserved: a rejected session is not a disabled purpose")
+	}
+}
+
+// TestTransientCreditFailureKeepsPurposeActive is the guard rail on the check
+// above: a 5xx or a transport fault must not be mistaken for a dead credential,
+// otherwise a brief upstream wobble would eject every account from the pool.
+func TestTransientCreditFailureKeepsPurposeActive(t *testing.T) {
+	clients := &fakeClients{creditsErr: errors.New("http:502")}
+	accounts := &fakeAccounts{byProvider: map[string][]AccountRef{
+		models.ProviderWorkBuddy: {{Provider: models.ProviderWorkBuddy, AccountID: "cb-test"}},
+	}}
+	collector, db := newTestCollector(t, clients, accounts, map[string]any{"access_token": "token-value"}, nil)
+
+	if _, err := collector.Collect(context.Background()); err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+
+	purposes, err := db.ListPurposes(context.Background(), models.ProviderWorkBuddy, "cb-test")
+	if err != nil {
+		t.Fatalf("list purposes: %v", err)
+	}
+	if len(purposes) != 1 {
+		t.Fatalf("purposes = %d, want 1", len(purposes))
+	}
+	if purposes[0].Status != "active" {
+		t.Fatalf("status = %q, want active to survive a transient upstream failure", purposes[0].Status)
+	}
+}
+
+// TestCreditClientTypesAuthRejection pins the classification the collector
+// branches on: the billing read has to distinguish "session is dead" from
+// "upstream is having a bad day", and only the status code can tell them apart.
+func TestCreditClientTypesAuthRejection(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+		}))
+		client := NewCreditClients(config.Settings{
+			CodeBuddyCheckinBase: server.URL,
+			CodeBuddyCreditsPath: "/billing/meter/get-user-resource",
+			CheckinTimeout:       5,
+		})
+		_, err := client.FetchCredits(context.Background(), models.ProviderWorkBuddy, "cb-test",
+			Credential{Mode: "bearer", AccessToken: "token"})
+		server.Close()
+
+		var rejected *AuthRejectedError
+		if !errors.As(err, &rejected) {
+			t.Fatalf("status %d: err = %v, want an AuthRejectedError", status, err)
+		}
+		if rejected.StatusCode != status {
+			t.Fatalf("status = %d, want %d", rejected.StatusCode, status)
+		}
+	}
+}
+
+// TestAuthRejectionMarksOnlyTheRejectedPurpose pins the attribution rule. The
+// credit read resolves check-in material before chat material where the
+// provider has it, so a rejected sign-in credential must not eject an account
+// whose proxy credential is fine. Marking the wrong row takes a healthy account
+// out of the proxy pool.
+func TestAuthRejectionMarksOnlyTheRejectedPurpose(t *testing.T) {
+	clients := &fakeClients{creditsErr: &AuthRejectedError{StatusCode: http.StatusUnauthorized}}
+	accounts := &fakeAccounts{byProvider: map[string][]AccountRef{
+		models.ProviderWorkBuddy: {{Provider: models.ProviderWorkBuddy, AccountID: "cb-test"}},
+	}}
+	collector, db := newTestCollector(t, clients, accounts, map[string]any{"access_token": "chat-token"}, nil)
+
+	// Give the account a check-in credential too: it is the one the credit read
+	// resolves first, so it is the one upstream rejects.
+	blob, err := collector.opts.Vault.Encrypt(map[string]any{"access_token": "checkin-token"})
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	if err := db.UpsertPurpose(context.Background(), store.Purpose{
+		Provider: models.ProviderWorkBuddy, AccountID: "cb-test", Purpose: "checkin",
+		Enabled: true, Status: "active", VerificationStatus: "verified",
+	}); err != nil {
+		t.Fatalf("upsert checkin purpose: %v", err)
+	}
+	if _, err := db.UpsertCredential(context.Background(), store.CredentialWrite{
+		Provider: models.ProviderWorkBuddy, AccountID: "cb-test", Purpose: "checkin",
+		Mode: "bearer", EncryptedPayload: blob,
+	}); err != nil {
+		t.Fatalf("upsert checkin credential: %v", err)
+	}
+
+	if _, err := collector.Collect(context.Background()); err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+
+	purposes, err := db.ListPurposes(context.Background(), models.ProviderWorkBuddy, "cb-test")
+	if err != nil {
+		t.Fatalf("list purposes: %v", err)
+	}
+	status := map[string]string{}
+	for _, row := range purposes {
+		status[row.Purpose] = row.Status
+	}
+	if status["checkin"] != "needs_reauth" {
+		t.Fatalf("checkin status = %q, want needs_reauth (the rejected credential)", status["checkin"])
+	}
+	if status["chat"] != "active" {
+		t.Fatalf("chat status = %q, want active: a rejected sign-in credential must not eject the proxy route", status["chat"])
+	}
 }
