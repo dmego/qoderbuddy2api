@@ -37,7 +37,7 @@ const modelProbeConcurrency = 5
 // Ids are lowercase — upstream is case sensitive and "Space-Bunny" is rejected
 // while "space-bunny" is served.
 var candidateModelIDs = []string{
-	"space-bunny",
+	"space-bunny", "step-5-preview",
 	"glm-5.4", "glm-5.4-flash", "glm-5v",
 	"deepseek-v3.1", "deepseek-v4.1",
 	"kimi-k2.8", "kimi-k2.9", "kimi-k3",

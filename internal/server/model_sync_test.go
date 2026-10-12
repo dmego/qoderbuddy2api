@@ -54,6 +54,9 @@ func TestSyncCandidatesIncludeConfigAndDiscovery(t *testing.T) {
 	if !seen["space-bunny"] {
 		t.Fatal("space-bunny must be probed: it is a real upstream model absent from the config")
 	}
+	if !seen["step-5-preview"] {
+		t.Fatal("step-5-preview must be probed: it is a real upstream model absent from the config")
+	}
 }
 
 // TestReconcileAddsDiscoveredModel is the regression for Space-Bunny: a model
