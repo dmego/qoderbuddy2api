@@ -43,6 +43,73 @@ func TestErrorCodeClassifiesFailures(t *testing.T) {
 	}
 }
 
+// TestStatusCodeMapsQuotaToRetryable proves a quota wall reaches the client as
+// a rate limit. The upstream answers 400 and every OpenAI-compatible client
+// treats 4xx as fatal, so a 429 (plus Retry-After) is what makes an SDK retry
+// instead of surfacing a permanent-looking error.
+func TestStatusCodeMapsQuotaToRetryable(t *testing.T) {
+	resetAt := time.Now().Add(90 * time.Minute)
+	cases := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"quota is a rate limit", &QuotaExceededError{
+			UpstreamError: UpstreamError{StatusCode: 400, Message: "usage limit"},
+			ResetAt:       &resetAt,
+		}, http.StatusTooManyRequests},
+		{"wrapped quota keeps 429", fmt.Errorf("codebuddy: %w", &QuotaExceededError{
+			UpstreamError: UpstreamError{StatusCode: 400, Message: "usage limit"},
+		}), http.StatusTooManyRequests},
+		{"no routes is a 503", fmt.Errorf("glm-5.3: %w", UnavailableError), http.StatusServiceUnavailable},
+		{"plain upstream keeps its status", &UpstreamError{StatusCode: 400, Message: "bad request"}, 400},
+		// 11128 is "back off and retry later": a 5xx keeps SDKs retrying, while
+		// the upstream's own 400 would look permanent.
+		{"channel block stays retryable", &ChannelBlockedError{
+			UpstreamError{StatusCode: 400, Message: "risk control"},
+		}, http.StatusBadGateway},
+		{"unclassified is a 502", errors.New("dial tcp: refused"), 502},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := StatusCode(testCase.err); got != testCase.want {
+				t.Fatalf("StatusCode(%v) = %d, want %d", testCase.err, got, testCase.want)
+			}
+		})
+	}
+}
+
+// TestRetryAfterReportsQuotaReset proves the reset instant the upstream sent is
+// exposed as a wait, and that a stale instant still asks for a short pause
+// instead of inviting an immediate retry into the same wall.
+func TestRetryAfterReportsQuotaReset(t *testing.T) {
+	now := time.Now()
+	future := now.Add(30 * time.Minute)
+	past := now.Add(-5 * time.Minute)
+
+	quota := &QuotaExceededError{
+		UpstreamError: UpstreamError{StatusCode: 400, Message: "usage limit"},
+		ResetAt:       &future,
+	}
+	if got := RetryAfter(quota, now); got < 1790 || got > 1800 {
+		t.Fatalf("RetryAfter(future) = %d, want ~1800", got)
+	}
+	stale := &QuotaExceededError{
+		UpstreamError: UpstreamError{StatusCode: 400, Message: "usage limit"},
+		ResetAt:       &past,
+	}
+	if got := RetryAfter(stale, now); got != 1 {
+		t.Fatalf("RetryAfter(stale) = %d, want 1", got)
+	}
+	// Errors without a reset instant must not fabricate a wait.
+	if got := RetryAfter(&UpstreamError{StatusCode: 400, Message: "x"}, now); got != 0 {
+		t.Fatalf("RetryAfter(plain upstream) = %d, want 0", got)
+	}
+	if got := RetryAfter(UnavailableError, now); got != 0 {
+		t.Fatalf("RetryAfter(no routes) = %d, want 0", got)
+	}
+}
+
 // TestErrorCodeUnwrapsPrecommitFailure proves the pool's failover wrapper does
 // not hide the real class: a wrapped upstream error keeps its own code.
 func TestErrorCodeUnwrapsPrecommitFailure(t *testing.T) {

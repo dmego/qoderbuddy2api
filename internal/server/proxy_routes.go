@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -129,15 +130,20 @@ func (a *API) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 func (a *API) completeChat(w http.ResponseWriter, r *http.Request, request *chatwire.ChatRequest, entry models.Unified, started time.Time) {
 	result, err := a.Plane.Complete(r.Context(), request)
 	if err != nil {
-		a.recordEvent(request, entry, "openai", false, started, err, 0, false)
+		status := providers.StatusCode(err)
+		kind := "upstream_error"
 		if errors.Is(err, providers.UnavailableError) {
-			writeJSON(w, http.StatusServiceUnavailable, openAIError(err.Error(), "provider_unavailable"))
-			return
+			kind = "provider_unavailable"
+		} else if retryAfter := providers.RetryAfter(err, time.Now()); retryAfter > 0 {
+			// Tell a retrying client exactly when the upstream quota resets
+			// instead of leaving it to guess from the message text.
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 		}
-		writeJSON(w, providers.StatusCode(err), openAIError(err.Error(), "upstream_error"))
+		a.recordEvent(request, entry, "openai", false, started, err, 0, false, status)
+		writeJSON(w, status, openAIError(err.Error(), kind))
 		return
 	}
-	a.recordEvent(request, entry, "openai", true, started, nil, 0, false)
+	a.recordEvent(request, entry, "openai", true, started, nil, 0, false, http.StatusOK)
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -146,12 +152,15 @@ func (a *API) completeChat(w http.ResponseWriter, r *http.Request, request *chat
 func (a *API) streamChat(w http.ResponseWriter, r *http.Request, request *chatwire.ChatRequest, entry models.Unified, started time.Time) {
 	stream, err := a.Plane.Stream(r.Context(), request)
 	if err != nil {
-		a.recordEvent(request, entry, "openai", false, started, err, 0, true)
+		status := providers.StatusCode(err)
+		kind := "upstream_error"
 		if errors.Is(err, providers.UnavailableError) {
-			writeJSON(w, http.StatusServiceUnavailable, openAIError(err.Error(), "provider_unavailable"))
-			return
+			kind = "provider_unavailable"
+		} else if retryAfter := providers.RetryAfter(err, time.Now()); retryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 		}
-		writeJSON(w, providers.StatusCode(err), openAIError(err.Error(), "upstream_error"))
+		a.recordEvent(request, entry, "openai", false, started, err, 0, true, status)
+		writeJSON(w, status, openAIError(err.Error(), kind))
 		return
 	}
 	defer stream.Close()
@@ -193,7 +202,10 @@ func (a *API) streamChat(w http.ResponseWriter, r *http.Request, request *chatwi
 		}
 	}
 	success := streamErr == nil && request.StreamError == ""
-	a.recordEvent(request, entry, "openai", success, started, streamErr, firstToken, true)
+	// The response line was already written before the loop, so the status the
+	// client observed is 200 even when the stream failed mid-flight; the error
+	// is reported in-band and classified by error_code, not by http_status.
+	a.recordEvent(request, entry, "openai", success, started, streamErr, firstToken, true, http.StatusOK)
 }
 
 // handleAnthropicMessages serves POST /v1/messages.
@@ -238,19 +250,27 @@ func (a *API) handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := a.Plane.Complete(r.Context(), &request)
 	if err != nil {
-		a.recordEvent(&request, entry, "anthropic", false, started, err, 0, false)
-		writeAnthropicError(w, providers.StatusCode(err), err.Error())
+		status := providers.StatusCode(err)
+		if retryAfter := providers.RetryAfter(err, time.Now()); retryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		}
+		a.recordEvent(&request, entry, "anthropic", false, started, err, 0, false, status)
+		writeAnthropicError(w, status, err.Error())
 		return
 	}
-	a.recordEvent(&request, entry, "anthropic", true, started, nil, 0, false)
+	a.recordEvent(&request, entry, "anthropic", true, started, nil, 0, false, http.StatusOK)
 	writeJSON(w, http.StatusOK, openAIToAnthropic(result, originalModel))
 }
 
 func (a *API) streamAnthropic(w http.ResponseWriter, r *http.Request, request *chatwire.ChatRequest, entry models.Unified, originalModel string, started time.Time) {
 	stream, err := a.Plane.Stream(r.Context(), request)
 	if err != nil {
-		a.recordEvent(request, entry, "anthropic", false, started, err, 0, true)
-		writeAnthropicError(w, providers.StatusCode(err), err.Error())
+		status := providers.StatusCode(err)
+		if retryAfter := providers.RetryAfter(err, time.Now()); retryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		}
+		a.recordEvent(request, entry, "anthropic", false, started, err, 0, true, status)
+		writeAnthropicError(w, status, err.Error())
 		return
 	}
 	defer stream.Close()
@@ -292,11 +312,18 @@ func (a *API) streamAnthropic(w http.ResponseWriter, r *http.Request, request *c
 		_, _ = w.Write(anthropicErrorSSE(streamErr.Error()))
 	}
 	success := streamErr == nil && request.StreamError == ""
-	a.recordEvent(request, entry, "anthropic", success, started, streamErr, firstToken, true)
+	// Status 200 was written before the loop; a mid-stream failure is reported
+	// in-band and classified by error_code.
+	a.recordEvent(request, entry, "anthropic", success, started, streamErr, firstToken, true, http.StatusOK)
 }
 
 // recordEvent writes one telemetry row through the batching writer.
-func (a *API) recordEvent(request *chatwire.ChatRequest, entry models.Unified, protocol string, success bool, started time.Time, err error, firstTokenMS int, stream bool) {
+//
+// writtenStatus is the HTTP status the handler actually sent to the client, not
+// a recomputed one: the console and the CSV export show this column as "what
+// the caller saw", so a 503 written for UnavailableError must not be recorded
+// as the 502 that StatusCode() used to default to.
+func (a *API) recordEvent(request *chatwire.ChatRequest, entry models.Unified, protocol string, success bool, started time.Time, err error, firstTokenMS int, stream bool, writtenStatus int) {
 	if a.Events == nil {
 		return
 	}
@@ -315,9 +342,11 @@ func (a *API) recordEvent(request *chatwire.ChatRequest, entry models.Unified, p
 			httpStatus = 499
 		} else {
 			status = "failed"
-			if err != nil {
-				httpStatus = providers.StatusCode(err)
-			} else if request.StreamError != "" {
+			// The status the handler wrote: a post-commit stream failure is
+			// reported in-band after a 200, so recomputing from the error would
+			// record a status the caller never saw.
+			httpStatus = writtenStatus
+			if err == nil && request.StreamError != "" {
 				code = request.StreamError
 			}
 		}

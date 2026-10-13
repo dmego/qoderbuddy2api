@@ -1201,6 +1201,95 @@ func (a *API) handleDeleteRouting(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "model_id": modelID})
 }
 
+// handlePutAccountBlock blocks or unblocks one account for one model, the
+// per-account checkbox on the console's routing page.
+//
+// `{"blocked": true}` records a manual exclusion (hard block: never a
+// candidate, not even as a canary); `{"blocked": false}` clears any stored row,
+// manual or auto. The row is authoritative for the request path because
+// ProxyPlane.Reload folds source='manual' rows into Pool.SetHardBlocks.
+func (a *API) handlePutAccountBlock(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	modelID := r.PathValue("modelID")
+	provider := r.PathValue("provider")
+	accountID := r.PathValue("accountID")
+	if len(modelID) == 0 || len(modelID) > 256 {
+		writeError(w, http.StatusBadRequest, "invalid_model_id")
+		return
+	}
+	if len(provider) == 0 || len(provider) > 64 {
+		writeError(w, http.StatusBadRequest, "invalid_provider")
+		return
+	}
+	if len(accountID) == 0 || len(accountID) > 64 {
+		writeError(w, http.StatusBadRequest, "invalid_account_id")
+		return
+	}
+	// A block row is only meaningful for a model the catalog knows and a
+	// provider that actually serves it; without this the console would accept
+	// exclusions that no route can ever honour.
+	entry, known := a.catalogForRequest()[modelID]
+	if !known {
+		writeError(w, http.StatusNotFound, "unknown model: "+modelID)
+		return
+	}
+	served := false
+	for _, route := range entry.Routes {
+		if route.Provider == provider {
+			served = true
+			break
+		}
+	}
+	if !served {
+		writeError(w, http.StatusBadRequest, "unknown route provider: "+provider)
+		return
+	}
+	var body struct {
+		Blocked *bool  `json:"blocked"`
+		Reason  string `json:"reason"`
+	}
+	if err := decodeBody(r, &body); err != nil || body.Blocked == nil {
+		writeError(w, http.StatusBadRequest, "blocked_boolean_required")
+		return
+	}
+	blocked := *body.Blocked
+	reason := strings.TrimSpace(body.Reason)
+	if len(reason) > 200 {
+		reason = reason[:200]
+	}
+	if blocked {
+		if reason == "" {
+			reason = "管理员手动停用"
+		}
+		err := a.DB.UpsertAccountModelBlock(ctx, store.AccountModelBlock{
+			Provider: provider, AccountID: accountID, ModelID: modelID,
+			Reason: reason, Source: "manual",
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	} else {
+		if err := a.DB.DeleteAccountModelBlock(ctx, provider, accountID, modelID); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	action := "routing.account_block"
+	if !blocked {
+		action = "routing.account_unblock"
+	}
+	a.audit(r, action, "account", provider+":"+accountID+":"+modelID, nil)
+	if err := a.refreshPlane(r); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "provider_pool_refresh_failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ok", "blocked": blocked, "model_id": modelID,
+		"provider": provider, "account_id": accountID,
+	})
+}
+
 // ---- proxy keys ----
 
 func (a *API) handleListProxyKeys(w http.ResponseWriter, r *http.Request) {

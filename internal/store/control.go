@@ -410,6 +410,37 @@ func (d *DB) ListBackupRuns(ctx context.Context, status string, limit, offset in
 	return out, rows.Err()
 }
 
+// GetBackupRun loads one backup record by id.
+func (d *DB) GetBackupRun(ctx context.Context, backupID string) (BackupRun, error) {
+	var run BackupRun
+	err := d.QueryRowContext(ctx, `
+		SELECT backup_id, path, schema_version, started_at, finished_at, status, size_bytes, sha256, error_message
+		  FROM backup_runs WHERE backup_id=?`, backupID).
+		Scan(&run.BackupID, &run.Path, &run.SchemaVersion, &run.StartedAt,
+			&run.FinishedAt, &run.Status, &run.SizeBytes, &run.SHA256, &run.ErrorMessage)
+	if errors.Is(err, sql.ErrNoRows) {
+		return BackupRun{}, ErrNotFound
+	}
+	if err != nil {
+		return BackupRun{}, err
+	}
+	return run, nil
+}
+
+// SchemaVersion reads the schema generation recorded in schema_meta.
+func (d *DB) SchemaVersion(ctx context.Context) (string, error) {
+	var value string
+	err := d.QueryRowContext(ctx,
+		"SELECT value FROM schema_meta WHERE key='schema_version'").Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
 // ServiceEvent is one row of service_events.
 type ServiceEvent struct {
 	Cursor        int64   `json:"cursor"`

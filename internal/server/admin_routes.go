@@ -1,8 +1,12 @@
 package server
 
 import (
+	"database/sql"
 	"errors"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -49,6 +53,10 @@ func (a *API) registerAdmin(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/admin/routing", guard(a.handleGetRouting))
 	mux.HandleFunc("PUT /api/admin/routing/{modelID}", guard(a.handlePutRouting))
 	mux.HandleFunc("DELETE /api/admin/routing/{modelID}", guard(a.handleDeleteRouting))
+	// Account-level model exclusion: the console's per-account checkbox on the
+	// routing page. The two patterns cannot collide: {modelID} matches exactly
+	// one segment, so the 2-segment pattern never sees a /accounts/ request.
+	mux.HandleFunc("PUT /api/admin/routing/{modelID}/accounts/{provider}/{accountID}", guard(a.handlePutAccountBlock))
 
 	mux.HandleFunc("GET /api/admin/proxy-keys", guard(a.handleListProxyKeys))
 	mux.HandleFunc("POST /api/admin/proxy-keys", guard(a.handleCreateProxyKey))
@@ -62,6 +70,7 @@ func (a *API) registerAdmin(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/admin/audit", guard(a.handleListAudit))
 	mux.HandleFunc("GET /api/admin/backup", guard(a.handleListBackups))
 	mux.HandleFunc("POST /api/admin/backup", guard(a.handleCreateBackup))
+	mux.HandleFunc("POST /api/admin/backup/{backupID}/restore", guard(a.handleValidateBackup))
 
 	mux.HandleFunc("GET /api/admin/service", guard(a.handleServiceStatus))
 	mux.HandleFunc("POST /api/admin/service/{action}", guard(a.handleServiceAction))
@@ -488,3 +497,120 @@ func (a *API) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
 
 // schemaVersionForBackup is the schema generation this build writes.
 const schemaVersionForBackup = "8"
+
+// handleValidateBackup performs the console's "校验恢复" preflight: it checks
+// the recorded row, re-hashes the file, opens it read-only, runs SQLite's own
+// integrity check and compares the schema generation.
+//
+// Restoring is deliberately NOT offered online — the console copy says so
+// ("在线 Control Plane 未覆盖数据库") and the Python build answered 409 for a
+// real restore. A body of {"dry_run": false} is therefore refused rather than
+// silently validated.
+func (a *API) handleValidateBackup(w http.ResponseWriter, r *http.Request) {
+	backupID := r.PathValue("backupID")
+	var body struct {
+		DryRun *bool `json:"dry_run"`
+	}
+	if err := decodeBody(r, &body); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if body.DryRun != nil && !*body.DryRun {
+		writeError(w, http.StatusConflict, "offline_restore_required")
+		return
+	}
+	run, err := a.DB.GetBackupRun(r.Context(), backupID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "backup_not_found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	path, err := a.safeBackupPath(run.Path)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "backup_validation_failed")
+		return
+	}
+	if run.Status != "succeeded" {
+		writeError(w, http.StatusUnprocessableEntity, "backup_validation_failed")
+		return
+	}
+	size, digest, err := fileSizeAndDigest(path)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "backup_validation_failed")
+		return
+	}
+	if run.SHA256 == nil || *run.SHA256 == "" || digest != *run.SHA256 {
+		writeError(w, http.StatusUnprocessableEntity, "backup_validation_failed")
+		return
+	}
+	fileVersion, err := a.inspectBackupFile(path)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "backup_validation_failed")
+		return
+	}
+	current, err := a.DB.SchemaVersion(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if fileVersion != current {
+		writeError(w, http.StatusUnprocessableEntity, "backup_validation_failed")
+		return
+	}
+	a.audit(r, "backup.restore.validate", "backup", backupID, nil)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"backup_id":      backupID,
+		"valid":          true,
+		"dry_run":        true,
+		"schema_version": current,
+		"size_bytes":     size,
+		"sha256":         digest,
+		// The online control plane never overwrites its own database; the
+		// operator swaps the file while the service is stopped.
+		"next_step": "offline_restore_required",
+	})
+}
+
+// safeBackupPath resolves a recorded backup path and refuses anything outside
+// the managed backup directory, so a tampered row cannot make the validator
+// read an arbitrary file.
+func (a *API) safeBackupPath(recorded string) (string, error) {
+	root, err := filepath.Abs(a.Settings.DataDir + "/backups")
+	if err != nil {
+		return "", err
+	}
+	target, err := filepath.Abs(recorded)
+	if err != nil {
+		return "", err
+	}
+	if target != root && !strings.HasPrefix(target, root+string(os.PathSeparator)) {
+		return "", errors.New("backup path is outside the managed directory")
+	}
+	return target, nil
+}
+
+// inspectBackupFile opens a snapshot read-only, runs SQLite's integrity check
+// and reads its recorded schema generation.
+func (a *API) inspectBackupFile(path string) (string, error) {
+	dsn := "file:" + path + "?mode=ro&_pragma=query_only(1)"
+	handle, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return "", err
+	}
+	defer handle.Close()
+	var integrity string
+	if err := handle.QueryRow("PRAGMA integrity_check").Scan(&integrity); err != nil {
+		return "", err
+	}
+	if integrity != "ok" {
+		return "", errors.New("integrity check failed: " + integrity)
+	}
+	var version string
+	if err := handle.QueryRow("SELECT value FROM schema_meta WHERE key='schema_version'").Scan(&version); err != nil {
+		return "", err
+	}
+	return version, nil
+}

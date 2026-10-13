@@ -2,11 +2,13 @@ package server
 
 import (
 	"context"
+	"net/http"
 	"testing"
 	"time"
 
 	"github.com/dmego/qoderbuddy2api/internal/chatwire"
 	"github.com/dmego/qoderbuddy2api/internal/models"
+	"github.com/dmego/qoderbuddy2api/internal/providers"
 	"github.com/dmego/qoderbuddy2api/internal/store"
 )
 
@@ -20,13 +22,20 @@ func TestRecordEventSeparatesClientAborts(t *testing.T) {
 		name       string
 		err        error
 		success    bool
+		written    int
 		wantStatus string
 		wantHTTP   int
 		wantCode   string
 	}{
-		{"success", nil, true, "succeeded", 200, ""},
-		{"client cancel", context.Canceled, false, "cancelled", 499, "client_canceled"},
-		{"upstream unreachable", &opaqueError{}, false, "failed", 502, "unknown_error"},
+		{"success", nil, true, http.StatusOK, "succeeded", 200, ""},
+		{"client cancel", context.Canceled, false, http.StatusOK, "cancelled", 499, "client_canceled"},
+		{"upstream unreachable", &opaqueError{}, false, 502, "failed", 502, "unknown_error"},
+		// A quota wall is a rate limit: the handler answers 429 so an
+		// OpenAI-compatible client retries instead of giving up on a 4xx.
+		{"quota exceeded", &providers.QuotaExceededError{}, false, http.StatusTooManyRequests, "failed", 429, "quota_exceeded"},
+		// No route is a 503; recording the old 502 default would show the
+		// console a status the caller never saw.
+		{"no available routes", providers.UnavailableError, false, http.StatusServiceUnavailable, "failed", 503, "no_available_routes"},
 	}
 
 	for _, testCase := range cases {
@@ -36,7 +45,7 @@ func TestRecordEventSeparatesClientAborts(t *testing.T) {
 			api, db := newTestAPI(t)
 			request := &chatwire.ChatRequest{Model: entry.ID}
 			started := time.Now().Add(-3 * time.Second)
-			api.recordEvent(request, entry, "openai", testCase.success, started, testCase.err, 1200, true)
+			api.recordEvent(request, entry, "openai", testCase.success, started, testCase.err, 1200, true, testCase.written)
 
 			if err := api.Events.Flush(context.Background()); err != nil {
 				t.Fatalf("flush: %v", err)
@@ -70,7 +79,7 @@ func TestRecordEventStampsRequestArrival(t *testing.T) {
 	entry := models.Unified{ID: "deepseek-v4.1-flash"}
 	started := time.Now().UTC().Add(-90 * time.Second)
 
-	api.recordEvent(&chatwire.ChatRequest{Model: entry.ID}, entry, "openai", true, started, nil, 1500, true)
+	api.recordEvent(&chatwire.ChatRequest{Model: entry.ID}, entry, "openai", true, started, nil, 1500, true, http.StatusOK)
 	if err := api.Events.Flush(context.Background()); err != nil {
 		t.Fatalf("flush: %v", err)
 	}

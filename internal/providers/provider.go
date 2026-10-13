@@ -101,13 +101,52 @@ func ResetAt(err error) *time.Time {
 	return nil
 }
 
-// StatusCode extracts the HTTP status carried by an upstream error.
+// StatusCode extracts the HTTP status the client should see.
+//
+// A quota rejection is reported as 429 with the upstream status discarded: the
+// upstream answers 400, but the failure is a rate limit and every OpenAI-
+// compatible client retries on 429 and gives up on 4xx.
+//
+// A channel block (11128) is reported as 502 rather than the upstream's 400:
+// the type's own contract is "upstream security policy; back off and retry
+// later", so it must stay in the retryable 5xx family. This is also what the
+// build has always answered, because the embedded UpstreamError is a value
+// field and errors.As cannot reach it without an Unwrap.
+//
+// Every other classified upstream failure keeps the status the upstream sent.
 func StatusCode(err error) int {
+	if errors.Is(err, UnavailableError) {
+		return http.StatusServiceUnavailable
+	}
+	var quota *QuotaExceededError
+	if errors.As(err, &quota) {
+		return http.StatusTooManyRequests
+	}
+	var blocked *ChannelBlockedError
+	if errors.As(err, &blocked) {
+		return http.StatusBadGateway
+	}
 	var upstream *UpstreamError
 	if errors.As(err, &upstream) {
 		return upstream.StatusCode
 	}
 	return 502
+}
+
+// RetryAfter renders the wait a client should observe before retrying, in
+// seconds, for errors that carry a reset instant. Zero means "no hint".
+func RetryAfter(err error, now time.Time) int {
+	resetAt := ResetAt(err)
+	if resetAt == nil {
+		return 0
+	}
+	seconds := int(resetAt.Sub(now).Seconds())
+	if seconds < 1 {
+		// A reset instant that has already passed must still tell the client to
+		// wait a moment rather than to hammer the same wall.
+		return 1
+	}
+	return seconds
 }
 
 // ErrorCode renders a stable, low-cardinality classification of a failed
