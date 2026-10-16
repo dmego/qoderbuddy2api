@@ -31,6 +31,28 @@ var requestKeys = []string{
 	"response_format", "seed", "user",
 }
 
+// Conversation headers the upstream gateway began enforcing on 2026-10-16.
+//
+// Measured on the international deployment: accounts started answering
+// 400 code=11128 "conversation id missing" for requests without the triple —
+// all three headers are required together, and any single header or pair is
+// still rejected. A body conversation_id (top-level or metadata) does not
+// substitute for the headers, and the header values are not cross-checked
+// against the body. One account in the fleet still accepts requests without
+// them, so the failure presents as per-account pool failover noise rather than
+// a clean outage; every intl account tested accepts the fabricated triple, and
+// the domestic deployment ignores it without complaint.
+//
+// The values are fresh UUIDs per request: they exist to satisfy the channel
+// check, and reusing the client's history would pin a conversation id the
+// client never chose. The request id is shared with X-Request-ID so the
+// upstream sees one consistent request identity.
+const (
+	conversationHeaderID        = "X-Conversation-ID"
+	conversationHeaderRequestID = "X-Conversation-Request-ID"
+	conversationHeaderMessageID = "X-Conversation-Message-ID"
+)
+
 // WorkBuddy is the domestic WorkBuddy/CodeBuddy provider (copilot.tencent.com).
 //
 // The provider identifier stays "codebuddy": accounts, credentials, telemetry
@@ -150,6 +172,8 @@ func (p *WorkBuddy) preparedMessages(request *chatwire.ChatRequest) []map[string
 }
 
 func (p *WorkBuddy) headers() map[string]string {
+	requestID := randomUUID()
+	conversationID := randomUUID()
 	return map[string]string{
 		"Content-Type":   "application/json",
 		"Authorization":  "Bearer " + p.Token,
@@ -159,7 +183,12 @@ func (p *WorkBuddy) headers() map[string]string {
 		"X-Agent-Intent": "CodeCompletion",
 		"Accept":         "text/event-stream",
 		"X-Machine-Id":   randomUUID(),
-		"X-Request-ID":   randomUUID(),
+		"X-Request-ID":   requestID,
+		// Fabricated per request so a replayed downstream history cannot pin a
+		// conversation to an id the client never chose; see conversationHeaders.
+		conversationHeaderID:        conversationID,
+		conversationHeaderRequestID: requestID,
+		conversationHeaderMessageID: randomUUID(),
 	}
 }
 
@@ -270,6 +299,7 @@ func (p *WorkBuddyIntl) buildBody(request *chatwire.ChatRequest) map[string]any 
 }
 
 func (p *WorkBuddyIntl) headers() map[string]string {
+	requestID := randomUUID()
 	return map[string]string{
 		"Content-Type":  "application/json",
 		"Authorization": "Bearer " + p.Token,
@@ -278,7 +308,12 @@ func (p *WorkBuddyIntl) headers() map[string]string {
 		"X-Product":     "SaaS",
 		"X-Domain":      "www.workbuddy.ai",
 		"X-Machine-Id":  randomUUID(),
-		"X-Request-ID":  randomUUID(),
+		"X-Request-ID":  requestID,
+		// The gateway started requiring the full triple on 2026-10-16; see
+		// conversationHeaderID for the measured contract.
+		conversationHeaderID:        randomUUID(),
+		conversationHeaderRequestID: requestID,
+		conversationHeaderMessageID: randomUUID(),
 	}
 }
 

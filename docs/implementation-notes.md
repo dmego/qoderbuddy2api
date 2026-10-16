@@ -124,6 +124,32 @@ internal/server       HTTP surface, admin auth, schedulers wiring
 
 行尾有无句号都要能命中：替换按"无句号"字面量进行，句号留在替换文本之后。
 
+## 会话头（X-Conversation-*）
+
+**上游 2026-10-16 起对 chat 请求强制校验会话头族**：缺少
+`X-Conversation-ID` / `X-Conversation-Request-ID` / `X-Conversation-Message-ID`
+时返回 400 code=11128 `conversation id missing`。实测要点：
+
+- **三个头必须同时出现**：单独一个或任意两两组合仍被拒；body 里的
+  `conversation_id`（顶层或 `metadata` 内）**不能替代**头，值与头也不做交叉校验。
+- **按账号生效、不是全池**：intl 四个账号实测 3 个拒绝、1 个通过。因此故障形态是
+  「池级 failover 噪音」而不是整齐的全站 500 —— 每次请求先打 3 个坏账号各失败一次
+  （`pool stream failed pre-commit` 日志 + 30s 冷却），再由好账号兜底成功。
+- **两个 provider 都发**：国内 `copilot.tencent.com` 与 intl `www.workbuddy.ai`
+  均接受伪造的 UUID 三元组，不回退也不报错。
+- **值为每请求新造的 UUID**：`X-Conversation-Request-ID` 复用同请求的
+  `X-Request-ID`，另两个各生成一个新 UUID。不采信客户端历史里的会话 id ——
+  那会把会话钉在客户端从未选择过的 id 上。实测 prompt cache 命中率不受影响
+  （新造 id 与复用 id 三轮对照命中完全相同）。
+
+实现位置：`internal/providers/workbuddy.go` 的 `conversationHeaderID` 常量组与两个
+`headers()`；回归测试 `internal/providers/conversation_headers_test.go`。
+
+**非流式：上游已明确不支持。** `stream:false` 直连上游返回 400 code=11101
+`Non-stream chat request is currently not supported`（截图流传的 408 不准确），
+因此代理的非流式接口必须自己聚合流式响应（`Complete` 走 `Stream` + aggregator），
+永远不向 WorkBuddy 上游发 `stream:false`。
+
 ## 请求结局（三分支）
 
 `request_events.status` 有三个取值，用量页的成功/已取消/失败都按它统计：
