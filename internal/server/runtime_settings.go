@@ -164,6 +164,15 @@ func (r *RuntimeSettings) GrowthActiveDayConfirmAttempts() int {
 	return r.intValue("growth.active_day_confirm_attempts", r.settings.GrowthActiveDayAttempts)
 }
 
+// CredentialRefreshIntervalHours reports the rolling refresh period, in hours.
+//
+// This is the interval that keeps an upstream session warm: WorkBuddy hands out
+// access tokens with a 28-day exp but revokes the session behind them far
+// sooner, so waiting for the stored deadline never happens in practice.
+func (r *RuntimeSettings) CredentialRefreshIntervalHours() int {
+	return r.intValue("credential.refresh_interval_hours", r.settings.CredentialRefreshInterval)
+}
+
 // ---- metrics / usage scheduler settings ----
 
 func (r *RuntimeSettings) MetricsEnabled() bool {

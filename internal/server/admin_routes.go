@@ -207,6 +207,11 @@ var settingSchemas = []settingSchema{
 	// per-model provider policy above them.
 	{Key: "routing.account_strategy", Default: "round_robin", ApplyMode: "immediate", Type: "str", Validate: validateAccountStrategy},
 	{Key: "routing.session_affinity", Default: false, ApplyMode: "immediate", Type: "bool", Validate: validateBool},
+	// Credential rotation. The rolling interval is what actually keeps a
+	// WorkBuddy session alive: upstream revokes sessions well before the access
+	// token's own exp, so an expiry-driven refresh never fires in time.
+	{Key: "credential.refresh_interval_hours", Default: 6, ApplyMode: "immediate", Type: "int", Min: intPointer(1), Validate: rangeValidator(1, 72, "credential refresh interval must be between 1 and 72 hours")},
+
 	{Key: "routing.session_affinity_ttl_seconds", Default: 3600, ApplyMode: "immediate", Type: "int", Validate: rangeValidator(60, 86400, "session affinity ttl must be between 60 and 86400 seconds")},
 }
 

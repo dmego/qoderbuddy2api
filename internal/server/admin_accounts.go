@@ -506,11 +506,31 @@ func (a *API) handleListCredentials(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// The rolling interval decides when the next refresh is due, so report it
+	// alongside the rows: "updated 5 hours ago" means something different at a
+	// 6-hour interval than at a 24-hour one.
+	intervalHours := a.Settings.CredentialRefreshInterval
+	if intervalHours <= 0 {
+		intervalHours = 6
+	}
+	if stored, err := a.DB.RuntimeSettingsMap(r.Context()); err == nil {
+		if raw, ok := stored["credential.refresh_interval_hours"]; ok {
+			if parsed, ok := numeric(raw); ok && parsed > 0 {
+				intervalHours = parsed
+			}
+		}
+	}
 	views := make([]map[string]any, 0, len(credentials))
 	for _, credential := range credentials {
-		views = append(views, credentialView(credential))
+		view := credentialView(credential)
+		if credential.HasRefreshToken && intervalHours > 0 {
+			if updatedAt, ok := store.ParseISO(credential.UpdatedAt); ok {
+				view["next_refresh_at"] = store.FormatISO(updatedAt.Add(time.Duration(intervalHours) * time.Hour))
+			}
+		}
+		views = append(views, view)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"credentials": list(views)})
+	writeJSON(w, http.StatusOK, map[string]any{"credentials": list(views), "refresh_interval_hours": intervalHours})
 }
 
 // credentialView renders credential metadata. The expiry state is judged

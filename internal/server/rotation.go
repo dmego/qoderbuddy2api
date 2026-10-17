@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dmego/qoderbuddy2api/internal/config"
@@ -17,71 +18,194 @@ import (
 	"github.com/dmego/qoderbuddy2api/internal/vault"
 )
 
-// rotateOnce refreshes every credential whose expiry is inside the lead window.
+// rotationPolicy decides when one credential is refreshed.
+//
+// Rotation used to be expiry-driven only: refresh when the stored deadline is
+// within the lead window. That rule never fired here, because WorkBuddy hands
+// out access tokens with a 28-day exp while the session behind them can be
+// revoked after a few days. Measured 2026-10-17: all four domestic accounts
+// carried exp=2026-11-13 and were refused with 401 eleven days after signing
+// in, so every request in the meantime was served by a credential the loop had
+// decided needed no attention.
+//
+// The policy has three triggers, and rollingRefresh is the one that matters:
+//
+//   - rolling: refresh at a fixed interval regardless of expiry, which keeps
+//     the offline session warm and bounds how stale a stored credential can
+//     be when upstream revokes sessions;
+//   - proportional: refresh once a fraction of the credential's own lifetime
+//     remains, which adapts to a 2-hour token and a 28-day one alike;
+//   - absolute: the historical fixed lead, kept as a floor.
+type rotationPolicy struct {
+	// interval is the rolling trigger: zero disables it.
+	interval time.Duration
+	// lead is the absolute floor.
+	lead time.Duration
+	// fraction is the share of the credential's lifetime that must remain
+	// before the proportional trigger fires; zero disables it.
+	fraction float64
+}
+
+// defaultRotationFraction is the proportional share. A 28-day credential starts
+// refreshing with 5.6 days left, while a 2-hour one starts with 24 minutes left.
+const defaultRotationFraction = 0.2
+
+// deadSessionRetry is how long a revoked session waits before the next probe.
+//
+// It follows the rolling interval so the cost of keeping a dead account in the
+// retry set is bounded by the operator's own setting, with a floor for the case
+// where the rolling trigger is disabled.
+func (policy rotationPolicy) deadSessionRetry() time.Duration {
+	if policy.interval > 0 {
+		return policy.interval
+	}
+	return 6 * time.Hour
+}
+
+// refreshDue reports whether a credential should be refreshed now.
+//
+// A credential with no parseable expiry is still refreshed on the rolling
+// interval: an unknown deadline is exactly the case where waiting for it means
+// waiting forever.
+func (policy rotationPolicy) refreshDue(updatedAt time.Time, expiresAt time.Time, hasExpiry bool, now time.Time) bool {
+	if policy.interval > 0 && !updatedAt.IsZero() && now.Sub(updatedAt) >= policy.interval {
+		return true
+	}
+	if !hasExpiry {
+		return false
+	}
+	remaining := expiresAt.Sub(now)
+	if policy.lead > 0 && remaining <= policy.lead {
+		return true
+	}
+	if policy.fraction > 0 {
+		// The credential's own lifetime: how long it was meant to last, from
+		// the moment it was written. A refreshed row has both stamps, so the
+		// window follows the current token rather than the first ever issued.
+		lifetime := expiresAt.Sub(updatedAt)
+		if lifetime > 0 && remaining <= time.Duration(policy.fraction*float64(lifetime)) {
+			return true
+		}
+	}
+	return false
+}
+
+// rotateOnce refreshes every credential the policy says is due.
 //
 // Both kept providers expose the same plugin-OAuth refresh contract, so both
 // are rotated. The domestic pair was previously left alone on the belief that
 // it had no refresh endpoint; it does, and the two calls differ only in origin
 // and X-Domain, so the wiring is shared.
 //
-// A failed refresh is NOT treated as terminal. Measured 2026-10-06: upstream
-// answers "12153 refresh token is invalid" intermittently for a refresh token
-// that succeeds on the next attempt, and a refresh resurrects an access token
-// whose Keycloak session was reported missing. Marking the account needs_reauth
-// on a failed refresh would therefore disable automatic renewal for an account
-// that would have recovered, so the loop keeps retrying and only the live
-// request path (the metrics probe) may declare a credential dead.
+// Failure handling is graded by classifyRefreshFailure, because the upstream
+// endpoint reports two very different things:
 //
-// warned de-duplicates the per-credential warning: the loop runs every 15
+//   - a transient fault (network, 5xx, the bare "12153 refresh token failed"
+//     body measured to clear on its own) only logs. Marking the account dead
+//     here would switch off renewal for a credential that would have recovered.
+//   - a dead session ("Refresh token issued before the user session started",
+//     "Offline user session not found") moves the purpose to needs_reauth so
+//     the console shows it and the pool drops the account. The retry policy is
+//     deliberately forgiving: the loop keeps probing the same credential every
+//     interval, so a session that upstream later revives is picked up without
+//     an operator doing anything, and a permanently dead one costs one call per
+//     interval per account.
+//
+// warned de-duplicates the per-credential warning: the loop runs every few
 // minutes, and a credential that keeps failing would otherwise emit the same
-// line 96 times a day.
-func rotateOnce(ctx context.Context, db *store.DB, credVault *vault.Vault, lead time.Duration, plane *ProxyPlane, settings config.Settings, warned map[string]bool) {
+// line hundreds of times a day.
+func rotateOnce(ctx context.Context, db *store.DB, credVault *vault.Vault, policy rotationPolicy, plane *ProxyPlane, settings config.Settings, warned map[string]bool, held map[string]time.Time) rotationRound {
 	roundCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	credentials, err := db.ListCredentials(roundCtx, models.KnownProviders)
 	if err != nil {
 		slog.Warn("credential rotation lookup failed", "error", err)
-		return
+		return rotationRound{}
 	}
+	round := rotationRound{retryAfter: map[string]time.Duration{}}
 	now := time.Now().UTC()
 	for _, credential := range credentials {
-		if credential.ExpiresAt == nil {
+		if !credential.HasRefreshToken {
 			continue
 		}
-		expiresAt, ok := store.ParseISO(*credential.ExpiresAt)
-		if !ok {
-			continue
+		updatedAt, _ := store.ParseISO(credential.UpdatedAt)
+		expiresAt, hasExpiry := time.Time{}, false
+		if credential.ExpiresAt != nil {
+			if parsed, ok := store.ParseISO(*credential.ExpiresAt); ok {
+				expiresAt, hasExpiry = parsed, true
+			}
 		}
-		if expiresAt.Sub(now) > lead {
+		if !policy.refreshDue(updatedAt, expiresAt, hasExpiry, now) {
 			continue
 		}
 		key := credential.Provider + ":" + credential.AccountID + ":" + credential.Purpose
+		if until, ok := held[key]; ok && now.Before(until) {
+			continue
+		}
 		switch credential.Provider {
 		case models.ProviderWorkBuddyIntl, models.ProviderWorkBuddy:
-			var rotated bool
+			outcome := refreshOutcome{}
 			if credential.Provider == models.ProviderWorkBuddyIntl {
-				rotated = rotateIntl(roundCtx, db, credVault, credential, plane, settings, warned)
+				outcome = rotateIntl(roundCtx, db, credVault, credential, plane, settings, warned)
 			} else {
-				rotated = rotateDomestic(roundCtx, db, credVault, credential, plane, settings, warned)
+				outcome = rotateDomestic(roundCtx, db, credVault, credential, plane, settings, warned)
 			}
-			if rotated {
-				// Clear the de-duplication marker so a later failure is reported
-				// again instead of being suppressed by this success.
+			switch {
+			case outcome.rotated:
+				// Clear the de-duplication marker so a later failure is
+				// reported again instead of being suppressed by this success.
 				delete(warned, key)
 				slog.Info("rotated credential",
 					"provider", credential.Provider, "account", credential.AccountID,
 					"purpose", credential.Purpose)
+			case outcome.kind == refreshSessionDead:
+				reportDeadSession(roundCtx, db, credential, outcome, warned)
+				// A revoked session is not worth probing at the scan cadence.
+				// Space the next attempt by the rolling interval: that keeps the
+				// recovery path open (upstream occasionally restores a session)
+				// at the cost of one call per interval instead of one per scan.
+				round.retryAfter[key] = policy.deadSessionRetry()
 			}
 		default:
 			// Nothing to do without a refresh contract; surface it so the
 			// operator can re-import before the credential actually lapses.
-			if expiresAt.Before(now) && !warned[key] {
+			if hasExpiry && expiresAt.Before(now) && !warned[key] {
 				warned[key] = true
 				slog.Warn("credential expired without a refresh contract",
 					"provider", credential.Provider, "account", credential.AccountID,
 					"purpose", credential.Purpose)
 			}
 		}
+	}
+	return round
+}
+
+// rotationRound reports what one pass over the credentials produced.
+//
+// retryAfter lets a caller space out the next attempt for credentials that
+// failed in a way that will not change on the next scan. A revoked session is
+// the case that matters: retrying it every 15 minutes would put ~100 pointless
+// calls per account per day against an endpoint that has already answered.
+type rotationRound struct {
+	retryAfter map[string]time.Duration
+}
+
+// reportDeadSession records an unrecoverable session and logs it once.
+//
+// The credential is NOT deleted and the purpose is not disabled: a revoked
+// session is repaired by signing in again, and the rotation loop keeps probing
+// so that a session upstream later restores needs no operator action.
+func reportDeadSession(ctx context.Context, db *store.DB, credential store.Credential, outcome refreshOutcome, warned map[string]bool) {
+	key := credential.Provider + ":" + credential.AccountID + ":" + credential.Purpose
+	if !warned[key] {
+		warned[key] = true
+		slog.Warn("credential session revoked upstream; re-login required",
+			"provider", credential.Provider, "account", credential.AccountID,
+			"purpose", credential.Purpose, "error", outcome.err)
+	}
+	if err := db.MarkPurposeRejected(ctx, credential.Provider, credential.AccountID, credential.Purpose, "session_revoked"); err != nil {
+		slog.Warn("could not record revoked session",
+			"provider", credential.Provider, "account", credential.AccountID, "error", err)
 	}
 }
 
@@ -92,7 +216,7 @@ func rotateOnce(ctx context.Context, db *store.DB, credVault *vault.Vault, lead 
 // refresh token is a Keycloak offline session, so a refresh that upstream has
 // invalidated ("invalid_grant: Offline user session not found") can never
 // succeed and must be surfaced as a re-login, not retried as a transient fault.
-func rotateDomestic(ctx context.Context, db *store.DB, credVault *vault.Vault, credential store.Credential, plane *ProxyPlane, settings config.Settings, warned map[string]bool) bool {
+func rotateDomestic(ctx context.Context, db *store.DB, credVault *vault.Vault, credential store.Credential, plane *ProxyPlane, settings config.Settings, warned map[string]bool) refreshOutcome {
 	endpoint := strings.TrimRight(settings.CodeBuddyEndpoint, "/")
 	if endpoint == "" {
 		endpoint = defaultCodeBuddyEndpoint
@@ -102,7 +226,7 @@ func rotateDomestic(ctx context.Context, db *store.DB, credVault *vault.Vault, c
 
 // rotateIntl refreshes one international credential through the same plugin
 // contract the domestic deployment uses.
-func rotateIntl(ctx context.Context, db *store.DB, credVault *vault.Vault, credential store.Credential, plane *ProxyPlane, settings config.Settings, warned map[string]bool) bool {
+func rotateIntl(ctx context.Context, db *store.DB, credVault *vault.Vault, credential store.Credential, plane *ProxyPlane, settings config.Settings, warned map[string]bool) refreshOutcome {
 	endpoint := strings.TrimRight(settings.WorkBuddyIntlEndpoint, "/")
 	if endpoint == "" {
 		endpoint = defaultWorkBuddyIntlEndpoint
@@ -110,46 +234,56 @@ func rotateIntl(ctx context.Context, db *store.DB, credVault *vault.Vault, crede
 	return rotateCredential(ctx, db, credVault, credential, plane, endpoint, "www.workbuddy.ai", warned)
 }
 
+// refreshOutcome is what one rotation attempt achieved.
+type refreshOutcome struct {
+	rotated bool
+	kind    refreshFailure
+	err     error
+}
+
 // rotateCredential refreshes one credential through the plugin refresh contract
-// shared by both WorkBuddy deployments and persists the new pair. It reports
-// whether a rotation actually landed.
-func rotateCredential(ctx context.Context, db *store.DB, credVault *vault.Vault, credential store.Credential, plane *ProxyPlane, endpoint, domain string, warned map[string]bool) bool {
+// shared by both WorkBuddy deployments and persists the new pair.
+//
+// A successful refresh overwrites both tokens and the deadline. A failed one
+// never touches the stored credential: the access token already in the row is
+// usually still usable, and replacing it with nothing would take a working
+// account out of service to fix a refresh problem.
+func rotateCredential(ctx context.Context, db *store.DB, credVault *vault.Vault, credential store.Credential, plane *ProxyPlane, endpoint, domain string, warned map[string]bool) refreshOutcome {
 	record, err := db.GetCredential(ctx, credential.Provider, credential.AccountID, credential.Purpose)
 	if err != nil {
 		slog.Warn("rotation skipped: credential row unreadable", "account", credential.AccountID, "error", err)
-		return false
+		return refreshOutcome{kind: refreshTransient, err: err}
 	}
 	payload, err := credVault.Decrypt(record.EncryptedPayload)
 	if err != nil {
 		slog.Warn("rotation skipped: credential undecryptable", "account", credential.AccountID, "error", err)
-		return false
+		return refreshOutcome{kind: refreshRejected, err: err}
 	}
 	refreshToken, _ := payload["refresh_token"].(string)
 	if refreshToken == "" {
-		slog.Warn("rotation skipped: no refresh token", "account", credential.AccountID)
-		return false
+		if !warned[credential.Provider+":"+credential.AccountID] {
+			warned[credential.Provider+":"+credential.AccountID] = true
+			slog.Warn("rotation skipped: no refresh token", "account", credential.AccountID)
+		}
+		return refreshOutcome{kind: refreshRejected, err: errors.New("no refresh token stored")}
 	}
 	result, err := refreshPluginToken(ctx, endpoint, domain, refreshToken)
 	if err != nil {
-		// A refused refresh is reported but NOT turned into a purpose state.
-		// Measured 2026-10-06: the same refresh token alternates between
-		// "refresh token is invalid" and success, and a successful refresh
-		// revives an access token whose session a live request had just
-		// rejected. Declaring the account dead here would therefore switch off
-		// automatic renewal for a credential that would have recovered; only
-		// the request path (the metrics probe) may do that.
-		//
-		// warnOnce de-duplicates the line: this loop runs every 15 minutes.
-		warnOnce(warned, credential.Provider+":"+credential.AccountID+":"+credential.Purpose,
-			"token refresh failed",
-			"provider", credential.Provider, "account", credential.AccountID,
-			"purpose", credential.Purpose, "error", err)
-		return false
+		kind := classifyRefreshFailure(err)
+		// Only transient faults are logged here; a revoked session is reported
+		// by the caller with its own wording and its own state transition.
+		if kind == refreshTransient {
+			warnOnce(warned, credential.Provider+":"+credential.AccountID+":"+credential.Purpose,
+				"token refresh failed",
+				"provider", credential.Provider, "account", credential.AccountID,
+				"purpose", credential.Purpose, "error", err)
+		}
+		return refreshOutcome{kind: kind, err: err}
 	}
 	if result.AccessToken == "" {
 		warnOnce(warned, credential.Provider+":"+credential.AccountID+":"+credential.Purpose,
 			"token refresh returned no access token", "account", credential.AccountID)
-		return false
+		return refreshOutcome{kind: refreshTransient, err: errors.New("auth_no_token")}
 	}
 	updated := map[string]any{}
 	for key, value := range payload {
@@ -162,13 +296,9 @@ func rotateCredential(ctx context.Context, db *store.DB, credVault *vault.Vault,
 	encrypted, err := credVault.Encrypt(updated)
 	if err != nil {
 		slog.Warn("rotation persist failed: encrypt", "account", credential.AccountID, "error", err)
-		return false
+		return refreshOutcome{kind: refreshTransient, err: err}
 	}
 	expected := record.CredentialVersion
-	expiresAt := ""
-	if result.ExpiresIn > 0 {
-		expiresAt = store.FormatISO(time.Now().UTC().Add(time.Duration(result.ExpiresIn) * time.Second))
-	}
 	write := store.CredentialWrite{
 		Provider:         credential.Provider,
 		AccountID:        credential.AccountID,
@@ -178,17 +308,25 @@ func rotateCredential(ctx context.Context, db *store.DB, credVault *vault.Vault,
 		HasRefreshToken:  true,
 		ExpectedVersion:  &expected,
 	}
-	if expiresAt != "" {
-		write.ExpiresAt = &expiresAt
+	// Keep the previous deadline when the response omits expiresIn. Writing an
+	// empty value would leave the row without one, and the rolling trigger would
+	// then be the only thing standing between the account and a refresh storm.
+	expiresAt := credential.ExpiresAt
+	if result.ExpiresIn > 0 {
+		formatted := store.FormatISO(time.Now().UTC().Add(time.Duration(result.ExpiresIn) * time.Second))
+		expiresAt = &formatted
+	}
+	if expiresAt != nil {
+		write.ExpiresAt = expiresAt
 	}
 	if _, err := db.UpsertCredential(ctx, write); err != nil {
 		if errors.Is(err, store.VersionConflict) {
 			// Another writer rotated it first; reloading is enough.
 			slog.Info("rotation raced", "account", credential.AccountID)
-			return false
+			return refreshOutcome{kind: refreshTransient}
 		}
 		slog.Warn("rotation persist failed", "account", credential.AccountID, "error", err)
-		return false
+		return refreshOutcome{kind: refreshTransient, err: err}
 	}
 	// A landed rotation is proof the credential is alive again, so any rejection
 	// recorded against this purpose was either transient or repaired. Without
@@ -208,7 +346,7 @@ func rotateCredential(ctx context.Context, db *store.DB, credVault *vault.Vault,
 			slog.Warn("pool reload after rotation failed", "error", err)
 		}
 	}
-	return true
+	return refreshOutcome{rotated: true}
 }
 
 // revivePurpose returns a rejected purpose to active when a live call proves the
@@ -370,4 +508,90 @@ func firstNonZero(values ...int) int {
 		}
 	}
 	return 0
+}
+
+// authRescueCooldown bounds how often one account may be rescued, so a pool-wide
+// 401 storm produces one refresh per account instead of one per failed request.
+const authRescueCooldown = 60 * time.Second
+
+// authRescue refreshes a credential the moment upstream refuses its token.
+//
+// The scheduled loop alone is not enough: it runs on a scan tick, so a token
+// refused one second after a round would stay broken for the whole interval.
+// A 401 is unambiguous and cheap to repair, and the refresh token is usually
+// still valid, so the request path reports the account here and the repair
+// happens out of band while the pool fails over to another account.
+type authRescue struct {
+	db        *store.DB
+	credVault *vault.Vault
+	plane     *ProxyPlane
+	settings  config.Settings
+
+	mu       sync.Mutex
+	attempts map[string]time.Time
+}
+
+// newAuthRescue builds the rescue hook and installs it on both WorkBuddy pools.
+func newAuthRescue(db *store.DB, credVault *vault.Vault, plane *ProxyPlane, settings config.Settings) *authRescue {
+	rescue := &authRescue{
+		db:        db,
+		credVault: credVault,
+		plane:     plane,
+		settings:  settings,
+		attempts:  map[string]time.Time{},
+	}
+	if plane != nil {
+		plane.SetAuthRejectedHook(rescue.trigger)
+	}
+	return rescue
+}
+
+// trigger starts a repair unless this account was already attempted recently.
+func (r *authRescue) trigger(provider, accountID string) {
+	if provider != models.ProviderWorkBuddy && provider != models.ProviderWorkBuddyIntl {
+		// Other providers have no refresh contract; a 401 there needs a re-login
+		// and the scheduled loop already reports it.
+		return
+	}
+	key := provider + ":" + accountID
+	r.mu.Lock()
+	if last, ok := r.attempts[key]; ok && time.Since(last) < authRescueCooldown {
+		r.mu.Unlock()
+		return
+	}
+	r.attempts[key] = time.Now()
+	r.mu.Unlock()
+	go r.refresh(provider, accountID)
+}
+
+// refresh rotates every refreshable credential of one account.
+func (r *authRescue) refresh(provider, accountID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	credentials, err := r.db.ListCredentials(ctx, []string{provider})
+	if err != nil {
+		slog.Warn("auth rescue lookup failed", "provider", provider, "account", accountID, "error", err)
+		return
+	}
+	// A fresh map per rescue: the cooldown above already bounds log volume, and
+	// sharing the scheduler's map would race with its goroutine.
+	warned := map[string]bool{}
+	for _, credential := range credentials {
+		if credential.AccountID != accountID || !credential.HasRefreshToken {
+			continue
+		}
+		outcome := refreshOutcome{}
+		if provider == models.ProviderWorkBuddyIntl {
+			outcome = rotateIntl(ctx, r.db, r.credVault, credential, r.plane, r.settings, warned)
+		} else {
+			outcome = rotateDomestic(ctx, r.db, r.credVault, credential, r.plane, r.settings, warned)
+		}
+		switch {
+		case outcome.rotated:
+			slog.Info("rescued refused credential",
+				"provider", provider, "account", accountID, "purpose", credential.Purpose)
+		case outcome.kind == refreshSessionDead:
+			reportDeadSession(ctx, r.db, credential, outcome, warned)
+		}
+	}
 }

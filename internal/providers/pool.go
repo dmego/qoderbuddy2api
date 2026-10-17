@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
@@ -64,6 +65,12 @@ type Pool struct {
 	// affinity pins a conversation to one slot across the requests of a single
 	// user turn. Nil or disabled means "not in use".
 	affinity *Affinity
+
+	// authRejected is notified when upstream refuses an account's bearer token.
+	// The pool deliberately does not know how to repair a credential: it has no
+	// store and no vault, so it reports the event and lets the owner decide.
+	// Called without the pool lock held.
+	authRejected func(provider, accountID string)
 }
 
 // NewPool creates an empty pool for one provider name.
@@ -529,8 +536,36 @@ func (p *Pool) release(handle *slot) {
 	}
 }
 
+// SetAuthRejectedHook installs the callback that repairs a refused token.
+//
+// A 401 is the one failure that carries its own remedy: the stored access token
+// is refused while the refresh token is usually still good, so the account can
+// come back without an operator. Reporting it lets the caller refresh right
+// away instead of waiting for the next scheduled round, which for a 6-hour
+// rotation interval would mean hours of avoidable 401s.
+func (p *Pool) SetAuthRejectedHook(hook func(provider, accountID string)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.authRejected = hook
+}
+
+// notifyAuthRejected fires the auth hook for a 401 without holding the lock.
+func (p *Pool) notifyAuthRejected(handle *slot, err error) {
+	if StatusCode(err) != http.StatusUnauthorized {
+		return
+	}
+	p.mu.Lock()
+	hook := p.authRejected
+	accountID := handle.accountID
+	p.mu.Unlock()
+	if hook != nil && accountID != "" {
+		hook(p.name, accountID)
+	}
+}
+
 // markOutcome records a failed attempt as a quota block or a generic cooldown.
 func (p *Pool) markOutcome(handle *slot, model string, err error) {
+	p.notifyAuthRejected(handle, err)
 	if resetAt := ResetAt(err); resetAt != nil && model != "" {
 		p.mu.Lock()
 		defer p.mu.Unlock()

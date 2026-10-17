@@ -152,14 +152,18 @@ func StartSubsystems(api *API, settings config.Settings, db *store.DB, credVault
 	subsystems.RollupCancel = rollupCancel
 	go runRollupLoop(rollupCtx, db, runtime, settings)
 
-	// Credential rotation keeps short-lived bearer tokens alive; without it a
+	// Credential rotation keeps the upstream session warm; without it a
 	// provider whose access token expires between scheduled runs would need a
-	// manual re-login.
-	if settings.CredentialRefresh {
-		rotateCtx, rotateCancel := context.WithCancel(context.Background())
-		subsystems.RotateCancel = rotateCancel
-		go runCredentialRotation(rotateCtx, db, credVault, runtime, settings, plane)
-	}
+	// manual re-login. It is the only scheduled job that runs unconditionally:
+	// WorkBuddy revokes sessions well before the stored deadline, and a stopped
+	// rotation means every account silently drifts toward a 401.
+	//
+	// The request path additionally reports a refused token through the rescue
+	// hook, so a 401 is repaired in seconds rather than at the next round.
+	newAuthRescue(db, credVault, plane, settings)
+	rotateCtx, rotateCancel := context.WithCancel(context.Background())
+	subsystems.RotateCancel = rotateCancel
+	go runCredentialRotation(rotateCtx, db, credVault, runtime, settings, plane)
 
 	return subsystems
 }
@@ -219,26 +223,52 @@ func rollupRound(ctx context.Context, db *store.DB, runtime *RuntimeSettings, se
 	slog.Debug("usage rollup complete", "groups", groups, "deleted_events", deleted)
 }
 
-// runCredentialRotation refreshes bearer credentials before they expire.
+// runCredentialRotation keeps stored credentials fresh.
 //
-// Rotation is proactive rather than reactive: the loop runs on its own cadence
-// and only touches a credential whose expiry is inside the lead window, so a
-// provider that cannot be refreshed is simply left alone until it truly expires.
+// The loop scans on its own cadence but decides with rotationPolicy, which is
+// rolling rather than expiry-driven: WorkBuddy revokes an upstream session long
+// before the access token's own exp, so waiting for the deadline means never
+// refreshing. A provider that cannot be refreshed is still left alone until it
+// truly expires.
 func runCredentialRotation(ctx context.Context, db *store.DB, credVault *vault.Vault, runtime *RuntimeSettings, settings config.Settings, plane *ProxyPlane) {
-	interval := time.Duration(maxInt(settings.CredentialRefreshEvery, 60)) * time.Second
-	lead := time.Duration(maxInt(settings.CredentialRefreshLead, 60)) * time.Second
-	ticker := time.NewTicker(interval)
+	scan := time.Duration(maxInt(settings.CredentialRefreshEvery, 60)) * time.Second
+	ticker := time.NewTicker(scan)
 	defer ticker.Stop()
 	// warned keeps the "no refresh contract" report to one line per credential
-	// for the life of the process. The loop runs every 15 minutes and a provider
-	// without a contract would otherwise re-log the same expiry 96 times a day.
+	// for the life of the process. The loop runs every few minutes and a
+	// provider without a contract would otherwise re-log the same expiry
+	// hundreds of times a day.
 	warned := map[string]bool{}
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			rotateOnce(ctx, db, credVault, lead, plane, settings, warned)
+	// held spaces out retries for credentials that failed in a way the next
+	// scan cannot fix. A revoked session would otherwise be probed on every
+	// tick, which is ~100 pointless upstream calls per account per day.
+	held := map[string]time.Time{}
+	// One round runs immediately: a restart must not leave every credential
+	// untouched until the first tick, which is exactly the window in which a
+	// stale token would be used.
+	for first := true; ; first = false {
+		if !first {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+		// Read the policy on every round so the interval is hot-configurable.
+		policy := rotationPolicy{
+			interval: time.Duration(maxInt(runtime.CredentialRefreshIntervalHours(), settings.CredentialRefreshInterval)) * time.Hour,
+			lead:     time.Duration(maxInt(settings.CredentialRefreshLead, 60)) * time.Second,
+			fraction: defaultRotationFraction,
+		}
+		now := time.Now()
+		for key, until := range held {
+			if now.After(until) {
+				delete(held, key)
+			}
+		}
+		round := rotateOnce(ctx, db, credVault, policy, plane, settings, warned, held)
+		for key, delay := range round.retryAfter {
+			held[key] = time.Now().Add(delay)
 		}
 	}
 }

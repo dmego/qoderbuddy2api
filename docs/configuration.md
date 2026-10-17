@@ -69,15 +69,51 @@ mkdir -p data logs && chmod 700 data logs
 | `WORKBUDDY_INTL_OAUTH_ENABLED` | `true` | 是否允许管理台发起国际版浏览器登录 |
 | `WORKBUDDY_INTL_CREDITS_PATH` | `/billing/meter/get-user-resource` | 国际版积分查询路径 |
 | `QB2API_INTL_DEFAULT_REASONING_EFFORT` | `low` | 客户端未传 `reasoning_effort` 时注入的档位 |
-| `QB2API_CREDENTIAL_REFRESH_ENABLED` | `true` | 短效凭据主动轮换 |
-| `QB2API_CREDENTIAL_REFRESH_INTERVAL_SECONDS` | `900` | 轮换扫描间隔（秒） |
-| `QB2API_CREDENTIAL_REFRESH_LEAD_SECONDS` | `1800` | 提前多久轮换（秒） |
+| `QB2API_CREDENTIAL_REFRESH_ENABLED` | `true` | 凭据主动轮换开关 |
+| `QB2API_CREDENTIAL_REFRESH_INTERVAL_SECONDS` | `900` | 轮换扫描间隔（秒），决定检查频率而非刷新频率 |
+| `QB2API_CREDENTIAL_REFRESH_LEAD_SECONDS` | `1800` | 到期前多少秒必须刷新（绝对下限） |
+| `QB2API_CREDENTIAL_ROLLING_REFRESH_HOURS` | `6` | 滚动刷新周期（小时）：无论剩余有效期多久，超过该时长即刷新 |
 | `CHECKIN_ENABLED` | `false` | 全局签到调度开关（也可在管理台设置） |
 | `CHECKIN_AT` / `CHECKIN_TIMEZONE` | `00:10` / `Asia/Shanghai` | 每日签到时间与时区 |
 | `GROWTH_AUTO_ACTIVE_DAY` | `true` | 活跃日自动化开关；由成长调度器每日执行一次正式对话点亮 |
 
 其余签到/指标/用量变量见 `.env.example` 内注释；管理台「设置」页可持久化运行时配置
 （签到时间、成长自动化开关等），优先级高于启动默认值。
+
+## 凭据续期
+
+WorkBuddy 的 access token 自带 28 天 `exp`，但**上游会在远早于此的时刻作废整个会话**。
+2026-10-17 实测：四个账号 10-06 登录，JWT 到期日 11-13，其中三个在 10-17 14:37 UTC
+被上游批量吊销，此后 `401`，刷新返回
+`invalid_grant: Refresh token issued before the user session started`。第四个账号因
+session 签发时间晚 65 秒而存活——说明作废是按时间点批量执行的，与 token 自身声明无关。
+
+因此**只按到期时间刷新是无效的**：30 分钟提前量对 28 天 token 意味着永不触发。
+当前实现有三条触发路径：
+
+| 触发 | 条件 | 作用 |
+| --- | --- | --- |
+| 滚动刷新 | 距上次写入超过 `QB2API_CREDENTIAL_ROLLING_REFRESH_HOURS`（默认 6 小时） | 主力。保持上游会话活跃，并限制本地凭据的最大陈旧度 |
+| 比例窗口 | 剩余有效期 ≤ 总有效期的 20% | 自适应短效 token（2 小时 token 提前 24 分钟） |
+| 绝对下限 | 剩余有效期 ≤ `QB2API_CREDENTIAL_REFRESH_LEAD_SECONDS` | 历史规则，作为兜底 |
+| 请求路径抢救 | 上游返回 401 | 立即异步刷新，同账号 60 秒内去重；不等下一轮扫描 |
+
+管理台「设置」页的 `credential.refresh_interval_hours`（1–72，默认 6）可热调整滚动周期，
+无需重启。
+
+### 刷新失败的两种处理
+
+上游对同一个刷新接口返回两类错误，处理方式相反：
+
+| 上游响应 | 判定 | 处理 |
+| --- | --- | --- |
+| `invalid_grant: Refresh token issued before the user session started`<br>`invalid_grant: Offline user session not found` | 会话已被上游吊销，无法自愈 | 账号 purpose 置 `needs_reauth`、移出代理池；保留凭据行，每滚动周期重试一次，上游若恢复会话则自动复活 |
+| 裸 `12153:refresh token is invalid`、5xx、网络错误 | 瞬时故障（实测同一 token 会自行恢复） | 只记一次日志，下轮扫描继续重试，账号状态不变 |
+
+`12153` **不**单独作为会话死亡的判据：2026-10-06 实测该码会瞬时出现并在下次请求成功。
+只有带 `invalid_grant:` 前缀的两种文本才判定为不可恢复。
+
+刷新成功但响应缺少 `expiresIn` 时保留原有到期时间，避免把到期时间写成空值后触发刷新风暴。
 
 ### 按模型的提供商路由权重
 

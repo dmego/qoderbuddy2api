@@ -75,7 +75,7 @@ func TestRotateOnceRefreshesDomesticCredential(t *testing.T) {
 	api, db := newTestAPI(t)
 	seedRotatableAccount(t, db, api.Vault, models.ProviderWorkBuddy, "cb-domestic", "old-refresh", "old-access")
 
-	rotateOnce(context.Background(), db, api.Vault, 30*time.Minute, nil, rotationSettings(server.URL), map[string]bool{})
+	rotateOnce(context.Background(), db, api.Vault, rotationPolicy{lead: 30 * time.Minute}, nil, rotationSettings(server.URL), map[string]bool{}, nil)
 
 	if gotPath != "/v2/plugin/auth/token/refresh" {
 		t.Fatalf("refresh path = %q, want the plugin refresh endpoint", gotPath)
@@ -136,7 +136,7 @@ func TestRotateOnceRetriesRefusedRefresh(t *testing.T) {
 	warned := map[string]bool{}
 	ctx := context.Background()
 
-	rotateOnce(ctx, db, api.Vault, 30*time.Minute, nil, settings, warned)
+	rotateOnce(ctx, db, api.Vault, rotationPolicy{lead: 30 * time.Minute}, nil, settings, warned, nil)
 
 	purposes, err := db.ListPurposes(ctx, models.ProviderWorkBuddy, "cb-flaky")
 	if err != nil {
@@ -150,7 +150,7 @@ func TestRotateOnceRetriesRefusedRefresh(t *testing.T) {
 	}
 
 	// The next round must retry and land the rotation.
-	rotateOnce(ctx, db, api.Vault, 30*time.Minute, nil, settings, warned)
+	rotateOnce(ctx, db, api.Vault, rotationPolicy{lead: 30 * time.Minute}, nil, settings, warned, nil)
 	record, err := db.GetCredential(ctx, models.ProviderWorkBuddy, "cb-flaky", "chat")
 	if err != nil {
 		t.Fatalf("read credential: %v", err)
@@ -196,7 +196,7 @@ func TestRotateOnceLeavesHealthyCredentialAlone(t *testing.T) {
 		t.Fatalf("upsert credential: %v", err)
 	}
 
-	rotateOnce(ctx, db, api.Vault, 30*time.Minute, nil, rotationSettings(server.URL), map[string]bool{})
+	rotateOnce(ctx, db, api.Vault, rotationPolicy{lead: 30 * time.Minute}, nil, rotationSettings(server.URL), map[string]bool{}, nil)
 
 	if calls != 0 {
 		t.Fatalf("refresh calls = %d, want 0 for a credential outside the lead window", calls)
@@ -305,7 +305,7 @@ func TestRotateOnceWarnsOncePerFailingCredential(t *testing.T) {
 	settings := rotationSettings(server.URL)
 	warned := map[string]bool{}
 
-	rotateOnce(context.Background(), db, api.Vault, 30*time.Minute, nil, settings, warned)
+	rotateOnce(context.Background(), db, api.Vault, rotationPolicy{lead: 30 * time.Minute}, nil, settings, warned, nil)
 	if !warned[models.ProviderWorkBuddy+":cb-fail:chat"] {
 		t.Fatal("the first failure must be recorded as warned")
 	}
@@ -329,7 +329,7 @@ func TestRotateOnceClearsWarnMarkerOnSuccess(t *testing.T) {
 	key := models.ProviderWorkBuddy + ":cb-ok:chat"
 	warned := map[string]bool{key: true}
 
-	rotateOnce(context.Background(), db, api.Vault, 30*time.Minute, nil, rotationSettings(server.URL), warned)
+	rotateOnce(context.Background(), db, api.Vault, rotationPolicy{lead: 30 * time.Minute}, nil, rotationSettings(server.URL), warned, nil)
 
 	if warned[key] {
 		t.Fatal("a successful rotation must clear the warning marker")
@@ -355,7 +355,7 @@ func TestRotateOnceRevivesRejectedPurpose(t *testing.T) {
 		t.Fatalf("mark rejected: %v", err)
 	}
 
-	rotateOnce(ctx, db, api.Vault, 30*time.Minute, nil, rotationSettings(server.URL), map[string]bool{})
+	rotateOnce(ctx, db, api.Vault, rotationPolicy{lead: 30 * time.Minute}, nil, rotationSettings(server.URL), map[string]bool{}, nil)
 
 	purposes, err := db.ListPurposes(ctx, models.ProviderWorkBuddy, "cb-revive")
 	if err != nil {

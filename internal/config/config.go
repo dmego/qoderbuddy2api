@@ -81,6 +81,12 @@ type Settings struct {
 	CredentialRefresh       bool
 	CredentialRefreshEvery  int
 	CredentialRefreshLead   int
+	// CredentialRefreshInterval is the rolling refresh period: every credential
+	// is refreshed at least this often regardless of its stated expiry, which
+	// is what keeps the upstream session warm. The stored expiry is not a
+	// reliable proxy for session life (measured 2026-10-17: a token with 27 days
+	// left was refused 11 days after sign-in).
+	CredentialRefreshInterval int
 
 	// Growth centre
 	GrowthSchedulerEnabled  bool
@@ -157,16 +163,17 @@ func Load() Settings {
 		CheckinClaimPath:   env("CODEBUDDY_CHECKIN_CLAIM_PATH", "/billing/meter/daily-checkin"),
 		CheckinClaimMethod: upperOr(env("CODEBUDDY_CHECKIN_CLAIM_METHOD", "POST"), "POST"),
 
-		MetricsEnabled:          envBool("QB2API_METRICS_ENABLED", true),
-		MetricsIntervalSeconds:  envInt("QB2API_METRICS_INTERVAL_SECONDS", 900),
-		MetricsHistoryRetention: envInt("QB2API_METRICS_HISTORY_RETENTION_DAYS", 90),
-		UsageRollupInterval:     envInt("QB2API_USAGE_ROLLUP_INTERVAL_SECONDS", 60),
-		UsageDetailRetention:    envInt("QB2API_USAGE_DETAIL_RETENTION_DAYS", 90),
-		StreamReasoning:         envBool("QB2API_STREAM_REASONING", true),
-		LogRequests:             envBool("QB2API_LOG_REQUESTS", true),
-		CredentialRefresh:       envBool("QB2API_CREDENTIAL_REFRESH_ENABLED", true),
-		CredentialRefreshEvery:  envInt("QB2API_CREDENTIAL_REFRESH_INTERVAL_SECONDS", 900),
-		CredentialRefreshLead:   envInt("QB2API_CREDENTIAL_REFRESH_LEAD_SECONDS", 1800),
+		MetricsEnabled:            envBool("QB2API_METRICS_ENABLED", true),
+		MetricsIntervalSeconds:    envInt("QB2API_METRICS_INTERVAL_SECONDS", 900),
+		MetricsHistoryRetention:   envInt("QB2API_METRICS_HISTORY_RETENTION_DAYS", 90),
+		UsageRollupInterval:       envInt("QB2API_USAGE_ROLLUP_INTERVAL_SECONDS", 60),
+		UsageDetailRetention:      envInt("QB2API_USAGE_DETAIL_RETENTION_DAYS", 90),
+		StreamReasoning:           envBool("QB2API_STREAM_REASONING", true),
+		LogRequests:               envBool("QB2API_LOG_REQUESTS", true),
+		CredentialRefresh:         envBool("QB2API_CREDENTIAL_REFRESH_ENABLED", true),
+		CredentialRefreshEvery:    envInt("QB2API_CREDENTIAL_REFRESH_INTERVAL_SECONDS", 900),
+		CredentialRefreshLead:     envInt("QB2API_CREDENTIAL_REFRESH_LEAD_SECONDS", 1800),
+		CredentialRefreshInterval: envInt("QB2API_CREDENTIAL_ROLLING_REFRESH_HOURS", 6),
 
 		GrowthSchedulerEnabled:  envBool("GROWTH_SCHEDULER_ENABLED", true),
 		GrowthSchedulerInterval: envInt("GROWTH_SCHEDULER_INTERVAL_SECONDS", 1800),

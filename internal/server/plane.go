@@ -126,6 +126,21 @@ func NewProxyPlane(settings config.Settings, credVault *vault.Vault) *ProxyPlane
 	return plane
 }
 
+// SetAuthRejectedHook installs the repair callback for refused tokens on every
+// pool. It is a method on the plane because the plane owns the pools and is the
+// only place that can hand out one callback for both providers.
+func (p *ProxyPlane) SetAuthRejectedHook(hook func(provider, accountID string)) {
+	p.mu.RLock()
+	pools := make([]*providers.Pool, 0, len(p.pools))
+	for _, pool := range p.pools {
+		pools = append(pools, pool)
+	}
+	p.mu.RUnlock()
+	for _, pool := range pools {
+		pool.SetAuthRejectedHook(hook)
+	}
+}
+
 // Catalog returns the current unified catalog (a copy of the map header).
 func (p *ProxyPlane) Catalog() map[string]models.Unified {
 	p.mu.RLock()
