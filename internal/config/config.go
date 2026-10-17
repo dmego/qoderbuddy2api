@@ -78,7 +78,6 @@ type Settings struct {
 	UsageDetailRetention    int
 	StreamReasoning         bool
 	LogRequests             bool
-	CredentialRefresh       bool
 	CredentialRefreshEvery  int
 	CredentialRefreshLead   int
 	// CredentialRefreshInterval is the rolling refresh period: every credential
@@ -170,7 +169,6 @@ func Load() Settings {
 		UsageDetailRetention:      envInt("QB2API_USAGE_DETAIL_RETENTION_DAYS", 90),
 		StreamReasoning:           envBool("QB2API_STREAM_REASONING", true),
 		LogRequests:               envBool("QB2API_LOG_REQUESTS", true),
-		CredentialRefresh:         envBool("QB2API_CREDENTIAL_REFRESH_ENABLED", true),
 		CredentialRefreshEvery:    envInt("QB2API_CREDENTIAL_REFRESH_INTERVAL_SECONDS", 900),
 		CredentialRefreshLead:     envInt("QB2API_CREDENTIAL_REFRESH_LEAD_SECONDS", 1800),
 		CredentialRefreshInterval: envInt("QB2API_CREDENTIAL_ROLLING_REFRESH_HOURS", 6),

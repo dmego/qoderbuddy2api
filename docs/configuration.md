@@ -69,8 +69,7 @@ mkdir -p data logs && chmod 700 data logs
 | `WORKBUDDY_INTL_OAUTH_ENABLED` | `true` | 是否允许管理台发起国际版浏览器登录 |
 | `WORKBUDDY_INTL_CREDITS_PATH` | `/billing/meter/get-user-resource` | 国际版积分查询路径 |
 | `QB2API_INTL_DEFAULT_REASONING_EFFORT` | `low` | 客户端未传 `reasoning_effort` 时注入的档位 |
-| `QB2API_CREDENTIAL_REFRESH_ENABLED` | `true` | 凭据主动轮换开关 |
-| `QB2API_CREDENTIAL_REFRESH_INTERVAL_SECONDS` | `900` | 轮换扫描间隔（秒），决定检查频率而非刷新频率 |
+| `QB2API_CREDENTIAL_REFRESH_INTERVAL_SECONDS` | `900` | 轮换扫描间隔（秒），决定检查频率而非刷新频率。轮换本身始终运行，不可关闭 |
 | `QB2API_CREDENTIAL_REFRESH_LEAD_SECONDS` | `1800` | 到期前多少秒必须刷新（绝对下限） |
 | `QB2API_CREDENTIAL_ROLLING_REFRESH_HOURS` | `6` | 滚动刷新周期（小时）：无论剩余有效期多久，超过该时长即刷新 |
 | `CHECKIN_ENABLED` | `false` | 全局签到调度开关（也可在管理台设置） |
