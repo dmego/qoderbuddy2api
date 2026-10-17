@@ -396,10 +396,19 @@ var migrations = []struct{ Table, Column, Definition string }{
 	{"workbuddy_active_days", "official_streak_days", "INTEGER"},
 	{"workbuddy_active_days", "official_updated_at", "TEXT"},
 	{"workbuddy_active_days", "official_observed_at", "TEXT"},
+	// Account-level weight for the weighted account strategy. The default keeps
+	// every existing account equal, so the migration alone cannot change how
+	// traffic is distributed.
+	{"accounts", "weight", "INTEGER NOT NULL DEFAULT 100"},
 }
 
 // schemaVersion is bumped when a migration above lands.
-const schemaVersion = "8"
+const schemaVersion = "9"
+
+// SchemaVersion is the generation this build writes, exported so the backup
+// endpoint records the same value the migrator stamps into schema_meta instead
+// of carrying a second copy that can drift.
+const SchemaVersion = schemaVersion
 
 // refreshableProviders mirrors accounts/refresh.py REFRESHABLE_PROVIDERS for the
 // providers the rewrite keeps.

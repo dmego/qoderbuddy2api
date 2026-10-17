@@ -39,6 +39,68 @@ type ProxyPlane struct {
 	keyHash  map[string]bool // sha256 hex of every accepted proxy key
 	keyCount int
 	inFlight atomic.Int64
+
+	// Account routing configuration. It lives outside the per-reload snapshot
+	// because it is written by the settings endpoint, not derived from storage
+	// on every reload; Reload re-applies it so a credential refresh cannot
+	// silently revert the operator's choice.
+	strategy string
+	affinity *providers.Affinity
+}
+
+// AccountRouteConfig is the operator-facing account routing configuration.
+type AccountRouteConfig struct {
+	Strategy        string
+	SessionAffinity bool
+	AffinityTTL     time.Duration
+	// SessionCount is the number of live conversation pins. It is reported by
+	// RoutingConfig only; ConfigureRouting ignores it.
+	SessionCount int
+}
+
+// ConfigureRouting applies the account strategy and conversation affinity to
+// every pool, and remembers them for the next Reload.
+//
+// It is deliberately separate from Reload: the settings endpoint mutates this,
+// while Reload is triggered by credential and catalog changes. Applying both
+// from one place would make a credential change reset the strategy to its
+// default.
+func (p *ProxyPlane) ConfigureRouting(cfg AccountRouteConfig) {
+	if p == nil {
+		return
+	}
+	strategy := providers.NormalizeStrategy(cfg.Strategy)
+	p.mu.Lock()
+	p.strategy = strategy
+	if p.affinity == nil {
+		p.affinity = providers.NewAffinity()
+	}
+	affinity := p.affinity
+	pools := make([]*providers.Pool, 0, len(p.pools))
+	for _, pool := range p.pools {
+		pools = append(pools, pool)
+	}
+	p.mu.Unlock()
+
+	affinity.Configure(cfg.SessionAffinity, cfg.AffinityTTL)
+	for _, pool := range pools {
+		pool.SetStrategy(strategy)
+		pool.SetAffinity(affinity)
+	}
+}
+
+// RoutingConfig reports the live account routing configuration.
+func (p *ProxyPlane) RoutingConfig() AccountRouteConfig {
+	p.mu.RLock()
+	strategy := p.strategy
+	affinity := p.affinity
+	p.mu.RUnlock()
+	cfg := AccountRouteConfig{Strategy: providers.NormalizeStrategy(strategy), AffinityTTL: providers.DefaultAffinityTTL}
+	if affinity != nil {
+		cfg.SessionAffinity = affinity.Enabled()
+		cfg.SessionCount = affinity.SlotCount()
+	}
+	return cfg
 }
 
 // NewProxyPlane builds an empty plane bound to one credential vault.
@@ -52,10 +114,15 @@ func NewProxyPlane(settings config.Settings, credVault *vault.Vault) *ProxyPlane
 		vault:    credVault,
 		pools:    pools,
 		keyHash:  map[string]bool{},
+		strategy: providers.StrategyRoundRobin,
+		affinity: providers.NewAffinity(),
+	}
+	for _, pool := range pools {
+		pool.SetAffinity(plane.affinity)
 	}
 	plane.defs = models.LoadDefinitions(settings.ModelConfigPath)
 	plane.catalog = models.BuildCatalog(plane.defs, models.LoadUnifiedOverrides(settings.ModelConfigPath))
-	plane.router = providers.NewRouter(plane.catalog, pools, nil)
+	plane.router = providers.NewRouter(plane.catalog, pools, nil, plane.affinity)
 	return plane
 }
 
@@ -354,6 +421,19 @@ func (p *ProxyPlane) Reload(ctx context.Context, db *store.DB) error {
 			Enabled:  row.Enabled,
 		})
 	}
+	// Per-account weights feed the weighted/fill-first account strategies. They
+	// are read here, with the rest of the snapshot, so the request path never
+	// touches storage.
+	accountWeights := map[string]map[string]int{}
+	for _, account := range accounts {
+		if account.Provider == "" || account.AccountID == "" {
+			continue
+		}
+		if accountWeights[account.Provider] == nil {
+			accountWeights[account.Provider] = map[string]int{}
+		}
+		accountWeights[account.Provider][account.Provider+":"+account.AccountID] = account.Weight
+	}
 	blocks, err := db.ListAccountModelBlocks(ctx)
 	if err != nil {
 		return err
@@ -389,10 +469,13 @@ func (p *ProxyPlane) Reload(ctx context.Context, db *store.DB) error {
 		} else {
 			pool.SetHardBlocks(nil)
 		}
+		pool.SetWeights(accountWeights[provider])
+		pool.SetStrategy(p.strategy)
+		pool.SetAffinity(p.affinity)
 	}
 	p.defs = defs
 	p.catalog = catalog
-	p.router = providers.NewRouter(catalog, p.pools, policies)
+	p.router = providers.NewRouter(catalog, p.pools, policies, p.affinity)
 	p.version++
 	p.keyHash = keyHashes
 	p.keyCount = len(keyHashes)

@@ -38,7 +38,8 @@ type precommitFailure struct{ err error }
 func (f *precommitFailure) Error() string { return f.err.Error() }
 func (f *precommitFailure) Unwrap() error { return f.err }
 
-// Pool is the per-provider dynamic pool: round-robin over live slots, failover
+// Pool is the per-provider dynamic pool: account selection under the configured
+// strategy (round-robin, weighted, fill-first), session affinity, failover
 // before the first downstream chunk, cooldown and quota-block bookkeeping.
 type Pool struct {
 	name string
@@ -52,6 +53,17 @@ type Pool struct {
 	blockReason  map[[2]string]string
 	hardBlocks   map[[2]string]string
 	generation   int
+
+	// Account selection. strategy is one of the Strategy* constants; weights
+	// holds the administrator's per-account weight (keyed by slot key) and swrr
+	// is the smooth weighted round-robin accumulator.
+	strategy string
+	weights  map[string]int
+	swrr     map[string]int
+
+	// affinity pins a conversation to one slot across the requests of a single
+	// user turn. Nil or disabled means "not in use".
+	affinity *Affinity
 }
 
 // NewPool creates an empty pool for one provider name.
@@ -63,7 +75,59 @@ func NewPool(name string) *Pool {
 		modelBlocked: map[[2]string]float64{},
 		blockReason:  map[[2]string]string{},
 		hardBlocks:   map[[2]string]string{},
+		strategy:     StrategyRoundRobin,
+		weights:      map[string]int{},
+		swrr:         map[string]int{},
 	}
+}
+
+// SetStrategy switches the account selection strategy at runtime.
+func (p *Pool) SetStrategy(strategy string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	next := NormalizeStrategy(strategy)
+	if next != p.strategy {
+		// A strategy change starts a clean draw: carrying the previous
+		// strategy's accumulator over would bias the first requests.
+		p.swrr = map[string]int{}
+	}
+	p.strategy = next
+}
+
+// SetWeights replaces the per-account weights. Missing accounts fall back to
+// DefaultAccountWeight so enabling the weighted strategy never starves a slot
+// that predates the setting.
+func (p *Pool) SetWeights(weights map[string]int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.weights = make(map[string]int, len(weights))
+	for key, weight := range weights {
+		if weight > 0 {
+			p.weights[key] = weight
+		}
+	}
+}
+
+// SetAffinity attaches the shared conversation-affinity store.
+func (p *Pool) SetAffinity(affinity *Affinity) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.affinity = affinity
+}
+
+// Strategy reports the active account strategy.
+func (p *Pool) Strategy() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.strategy
+}
+
+// weightOf returns the effective weight of one slot.
+func (p *Pool) weightOf(key string) int {
+	if weight, ok := p.weights[key]; ok && weight > 0 {
+		return weight
+	}
+	return DefaultAccountWeight
 }
 
 // Name reports the provider name.
@@ -136,6 +200,11 @@ func (p *Pool) UpdateSlots(next map[string]Provider) {
 	for block := range p.hardBlocks {
 		if !live[block[0]] {
 			delete(p.hardBlocks, block)
+		}
+	}
+	for key := range p.swrr {
+		if !live[key] {
+			delete(p.swrr, key)
 		}
 	}
 	if len(p.order) > 0 {
@@ -243,8 +312,14 @@ func (p *Pool) markFailed(key string, generation int) {
 	p.failed[key] = nowMonotonic() + cooldownSeconds
 }
 
-// acquire picks the next usable slot, advancing the round-robin cursor.
-func (p *Pool) acquire(tried map[string]bool, model string, advance bool) *slot {
+// acquire picks the next usable slot under the configured account strategy.
+//
+// session, when non-empty and affinity is enabled, is the conversation pin: the
+// same account keeps serving the requests of one user turn, so the agent's tool
+// loop keeps hitting one upstream prompt cache. The pin is honoured only while
+// the account is usable, and a retry inside one request (advance == false) never
+// re-draws the weighted cursor.
+func (p *Pool) acquire(tried map[string]bool, model, session string, advance bool) *slot {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	order := make([]string, 0, len(p.order))
@@ -256,48 +331,167 @@ func (p *Pool) acquire(tried map[string]bool, model string, advance bool) *slot 
 	if len(order) == 0 {
 		return nil
 	}
-	count := len(order)
-	start := p.rr % count
-	if advance {
-		p.rr = (p.rr + 1) % count
-	}
-	rotated := append(append([]string{}, order[start:]...), order[:start]...)
 	nowMono := nowMonotonic()
 
-	candidates := make([]string, 0, len(rotated))
-	for _, key := range rotated {
+	// 1. Conversation affinity. A pinned account is used verbatim while it is
+	// still a legal candidate; when it is blocked or cooling the request falls
+	// through to the normal draw and the pin is replaced by the new choice.
+	if p.affinity != nil && session != "" {
+		if pinned, ok := p.affinity.Lookup(session); ok && pinUsable(p, pinned, tried, model, nowMono) {
+			handle := p.slots[pinned]
+			handle.inFlight++
+			return handle
+		}
+	}
+
+	eligible := make([]string, 0, len(order))
+	for _, key := range order {
 		if _, blocked := p.hardBlocks[[2]string{key, model}]; blocked {
 			continue
 		}
-		candidates = append(candidates, key)
-	}
-	for _, key := range candidates {
 		if tried[key] {
 			continue
 		}
+		eligible = append(eligible, key)
+	}
+	if len(eligible) == 0 {
+		return nil
+	}
+
+	healthy := make([]string, 0, len(eligible))
+	for _, key := range eligible {
 		if p.failed[key] > nowMono {
 			continue
 		}
 		if until, blocked := p.modelBlocked[[2]string{key, model}]; blocked && until > nowMono {
 			continue
 		}
-		handle := p.slots[key]
-		handle.inFlight++
-		return handle
+		healthy = append(healthy, key)
 	}
-	// Everything is cooling or auto-blocked for this model: fall back to the
-	// remaining candidates so a recovered account gets canaried, earliest reset
-	// first (most likely to succeed).
-	sortByReset(candidates, p.modelBlocked, p.failed, model, nowMono)
-	for _, key := range candidates {
-		if tried[key] {
-			continue
+	chosen := ""
+	if len(healthy) > 0 {
+		chosen = p.chooseLocked(order, healthy, advance)
+	} else {
+		// Everything is cooling or auto-blocked for this model: fall back to
+		// the remaining candidates so a recovered account gets canaried,
+		// earliest reset first (most likely to succeed).
+		sortByReset(eligible, p.modelBlocked, p.failed, model, nowMono)
+		chosen = eligible[0]
+	}
+	handle := p.slots[chosen]
+	handle.inFlight++
+	if p.affinity != nil && session != "" {
+		p.affinity.Pin(session, chosen)
+	}
+	return handle
+}
+
+// pinUsable reports whether a pinned slot may serve this request.
+func pinUsable(p *Pool, key string, tried map[string]bool, model string, nowMono float64) bool {
+	if tried[key] {
+		return false
+	}
+	if _, ok := p.slots[key]; !ok {
+		return false
+	}
+	if _, blocked := p.hardBlocks[[2]string{key, model}]; blocked {
+		return false
+	}
+	if p.failed[key] > nowMono {
+		return false
+	}
+	if until, blocked := p.modelBlocked[[2]string{key, model}]; blocked && until > nowMono {
+		return false
+	}
+	return true
+}
+
+// chooseLocked picks the winning slot for the active strategy. order is the
+// full live ordering (the round-robin rotation base); healthy is the set of
+// candidates that may serve right now.
+func (p *Pool) chooseLocked(order, healthy []string, advance bool) string {
+	switch p.strategy {
+	case StrategyWeighted:
+		return p.drawWeightedLocked(healthy, advance)
+	case StrategyFillFirst:
+		// Weight is a priority here: the heaviest account drains first, and
+		// in-flight counts break ties so two concurrent requests do not pile
+		// onto the same slot when a second one is free.
+		best := healthy[0]
+		for _, key := range healthy[1:] {
+			if fillFirstBefore(p, key, best) {
+				best = key
+			}
 		}
-		handle := p.slots[key]
-		handle.inFlight++
-		return handle
+		return best
+	default:
+		return p.rotateLocked(order, healthy, advance)
 	}
-	return nil
+}
+
+// rotateLocked reproduces the historical round-robin: walk the live order from
+// the cursor and take the first healthy candidate.
+func (p *Pool) rotateLocked(order, healthy []string, advance bool) string {
+	allowed := make(map[string]bool, len(healthy))
+	for _, key := range healthy {
+		allowed[key] = true
+	}
+	count := len(order)
+	start := p.rr % count
+	for offset := range count {
+		index := (start + offset) % count
+		if allowed[order[index]] {
+			if advance {
+				p.rr = (index + 1) % count
+			}
+			return order[index]
+		}
+	}
+	return healthy[0]
+}
+
+// drawWeightedLocked runs one smooth weighted round-robin draw over the healthy
+// candidates. Weights are added, the largest accumulator wins, and the winner's
+// accumulator is reduced by the total — the classic nginx algorithm, so a 3:1
+// pair interleaves instead of bursting.
+func (p *Pool) drawWeightedLocked(keys []string, advance bool) string {
+	if len(keys) == 1 {
+		return keys[0]
+	}
+	total := 0
+	for _, key := range keys {
+		weight := p.weightOf(key)
+		total += weight
+		if advance {
+			p.swrr[key] += weight
+		}
+	}
+	if total <= 0 {
+		return keys[0]
+	}
+	winner := keys[0]
+	for _, key := range keys[1:] {
+		if p.swrr[key] > p.swrr[winner] {
+			winner = key
+		}
+	}
+	if advance {
+		p.swrr[winner] -= total
+	}
+	return winner
+}
+
+// fillFirstBefore orders two slots for the fill-first strategy.
+func fillFirstBefore(p *Pool, left, right string) bool {
+	leftWeight, rightWeight := p.weightOf(left), p.weightOf(right)
+	if leftWeight != rightWeight {
+		return leftWeight > rightWeight
+	}
+	leftFlight, rightFlight := p.slots[left].inFlight, p.slots[right].inFlight
+	if leftFlight != rightFlight {
+		return leftFlight < rightFlight
+	}
+	return left < right
 }
 
 func (p *Pool) release(handle *slot) {
@@ -326,8 +520,9 @@ func (p *Pool) Complete(ctx context.Context, request *chatwire.ChatRequest) (map
 	tried := map[string]bool{}
 	advance := true
 	var lastErr error
+	session := request.SessionKey()
 	for {
-		handle := p.acquire(tried, request.Model, advance)
+		handle := p.acquire(tried, request.Model, session, advance)
 		advance = false
 		if handle == nil {
 			break
@@ -345,6 +540,9 @@ func (p *Pool) Complete(ctx context.Context, request *chatwire.ChatRequest) (map
 		}
 		tried[handle.key] = true
 		p.markOutcome(handle, request.Model, err)
+		// The pinned account just failed: drop the pin so the retry is allowed
+		// to draw a fresh one instead of walking straight back into it.
+		p.forgetSession(session, handle.key)
 		lastErr = err
 		slog.Warn("pool complete failed", "pool", p.name, "account", handle.accountID, "error", err)
 		if ctx.Err() != nil {
@@ -362,8 +560,9 @@ func (p *Pool) Stream(ctx context.Context, request *chatwire.ChatRequest) (Frame
 	tried := map[string]bool{}
 	advance := true
 	var lastErr error
+	session := request.SessionKey()
 	for {
-		handle := p.acquire(tried, request.Model, advance)
+		handle := p.acquire(tried, request.Model, session, advance)
 		advance = false
 		if handle == nil {
 			break
@@ -376,6 +575,7 @@ func (p *Pool) Stream(ctx context.Context, request *chatwire.ChatRequest) (Frame
 		}
 		tried[handle.key] = true
 		p.markOutcome(handle, request.Model, err)
+		p.forgetSession(session, handle.key)
 		lastErr = err
 		slog.Warn("pool stream failed pre-commit", "pool", p.name, "account", handle.accountID, "error", err)
 		if ctx.Err() != nil {
@@ -386,6 +586,16 @@ func (p *Pool) Stream(ctx context.Context, request *chatwire.ChatRequest) (Frame
 		return nil, lastErr
 	}
 	return nil, fmt.Errorf("%s: %w", p.name, UnavailableError)
+}
+
+// forgetSession drops the session pin when the pinned account just failed.
+func (p *Pool) forgetSession(session, failedKey string) {
+	if p.affinity == nil || session == "" {
+		return
+	}
+	if pinned, ok := p.affinity.Pinned(session); ok && pinned == failedKey {
+		p.affinity.Forget(session)
+	}
 }
 
 // openStream wraps the provider stream so the slot lease is released and a

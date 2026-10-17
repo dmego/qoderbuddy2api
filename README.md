@@ -22,7 +22,7 @@ English | [中文](README.zh.md)
 
 **Admin console** (`/admin`)
 - Accounts: import, probe, enable/disable, per-purpose configuration
-- Models and routing policy: per-model provider priority, weight and enablement
+- Models and routing policy: per-model provider priority, weight and enablement; per-account weights with round-robin / weighted / fill-first strategies and optional per-turn session affinity
 - Credentials: version, mode, expiry state and renewability; ciphertext never leaves the DB
 - Usage: first-token and total latency reported separately, adaptive ms/s display, CSV export
 - Sign-in and growth centre: scheduling, manual runs, per-batch detail

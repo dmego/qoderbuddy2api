@@ -12,6 +12,15 @@ import (
 // ErrNotFound is returned when a single-row lookup matches nothing.
 var ErrNotFound = errors.New("not found")
 
+// Account weight bounds. The value is a relative share, but unbounded integers
+// would let one account swallow a pool by accident, so the admin API and the
+// scheduler share one ceiling.
+const (
+	MinAccountWeight     = 1
+	MaxAccountWeight     = 1000
+	DefaultAccountWeight = 100
+)
+
 // VersionConflict means an optimistic-concurrency check failed: another writer
 // rotated the credential first.
 var VersionConflict = errors.New("credential version conflict")
@@ -23,6 +32,7 @@ type Account struct {
 	Label          string  `json:"label"`
 	Source         string  `json:"source"`
 	Enabled        bool    `json:"enabled"`
+	Weight         int     `json:"weight"`
 	MaskedIdentity *string `json:"masked_identity"`
 	IdentityHash   *string `json:"identity_hash"`
 	CreatedAt      string  `json:"created_at"`
@@ -63,16 +73,22 @@ type Credential struct {
 // UpsertAccount inserts or updates the account row and returns it.
 func (d *DB) UpsertAccount(ctx context.Context, account Account) (Account, error) {
 	now := NowISO()
+	weight := account.Weight
+	if weight <= 0 {
+		// Zero is not a weight: it would make the account unreachable under the
+		// weighted strategy. Callers that do not care get the default.
+		weight = DefaultAccountWeight
+	}
 	err := d.Write(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
-			INSERT INTO accounts (provider, account_id, label, source, enabled, masked_identity, identity_hash, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO accounts (provider, account_id, label, source, enabled, weight, masked_identity, identity_hash, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(provider, account_id) DO UPDATE SET
 				label=excluded.label, source=excluded.source, enabled=excluded.enabled,
-				masked_identity=excluded.masked_identity, identity_hash=excluded.identity_hash,
-				updated_at=excluded.updated_at`,
+				weight=excluded.weight, masked_identity=excluded.masked_identity,
+				identity_hash=excluded.identity_hash, updated_at=excluded.updated_at`,
 			account.Provider, account.AccountID, account.Label, orDefault(account.Source, "manual"),
-			boolInt(account.Enabled), account.MaskedIdentity, account.IdentityHash, now, now)
+			boolInt(account.Enabled), weight, account.MaskedIdentity, account.IdentityHash, now, now)
 		return err
 	})
 	if err != nil {
@@ -90,9 +106,9 @@ func (d *DB) GetAccount(ctx context.Context, provider, accountID string) (Accoun
 	var account Account
 	var enabled int
 	err := d.QueryRowContext(ctx,
-		`SELECT provider, account_id, label, source, enabled, masked_identity, identity_hash, created_at, updated_at
+		`SELECT provider, account_id, label, source, enabled, weight, masked_identity, identity_hash, created_at, updated_at
 		   FROM accounts WHERE provider=? AND account_id=?`, provider, accountID).
-		Scan(&account.Provider, &account.AccountID, &account.Label, &account.Source, &enabled,
+		Scan(&account.Provider, &account.AccountID, &account.Label, &account.Source, &enabled, &account.Weight,
 			&account.MaskedIdentity, &account.IdentityHash, &account.CreatedAt, &account.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Account{}, ErrNotFound
@@ -107,7 +123,7 @@ func (d *DB) GetAccount(ctx context.Context, provider, accountID string) (Accoun
 // ListAccounts returns accounts ordered by provider then account id. When
 // providers is non-empty the result is filtered to those providers.
 func (d *DB) ListAccounts(ctx context.Context, providers []string) ([]Account, error) {
-	query := `SELECT provider, account_id, label, source, enabled, masked_identity, identity_hash, created_at, updated_at
+	query := `SELECT provider, account_id, label, source, enabled, weight, masked_identity, identity_hash, created_at, updated_at
 	            FROM accounts`
 	args := []any{}
 	if len(providers) > 0 {
@@ -126,7 +142,7 @@ func (d *DB) ListAccounts(ctx context.Context, providers []string) ([]Account, e
 	for rows.Next() {
 		var account Account
 		var enabled int
-		if err := rows.Scan(&account.Provider, &account.AccountID, &account.Label, &account.Source, &enabled,
+		if err := rows.Scan(&account.Provider, &account.AccountID, &account.Label, &account.Source, &enabled, &account.Weight,
 			&account.MaskedIdentity, &account.IdentityHash, &account.CreatedAt, &account.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -137,7 +153,7 @@ func (d *DB) ListAccounts(ctx context.Context, providers []string) ([]Account, e
 }
 
 // UpdateAccountFields patches the mutable account columns.
-func (d *DB) UpdateAccountFields(ctx context.Context, provider, accountID string, enabled *bool, label *string) error {
+func (d *DB) UpdateAccountFields(ctx context.Context, provider, accountID string, enabled *bool, label *string, weight *int) error {
 	return d.Write(ctx, func(tx *sql.Tx) error {
 		sets := []string{"updated_at=?"}
 		args := []any{NowISO()}
@@ -148,6 +164,10 @@ func (d *DB) UpdateAccountFields(ctx context.Context, provider, accountID string
 		if label != nil {
 			sets = append(sets, "label=?")
 			args = append(args, *label)
+		}
+		if weight != nil {
+			sets = append(sets, "weight=?")
+			args = append(args, *weight)
 		}
 		args = append(args, provider, accountID)
 		_, err := tx.ExecContext(ctx,
@@ -431,9 +451,9 @@ func (d *DB) FindAccountByIdentityHash(ctx context.Context, provider, identityHa
 	var account Account
 	var enabled int
 	err := d.QueryRowContext(ctx, `
-		SELECT provider, account_id, label, source, enabled, masked_identity, identity_hash, created_at, updated_at
+		SELECT provider, account_id, label, source, enabled, weight, masked_identity, identity_hash, created_at, updated_at
 		  FROM accounts WHERE provider=? AND identity_hash=? LIMIT 1`, provider, identityHash).
-		Scan(&account.Provider, &account.AccountID, &account.Label, &account.Source, &enabled,
+		Scan(&account.Provider, &account.AccountID, &account.Label, &account.Source, &enabled, &account.Weight,
 			&account.MaskedIdentity, &account.IdentityHash, &account.CreatedAt, &account.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Account{}, ErrNotFound

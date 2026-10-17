@@ -3,6 +3,8 @@
 package chatwire
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 )
@@ -129,6 +131,10 @@ type ChatRequest struct {
 	// FirstTokenAt is set by the stream adapters when the first content-bearing
 	// chunk reaches the client; it drives the first-token latency metric.
 	FirstTokenRecorded bool
+
+	// session caches SessionKey: the router and the pools both ask for it, and
+	// the key hashes the whole system prompt.
+	session string
 }
 
 // UnmarshalJSON captures extra fields the same way pydantic extra="allow" did.
@@ -172,8 +178,104 @@ func (r *ChatRequest) ExtraValue(key string) (any, bool) {
 	return value, ok
 }
 
+// ContentString renders a message's content as text. Multimodal content keeps
+// its text blocks in order; non-text blocks are ignored, which is enough for a
+// stable affinity key.
+func (m Message) ContentString() string {
+	if len(m.Content) == 0 {
+		return ""
+	}
+	var decoded any
+	if err := json.Unmarshal(m.Content, &decoded); err != nil {
+		return string(m.Content)
+	}
+	switch typed := decoded.(type) {
+	case string:
+		return typed
+	case []any:
+		parts := make([]string, 0, len(typed))
+		for _, block := range typed {
+			mapping, ok := block.(map[string]any)
+			if !ok {
+				continue
+			}
+			if text, ok := mapping["text"].(string); ok && text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+	return ""
+}
+
 // RecordProvider notes which provider pool served this request.
 func (r *ChatRequest) RecordProvider(provider string) { r.SelectedProvider = provider }
+
+// sessionHashLength keeps the affinity key short: it only has to be stable, and
+// a truncated sha256 is plenty for an in-memory map.
+const sessionHashLength = 32
+
+// SessionKey derives (once) the conversation identity used for account
+// affinity. The value is cached on the request because both the router and the
+// pools ask for it, and hashing a long system prompt twice is wasted work.
+func (r *ChatRequest) SessionKey() string {
+	if r == nil {
+		return ""
+	}
+	if r.session != "" {
+		return r.session
+	}
+	r.session = r.deriveSessionKey()
+	return r.session
+}
+
+// deriveSessionKey computes the affinity key described on SessionKey.
+//
+// The key must stay identical across the requests of ONE user turn (the model
+// reply, then every tool-call round trip the agent replays) and must change once
+// the user asks something new. The client cannot be trusted to send a session
+// id, and neither OpenAI body carries one, so the key is derived from what a
+// turn keeps stable and a new question changes:
+//
+//   - the system prompt (the agent's operating rules),
+//   - the client's "user" id when it sends one, and
+//   - the newest user question.
+//
+// The newest question — not the first one — is what separates turns. Agent
+// clients resend the whole growing transcript, so the first user message stays
+// the same forever and keying on it would pin an entire conversation to one
+// account; keying on the newest one re-draws the account exactly when the user
+// speaks again. Assistant and tool turns that follow the question are part of
+// the same turn, and are therefore ignored.
+func (r *ChatRequest) deriveSessionKey() string {
+	if len(r.Messages) == 0 {
+		return ""
+	}
+	system := ""
+	for _, message := range r.Messages {
+		if message.Role == "system" || message.Role == "developer" {
+			system += message.ContentString() + "\x00"
+			continue
+		}
+		break
+	}
+	question := ""
+	for index := len(r.Messages) - 1; index >= 0; index-- {
+		message := r.Messages[index]
+		if message.Role != "user" {
+			continue
+		}
+		if content := message.ContentString(); content != "" {
+			question = content
+			break
+		}
+	}
+	if system == "" && question == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte(system + "\x00" + r.User + "\x00" + question))
+	return hex.EncodeToString(digest[:])[:sessionHashLength]
+}
 
 // RecordEffort notes the reasoning effort actually sent upstream.
 func (r *ChatRequest) RecordEffort(effort string) { r.EffectiveEffort = effort }

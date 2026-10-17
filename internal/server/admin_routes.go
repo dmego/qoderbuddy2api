@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/dmego/qoderbuddy2api/internal/models"
+	"github.com/dmego/qoderbuddy2api/internal/providers"
 	"github.com/dmego/qoderbuddy2api/internal/store"
 )
 
@@ -198,6 +201,13 @@ var settingSchemas = []settingSchema{
 	{Key: "growth.scheduler_enabled", Default: true, ApplyMode: "immediate", Type: "bool", Validate: validateBool},
 	{Key: "growth.scheduler_interval_seconds", Default: 1800, ApplyMode: "immediate", Type: "int", Min: intPointer(600), Validate: rangeValidator(600, 86400, "growth.scheduler_interval_seconds must be >= 600")},
 	{Key: "growth.auto_active_day", Default: true, ApplyMode: "immediate", Type: "bool", Validate: validateBool},
+
+	// Account routing. These describe how the requests of one model are spread
+	// across the accounts of a provider, which is a different axis from the
+	// per-model provider policy above them.
+	{Key: "routing.account_strategy", Default: "round_robin", ApplyMode: "immediate", Type: "str", Validate: validateAccountStrategy},
+	{Key: "routing.session_affinity", Default: false, ApplyMode: "immediate", Type: "bool", Validate: validateBool},
+	{Key: "routing.session_affinity_ttl_seconds", Default: 3600, ApplyMode: "immediate", Type: "int", Validate: rangeValidator(60, 86400, "session affinity ttl must be between 60 and 86400 seconds")},
 }
 
 // settingSchemaByKey indexes the schema table once.
@@ -233,6 +243,16 @@ func publicSchema() map[string]map[string]any {
 		out[schema.Key] = entry
 	}
 	return out
+}
+
+// validateAccountStrategy accepts only the three known account strategies, so a
+// typo is refused instead of silently degrading to round-robin.
+func validateAccountStrategy(value any) error {
+	text, ok := value.(string)
+	if !ok || !providers.ValidStrategy(text) {
+		return errors.New("account strategy must be round_robin, weighted or fill_first")
+	}
+	return nil
 }
 
 func (a *API) handleGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -361,17 +381,63 @@ func matchesSchemaType(kind string, value any) bool {
 	return false
 }
 
-// applySetting re-reads a setting into the live schedulers.
+// applySetting re-reads a setting into the live components.
 //
 // The schedulers read runtime settings on each tick, so a schedule change only
-// needs the check-in scheduler to recompute its timer.
+// needs the check-in scheduler to recompute its timer. Routing settings are the
+// exception: the request path must not read SQLite, so the live value is pushed
+// into the proxy plane here.
 func (a *API) applySetting(key string) {
+	if strings.HasPrefix(key, "routing.") {
+		a.applyRoutingSettings()
+		return
+	}
 	if a.CheckinScheduler == nil {
 		return
 	}
 	if strings.HasPrefix(key, "checkin.") {
 		a.CheckinScheduler.Reconfigure()
 	}
+}
+
+// ApplyRoutingSettings loads the account routing configuration and pushes it
+// into the plane. It is exported for the startup path, which must configure the
+// pools before the first request arrives.
+func (a *API) ApplyRoutingSettings() {
+	a.applyRoutingSettings()
+}
+
+// applyRoutingSettings loads the account routing configuration and pushes it
+// into the plane.
+func (a *API) applyRoutingSettings() {
+	if a.Plane == nil {
+		return
+	}
+	ctx, cancel := ctxWithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	values, err := a.DB.RuntimeSettingsMap(ctx)
+	if err != nil {
+		slog.Warn("account routing settings reload failed", "error", err)
+		return
+	}
+	cfg := a.routingConfigFrom(values)
+	a.Plane.ConfigureRouting(cfg)
+}
+
+// routingConfigFrom renders the stored overrides (falling back to defaults)
+// into a plane configuration.
+func (a *API) routingConfigFrom(values map[string]any) AccountRouteConfig {
+	cfg := AccountRouteConfig{Strategy: providers.StrategyRoundRobin, AffinityTTL: providers.DefaultAffinityTTL}
+	if text, ok := values["routing.account_strategy"].(string); ok && text != "" {
+		cfg.Strategy = providers.NormalizeStrategy(text)
+	}
+	if flag, ok := values["routing.session_affinity"].(bool); ok {
+		cfg.SessionAffinity = flag
+	}
+	if number, ok := numeric(values["routing.session_affinity_ttl_seconds"]); ok && number > 0 {
+		cfg.AffinityTTL = time.Duration(number) * time.Second
+	}
+	return cfg
 }
 
 // ---- audit ----
@@ -496,7 +562,7 @@ func (a *API) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
 }
 
 // schemaVersionForBackup is the schema generation this build writes.
-const schemaVersionForBackup = "8"
+const schemaVersionForBackup = store.SchemaVersion
 
 // handleValidateBackup performs the console's "校验恢复" preflight: it checks
 // the recorded row, re-hashes the file, opens it read-only, runs SQLite's own

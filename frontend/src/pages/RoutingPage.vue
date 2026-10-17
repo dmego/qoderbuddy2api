@@ -23,14 +23,15 @@ import StatePill from "@/components/StatePill.vue";
 import { useNotifications } from "@/composables/useNotifications";
 
 type BlockInfo = { source: string; reason: string; blocked_until: string };
-type RouteAccount = { account_id: string; label: string; source: string; blocked: boolean; block?: BlockInfo | null };
+type RouteAccount = { account_id: string; label: string; source: string; blocked: boolean; block?: BlockInfo | null; weight?: number };
+type AccountRouting = { strategy: string; session_affinity: boolean; session_affinity_ttl_seconds: number; session_count: number };
 type RouteEntry = {
   provider: string; priority: number; weight: number; enabled: boolean;
   capabilities: string[]; accounts: RouteAccount[];
 };
 type RoutingModel = { model_id: string; name: string; configured: boolean; routes: RouteEntry[] };
 type RouteDraft = { provider: string; priority: number; weight: number; enabled: boolean };
-type RoutingResponse = { models: RoutingModel[] };
+type RoutingResponse = { models: RoutingModel[]; account_routing?: AccountRouting };
 
 const INTL_PROVIDER = "workbuddy_intl";
 const PROVIDER_LABELS: Record<string, string> = {
@@ -67,6 +68,8 @@ const visibleModels = computed(() => {
     return model.model_id.toLowerCase().includes(needle) || model.name.toLowerCase().includes(needle);
   });
 });
+const accountRouting = computed(() => routing.data.value?.account_routing);
+const strategyLabel = computed(() => ({ round_robin: "轮询", weighted: "加权轮询", fill_first: "填充优先" } as Record<string, string>)[accountRouting.value?.strategy ?? "round_robin"] ?? accountRouting.value?.strategy ?? "轮询");
 const configuredCount = computed(() => models.value.filter((model) => model.configured).length);
 const blockedCount = computed(() => models.value.reduce(
   (total, model) => total + modelBlockedCount(model), 0,
@@ -261,6 +264,8 @@ function clearFilters(): void { draftSearch.value = ""; search.value = ""; onlyC
         <div><strong>权重</strong><span>同一梯队内的相对流量份额（平滑加权轮询）。3 与 1 表示 3:1，0 表示该梯队内不接流量。</span></div>
         <div><strong>路线启用</strong><span>关闭后该提供方只在其他路线都无法服务该模型时才兜底；关闭的路线权重按 0 处理。</span></div>
         <div><strong>账号停用</strong><span>按「账号 × 模型」停用，只影响这个模型。上游配额受限的账号会自动停用并注明原因与恢复时间。</span></div>
+        <div><strong>账号策略</strong><span>{{ strategyLabel }}：同一提供方内的多个账号按该策略分配请求，可在「运行设置 · 账号路由」切换为轮询、加权轮询或填充优先。</span></div>
+        <div><strong>会话保持</strong><span v-if="accountRouting?.session_affinity">已开启：同一轮提问的请求固定同一账号，新提问重新选择（当前 {{ accountRouting.session_count }} 个会话绑定）。</span><span v-else>未开启：每次请求独立按账号策略分配；可在「运行设置 · 账号路由」打开。</span></div>
       </div>
     </section>
 
@@ -288,7 +293,7 @@ function clearFilters(): void { draftSearch.value = ""; search.value = ""; onlyC
             <button v-if="hasIntlRoute(model)" class="secondary-button compact-button" type="button" :disabled="save.isPending.value" title="把 WorkBuddy 国际版设为最先尝试，其余提供方作为回退，并立即保存" @click="applyIntlPreset(model)"><Sparkles :size="13" />国际版优先</button>
             <button class="compact-button" type="button" :disabled="save.isPending.value || !isDirty(model) || Boolean(validationHint(model))" @click="save.mutate(model)"><Save :size="13" />保存</button>
             <button class="secondary-button compact-button" type="button" :disabled="reset.isPending.value || !model.configured" @click="pendingReset = model"><RotateCcw :size="13" />恢复默认</button>
-            <span class="routing-actions__note">{{ model.configured ? "自定义策略" : "默认等权轮询" }} · {{ modelAccountCount(model) }} 个可用账号</span>
+            <span class="routing-actions__note">{{ model.configured ? "自定义策略" : "默认等权轮询" }} · {{ modelAccountCount(model) }} 个可用账号 · 账号 {{ strategyLabel }}</span>
           </div>
 
           <div v-for="route in draftRoutes(model)" :key="route.provider" class="routing-route">
@@ -307,6 +312,7 @@ function clearFilters(): void { draftSearch.value = ""; search.value = ""; onlyC
                 <input type="checkbox" :checked="!account.blocked" :disabled="accountBlock.isPending.value" :aria-label="`${model.model_id} ${account.account_id} 参与路由`" @change="onAccountToggle(model, route.provider, account, $event)" />
                 <span class="routing-account__label">{{ account.label || account.account_id }}</span>
                 <code class="routing-account__id">{{ account.account_id }}</code>
+                <span v-if="accountRouting?.strategy !== 'round_robin'" class="routing-account__weight" :title="accountRouting?.strategy === 'fill_first' ? '填充优先：权重值越大越先用' : '加权轮询：按权重比例分流量'">W{{ account.weight ?? 100 }}</span>
                 <span v-if="account.blocked" class="routing-account__why"><Ban :size="12" />{{ blockLabel(account.block) }}</span>
                 <span v-else class="routing-account__ok"><CircleCheck :size="12" />参与</span>
               </label>
@@ -385,5 +391,6 @@ function clearFilters(): void { draftSearch.value = ""; search.value = ""; onlyC
 .routing-account__label { color: var(--text); }
 .routing-account__id { color: var(--muted); font-family: var(--mono); font-size: var(--text-xs); }
 .routing-account__ok { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); }
+.routing-account__weight { color: var(--muted); font-family: var(--mono); font-size: var(--text-xs); }
 .routing-account__why { display: inline-flex; align-items: center; gap: 3px; color: var(--warn); }
 </style>

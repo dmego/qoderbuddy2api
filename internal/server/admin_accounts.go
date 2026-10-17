@@ -24,6 +24,7 @@ type accountView struct {
 	Label          string                 `json:"label"`
 	Source         string                 `json:"source"`
 	Enabled        bool                   `json:"enabled"`
+	Weight         int                    `json:"weight"`
 	SummaryStatus  string                 `json:"summary_status"`
 	MaskedIdentity *string                `json:"masked_identity"`
 	Shadowed       bool                   `json:"shadowed"`
@@ -56,6 +57,7 @@ func buildAccountView(account store.Account, purposes []store.Purpose) accountVi
 		Label:          account.Label,
 		Source:         account.Source,
 		Enabled:        account.Enabled,
+		Weight:         account.Weight,
 		SummaryStatus:  "unconfigured",
 		MaskedIdentity: account.MaskedIdentity,
 		Purposes:       map[string]purposeView{},
@@ -251,13 +253,18 @@ func (a *API) handlePatchAccount(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Enabled  *bool                   `json:"enabled"`
 		Label    *string                 `json:"label"`
+		Weight   *int                    `json:"weight"`
 		Purposes map[string]purposePatch `json:"purposes"`
 	}
 	if err := decodeBody(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := a.DB.UpdateAccountFields(r.Context(), provider, accountID, body.Enabled, body.Label); err != nil {
+	if body.Weight != nil && (*body.Weight < store.MinAccountWeight || *body.Weight > store.MaxAccountWeight) {
+		writeError(w, http.StatusBadRequest, "weight out of range")
+		return
+	}
+	if err := a.DB.UpdateAccountFields(r.Context(), provider, accountID, body.Enabled, body.Label, body.Weight); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -383,13 +390,13 @@ func (a *API) handlePromoteAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = decodeBody(r, &body)
 	if body.Label != "" {
-		if err := a.DB.UpdateAccountFields(r.Context(), provider, accountID, nil, &body.Label); err != nil {
+		if err := a.DB.UpdateAccountFields(r.Context(), provider, accountID, nil, &body.Label, nil); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 	}
 	source := "manual"
-	if err := a.DB.UpdateAccountFields(r.Context(), provider, accountID, nil, nil); err != nil {
+	if err := a.DB.UpdateAccountFields(r.Context(), provider, accountID, nil, nil, nil); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -907,6 +914,7 @@ type routeAccountView struct {
 	AccountID string     `json:"account_id"`
 	Label     string     `json:"label"`
 	Source    string     `json:"source"`
+	Weight    int        `json:"weight"`
 	Blocked   bool       `json:"blocked"`
 	Block     *blockView `json:"block"`
 }
@@ -980,9 +988,37 @@ func (a *API) handleGetRouting(w http.ResponseWriter, r *http.Request) {
 		return modelsList[i]["model_id"].(string) < modelsList[j]["model_id"].(string)
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
-		"models":       list(modelsList),
-		"quota_blocks": quotaBlocksJSON(a),
+		"models":          list(modelsList),
+		"quota_blocks":    quotaBlocksJSON(a),
+		"account_routing": a.accountRoutingJSON(),
 	})
+}
+
+// accountRoutingJSON renders the live account strategy plus the per-account
+// weights and affinity counters, so the console can show what the proxy is
+// actually doing rather than only what was stored.
+func (a *API) accountRoutingJSON() map[string]any {
+	cfg := AccountRouteConfig{Strategy: providers.StrategyRoundRobin, AffinityTTL: providers.DefaultAffinityTTL}
+	if a.Plane != nil {
+		cfg = a.Plane.RoutingConfig()
+	}
+	weights := map[string]map[string]int{}
+	accounts, err := a.DB.ListAccounts(context.Background(), models.KnownProviders)
+	if err == nil {
+		for _, account := range accounts {
+			if weights[account.Provider] == nil {
+				weights[account.Provider] = map[string]int{}
+			}
+			weights[account.Provider][account.AccountID] = account.Weight
+		}
+	}
+	return map[string]any{
+		"strategy":                     cfg.Strategy,
+		"session_affinity":             cfg.SessionAffinity,
+		"session_affinity_ttl_seconds": int(cfg.AffinityTTL.Seconds()),
+		"session_count":                cfg.SessionCount,
+		"weights":                      weights,
+	}
 }
 
 // routeAccounts attaches block state to the chat-capable accounts of one provider.
@@ -1035,6 +1071,7 @@ func (a *API) chatAccountsByProvider(ctx context.Context) (map[string][]routeAcc
 			AccountID: account.AccountID,
 			Label:     label,
 			Source:    account.Source,
+			Weight:    account.Weight,
 		})
 	}
 	return grouped, nil

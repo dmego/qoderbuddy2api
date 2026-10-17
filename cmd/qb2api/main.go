@@ -88,6 +88,12 @@ func run() error {
 		"accounts", plane.SlotCount(),
 		"models", len(plane.AvailableModels()))
 
+	// Account strategy and conversation affinity are stored in
+	// runtime_settings, not in the environment: the request path must not read
+	// SQLite, so the values are pushed into the pools once at startup and again
+	// on every settings save.
+	api.ApplyRoutingSettings()
+
 	subsystems := server.StartSubsystems(api, settings, db, credVault, plane)
 	defer subsystems.Stop()
 

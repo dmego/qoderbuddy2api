@@ -145,6 +145,7 @@ type Router struct {
 	catalog   map[string]models.Unified
 	cursor    map[string]int
 	cooldown  map[[2]string]float64
+	affinity  *Affinity
 	mu        sync.Mutex
 }
 
@@ -155,13 +156,18 @@ type route struct {
 }
 
 // NewRouter builds the router from the unified catalog and the live pools.
-func NewRouter(catalog map[string]models.Unified, pools map[string]*Pool, policies map[string][]RoutePolicy) *Router {
+//
+// affinity, when non-nil, also pins the provider of a conversation: without it
+// the weighted provider draw would send the second request of one turn to the
+// other provider, and the account pin below it would never be consulted.
+func NewRouter(catalog map[string]models.Unified, pools map[string]*Pool, policies map[string][]RoutePolicy, affinity *Affinity) *Router {
 	router := &Router{
 		routes:    map[string][]route{},
 		scheduler: map[string]*RouteScheduler{},
 		catalog:   catalog,
 		cursor:    map[string]int{},
 		cooldown:  map[[2]string]float64{},
+		affinity:  affinity,
 	}
 	for modelID, entry := range catalog {
 		routes := make([]route, 0, len(entry.Routes))
@@ -244,8 +250,9 @@ func (r *Router) Complete(ctx context.Context, request *chatwire.ChatRequest) (m
 	}
 	original := request.Model
 	defer func() { request.Model = original }()
+	session := request.SessionKey()
 	var lastErr error
-	for _, candidate := range r.ordered(request.Model, routes) {
+	for _, candidate := range r.ordered(request.Model, routes, session) {
 		if !r.usable(request.Model, candidate) {
 			continue
 		}
@@ -256,6 +263,7 @@ func (r *Router) Complete(ctx context.Context, request *chatwire.ChatRequest) (m
 			return result, nil
 		}
 		r.markFailed(request.Model, candidate)
+		r.forgetPinnedProvider(session, candidate.provider)
 		lastErr = err
 		slog.Warn("router complete failed", "model", original, "provider", candidate.provider, "error", err)
 		if ctx.Err() != nil {
@@ -276,8 +284,9 @@ func (r *Router) Stream(ctx context.Context, request *chatwire.ChatRequest) (Fra
 		return nil, fmt.Errorf("%s: %w", request.Model, UnavailableError)
 	}
 	original := request.Model
+	session := request.SessionKey()
 	var lastErr error
-	for _, candidate := range r.ordered(original, routes) {
+	for _, candidate := range r.ordered(original, routes, session) {
 		if !r.usable(original, candidate) {
 			continue
 		}
@@ -288,6 +297,7 @@ func (r *Router) Stream(ctx context.Context, request *chatwire.ChatRequest) (Fra
 			return &routedStream{inner: stream, router: r, model: original, route: candidate}, nil
 		}
 		r.markFailed(original, candidate)
+		r.forgetPinnedProvider(session, candidate.provider)
 		lastErr = err
 		slog.Warn("router stream failed pre-commit", "model", original, "provider", candidate.provider, "error", err)
 		if ctx.Err() != nil {
@@ -344,7 +354,54 @@ func (r *Router) markFailed(modelID string, candidate route) {
 	r.cooldown[[2]string{modelID, candidate.provider}] = nowMonotonic() + cooldownSeconds
 }
 
-func (r *Router) ordered(modelID string, routes []route) []route {
+func (r *Router) ordered(modelID string, routes []route, session string) []route {
+	ordered := r.policyOrder(modelID, routes)
+	// Conversation affinity outranks the provider tiers while the pinned
+	// provider can still serve: the whole point of the pin is that the
+	// conversation keeps its upstream prompt cache. An unusable route is
+	// skipped by the caller, so a blocked or cooling provider still falls back
+	// to the policy order.
+	if r.affinity == nil || session == "" {
+		return ordered
+	}
+	pinned, ok := r.affinity.Lookup(session)
+	if !ok {
+		return ordered
+	}
+	pinnedProvider := providerOfSlotKey(pinned)
+	for index, candidate := range ordered {
+		if candidate.provider != pinnedProvider {
+			continue
+		}
+		if index == 0 {
+			return ordered
+		}
+		reordered := make([]route, 0, len(ordered))
+		reordered = append(reordered, candidate)
+		reordered = append(reordered, ordered[:index]...)
+		reordered = append(reordered, ordered[index+1:]...)
+		return reordered
+	}
+	return ordered
+}
+
+// forgetPinnedProvider drops a conversation pin whose provider just failed, so
+// the next request of the turn is free to draw a different provider instead of
+// walking back into the one that is cooling.
+func (r *Router) forgetPinnedProvider(session, provider string) {
+	if r.affinity == nil || session == "" {
+		return
+	}
+	pinned, ok := r.affinity.Pinned(session)
+	if !ok || providerOfSlotKey(pinned) != provider {
+		return
+	}
+	r.affinity.Forget(session)
+}
+
+// policyOrder applies the stored provider policies (or the legacy rotation when
+// a model has no scheduler).
+func (r *Router) policyOrder(modelID string, routes []route) []route {
 	scheduler, ok := r.scheduler[modelID]
 	if !ok {
 		return r.rotate(modelID, routes)
