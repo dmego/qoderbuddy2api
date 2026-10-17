@@ -42,12 +42,20 @@ type QuotaExceededError struct {
 	ResetAt *time.Time
 }
 
+// RequestRejectedError is an upstream rejection that describes the REQUEST, not
+// the account: a prompt over the context ceiling (11115), a malformed body, an
+// unsupported model. Replaying it on another account cannot succeed, so the
+// pool must stop failing over and must not cool anything down.
+type RequestRejectedError struct{ UpstreamError }
+
 // UnavailableError means no route could serve the request at all.
 var UnavailableError = errors.New("no available routes")
 
 const (
 	channelBlockedCode = "11128"
 	quotaExceededCode  = "6004"
+	// contextTooLongCode is the upstream's "prompt is too long" rejection.
+	contextTooLongCode = "11115"
 )
 
 // resetAtPattern matches «将在 2026-09-11 15:00:00 UTC+8 重置».
@@ -88,6 +96,13 @@ func ParseUpstreamError(statusCode int, body string) error {
 			UpstreamError: UpstreamError{StatusCode: statusCode, Message: message},
 			ResetAt:       parseResetAt(message),
 		}
+	case contextTooLongCode:
+		// The prompt is too large for every account of this provider, so this is
+		// a property of the request. Cooling the account down (or failing over
+		// to the next one) turns one oversized request into a 30s outage for
+		// every caller, which is exactly what the "no available routes"
+		// reports were.
+		return &RequestRejectedError{UpstreamError{StatusCode: statusCode, Message: message}}
 	}
 	return &UpstreamError{StatusCode: statusCode, Message: truncate(clean, 200)}
 }
@@ -125,6 +140,12 @@ func StatusCode(err error) int {
 	var blocked *ChannelBlockedError
 	if errors.As(err, &blocked) {
 		return http.StatusBadGateway
+	}
+	var rejected *RequestRejectedError
+	if errors.As(err, &rejected) {
+		// The caller's prompt is what is wrong, so the caller's status applies.
+		// 413 keeps a client from retrying the same oversized body on a loop.
+		return http.StatusRequestEntityTooLarge
 	}
 	var upstream *UpstreamError
 	if errors.As(err, &upstream) {
@@ -176,6 +197,10 @@ func ErrorCode(err error) string {
 	var quota *QuotaExceededError
 	if errors.As(err, &quota) {
 		return "quota_exceeded"
+	}
+	var rejected *RequestRejectedError
+	if errors.As(err, &rejected) {
+		return "request_rejected"
 	}
 	var upstream *UpstreamError
 	if errors.As(err, &upstream) {

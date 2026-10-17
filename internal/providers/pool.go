@@ -312,6 +312,15 @@ func (p *Pool) markFailed(key string, generation int) {
 	p.failed[key] = nowMonotonic() + cooldownSeconds
 }
 
+// RequestRejected reports whether a failure describes the request rather than
+// the account (prompt over the context ceiling, malformed body). Replaying such
+// a failure on the next account is pointless and cooling accounts for it is
+// actively harmful: it turns one bad request into a pool-wide outage.
+func RequestRejected(err error) bool {
+	var rejected *RequestRejectedError
+	return errors.As(err, &rejected)
+}
+
 // abortError reports whether a failed attempt ended because the caller went
 // away, and returns the error to hand back in that case.
 //
@@ -563,6 +572,12 @@ func (p *Pool) Complete(ctx context.Context, request *chatwire.ChatRequest) (map
 			// of service for 30s (503 "no available routes").
 			return nil, aborted
 		}
+		if RequestRejected(err) {
+			// The request is what failed. Returning immediately keeps the rest
+			// of the pool out of the cooldown and gives the caller the real
+			// reason instead of "no available routes".
+			return nil, err
+		}
 		tried[handle.key] = true
 		p.markOutcome(handle, request.Model, err)
 		// The pinned account just failed: drop the pin so the retry is allowed
@@ -600,6 +615,9 @@ func (p *Pool) Stream(ctx context.Context, request *chatwire.ChatRequest) (Frame
 		}
 		if aborted := abortError(ctx, err); aborted != nil {
 			return nil, aborted
+		}
+		if RequestRejected(err) {
+			return nil, err
 		}
 		tried[handle.key] = true
 		p.markOutcome(handle, request.Model, err)

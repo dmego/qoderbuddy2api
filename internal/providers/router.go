@@ -267,6 +267,11 @@ func (r *Router) Complete(ctx context.Context, request *chatwire.ChatRequest) (m
 		if aborted := abortError(ctx, err); aborted != nil {
 			return nil, aborted
 		}
+		if RequestRejected(err) {
+			// Nothing about this route is wrong, and the next provider would
+			// reject the same request; return the reason and touch nothing.
+			return nil, err
+		}
 		r.markFailed(request.Model, candidate)
 		r.forgetPinnedProvider(session, candidate.provider)
 		lastErr = err
@@ -303,6 +308,9 @@ func (r *Router) Stream(ctx context.Context, request *chatwire.ChatRequest) (Fra
 		}
 		if aborted := abortError(ctx, err); aborted != nil {
 			return nil, aborted
+		}
+		if RequestRejected(err) {
+			return nil, err
 		}
 		r.markFailed(original, candidate)
 		r.forgetPinnedProvider(session, candidate.provider)

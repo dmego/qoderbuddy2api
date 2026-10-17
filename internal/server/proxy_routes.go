@@ -131,13 +131,13 @@ func (a *API) completeChat(w http.ResponseWriter, r *http.Request, request *chat
 	result, err := a.Plane.Complete(r.Context(), request)
 	if err != nil {
 		status := providers.StatusCode(err)
-		kind := "upstream_error"
-		if errors.Is(err, providers.UnavailableError) {
-			kind = "provider_unavailable"
-		} else if retryAfter := providers.RetryAfter(err, time.Now()); retryAfter > 0 {
-			// Tell a retrying client exactly when the upstream quota resets
-			// instead of leaving it to guess from the message text.
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		kind := errorKind(err)
+		if kind == "upstream_error" {
+			if retryAfter := providers.RetryAfter(err, time.Now()); retryAfter > 0 {
+				// Tell a retrying client exactly when the upstream quota
+				// resets instead of leaving it to guess from the message text.
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			}
 		}
 		a.recordEvent(request, entry, "openai", false, started, err, 0, false, status)
 		writeJSON(w, status, openAIError(err.Error(), kind))
@@ -153,11 +153,11 @@ func (a *API) streamChat(w http.ResponseWriter, r *http.Request, request *chatwi
 	stream, err := a.Plane.Stream(r.Context(), request)
 	if err != nil {
 		status := providers.StatusCode(err)
-		kind := "upstream_error"
-		if errors.Is(err, providers.UnavailableError) {
-			kind = "provider_unavailable"
-		} else if retryAfter := providers.RetryAfter(err, time.Now()); retryAfter > 0 {
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		kind := errorKind(err)
+		if kind == "upstream_error" {
+			if retryAfter := providers.RetryAfter(err, time.Now()); retryAfter > 0 {
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			}
 		}
 		a.recordEvent(request, entry, "openai", false, started, err, 0, true, status)
 		writeJSON(w, status, openAIError(err.Error(), kind))
@@ -315,6 +315,21 @@ func (a *API) streamAnthropic(w http.ResponseWriter, r *http.Request, request *c
 	// Status 200 was written before the loop; a mid-stream failure is reported
 	// in-band and classified by error_code.
 	a.recordEvent(request, entry, "anthropic", success, started, streamErr, firstToken, true, http.StatusOK)
+}
+
+// errorKind classifies a proxy failure for the OpenAI-shaped error body.
+//
+// A request rejection (prompt over the context ceiling) must not be reported as
+// an upstream fault: clients retry an upstream_error and give up on an
+// invalid_request_error, and retrying an oversized prompt can only fail again.
+func errorKind(err error) string {
+	if errors.Is(err, providers.UnavailableError) {
+		return "provider_unavailable"
+	}
+	if providers.RequestRejected(err) {
+		return "invalid_request_error"
+	}
+	return "upstream_error"
 }
 
 // recordEvent writes one telemetry row through the batching writer.
