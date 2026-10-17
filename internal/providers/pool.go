@@ -312,6 +312,24 @@ func (p *Pool) markFailed(key string, generation int) {
 	p.failed[key] = nowMonotonic() + cooldownSeconds
 }
 
+// abortError reports whether a failed attempt ended because the caller went
+// away, and returns the error to hand back in that case.
+//
+// A cancelled client request says nothing about account health. Treating it as
+// an upstream failure used to mark the account (and then the provider) as
+// cooling for 30 seconds, so two aborted requests against a four-account pool
+// were enough to make every later request answer 503 "no available routes"
+// until the cooldown expired.
+func abortError(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if IsClientAbort(err) {
+		return err
+	}
+	return nil
+}
+
 // acquire picks the next usable slot under the configured account strategy.
 //
 // session, when non-empty and affinity is enabled, is the conversation pin: the
@@ -538,6 +556,13 @@ func (p *Pool) Complete(ctx context.Context, request *chatwire.ChatRequest) (map
 		if err == nil {
 			return result, nil
 		}
+		if aborted := abortError(ctx, err); aborted != nil {
+			// The caller hung up. This is not the account's fault, so it must
+			// neither cool the account down nor drop the conversation pin:
+			// doing that made a few cancelled requests take a whole route out
+			// of service for 30s (503 "no available routes").
+			return nil, aborted
+		}
 		tried[handle.key] = true
 		p.markOutcome(handle, request.Model, err)
 		// The pinned account just failed: drop the pin so the retry is allowed
@@ -572,6 +597,9 @@ func (p *Pool) Stream(ctx context.Context, request *chatwire.ChatRequest) (Frame
 		request.Model = original
 		if err == nil {
 			return stream, nil
+		}
+		if aborted := abortError(ctx, err); aborted != nil {
+			return nil, aborted
 		}
 		tried[handle.key] = true
 		p.markOutcome(handle, request.Model, err)

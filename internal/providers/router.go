@@ -262,6 +262,11 @@ func (r *Router) Complete(ctx context.Context, request *chatwire.ChatRequest) (m
 		if err == nil {
 			return result, nil
 		}
+		// A caller that hung up is not evidence about the provider, so it must
+		// not put the route into its 30s cooldown.
+		if aborted := abortError(ctx, err); aborted != nil {
+			return nil, aborted
+		}
 		r.markFailed(request.Model, candidate)
 		r.forgetPinnedProvider(session, candidate.provider)
 		lastErr = err
@@ -296,6 +301,9 @@ func (r *Router) Stream(ctx context.Context, request *chatwire.ChatRequest) (Fra
 		if err == nil {
 			return &routedStream{inner: stream, router: r, model: original, route: candidate}, nil
 		}
+		if aborted := abortError(ctx, err); aborted != nil {
+			return nil, aborted
+		}
 		r.markFailed(original, candidate)
 		r.forgetPinnedProvider(session, candidate.provider)
 		lastErr = err
@@ -325,7 +333,10 @@ func (s *routedStream) Next() ([]byte, error) {
 	if err == nil || errors.Is(err, io.EOF) {
 		return frame, err
 	}
-	if IsPrecommitFailure(err) {
+	// A stream that died because the caller hung up is not provider health
+	// evidence: cooling the route down here is what let a couple of cancelled
+	// requests take the whole model out of service.
+	if IsPrecommitFailure(err) && !IsClientAbort(err) {
 		s.router.markFailed(s.model, s.route)
 	}
 	return nil, err
